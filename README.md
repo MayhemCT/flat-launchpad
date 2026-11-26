@@ -97,6 +97,6 @@ npm run pull          # writes data/bsc.json and data/bscTestnet.json
 
 `npm run pull` reads the Portal's events over public RPC endpoints and writes every Launcher factory, vault factory, Launcher, token and deployer it finds. Public BNB Chain endpoints keep about 31 days of logs; the Portal's first event is recent enough that the full history is still available.
 
-## License
+## Credits
 
-MIT. `contracts/src/flap/` and `contracts/test/ForkBase.sol` are from Flap's [FlapPoolLaunchVaultExample](https://github.com/flap-sh/FlapPoolLaunchVaultExample).
+`contracts/src/flap/`, `contracts/test/ForkBase.sol` and `contracts/test/ForkAddresses.sol` are from Flap's [FlapPoolLaunchVaultExample](https://github.com/flap-sh/FlapPoolLaunchVaultExample). The Solidity sources carry MIT SPDX identifiers.
