@@ -166,7 +166,7 @@ npm run test:viewport --workspace @flat/web
 npx vitest run apps/web/tests/salt.test.ts
 ```
 
-- **Live:** https://raidpass.dry-dust-1399.workers.dev, served by Cloudflare as static files (`apps/web/wrangler.jsonc`). There is no server code and nothing secret on the site: visitors sign with their own wallets, and the page reads public chain data.
+- **Live:** https://raidpass.dry-dust-1399.workers.dev, served by Cloudflare as static files (`apps/web/wrangler.jsonc`). Cloudflare builds and deploys it from this repository on every push to `main`, so going live does not depend on any one machine or stored token. There is no server code and nothing secret on the site: visitors sign with their own wallets, and the page reads public chain data.
 - **No key needed to deploy the factory.** While the factory has no code on the network, the page offers a "Deploy the factory" button: one transaction from any browser wallet, through the deterministic CREATE2 deployer, to the same address `Deploy.s.sol` produces.
 - **Security headers** (`apps/web/public/_headers`): a Content-Security-Policy that allows only the page's own scripts and the one RPC endpoint it reads from, no framing by other sites, HSTS, and no referrer or content-type leaks.
 - **Network and factory** come from the package's `manifest.json` (BNB Chain Testnet).
