@@ -145,6 +145,36 @@ async function settle(hash: Hex): Promise<Submission> {
   }
 }
 
+/**
+ * Deploys the RaidPass Launcher Factory from the connected wallet, through the deterministic CREATE2 deployer.
+ * The address depends only on the bytecode and the salt, so it is the one in the manifest whoever sends this.
+ * It is the same transaction `contracts/script/Deploy.s.sol` broadcasts.
+ */
+export async function deployFactory(): Promise<Submission> {
+  const { account } = requireSigner();
+  const client = walletClient();
+  if (!client) throw new Error("walletUnavailable");
+  const deployment = (await import("./factory-deployment.json")).default;
+  if (deployment.address.toLowerCase() !== FACTORY.toLowerCase()) throw new Error("factoryUnavailable");
+
+  let hash: Hex;
+  try {
+    const request = {
+      account,
+      to: deployment.deployer as Address,
+      data: `${deployment.salt}${deployment.initCode.slice(2)}` as Hex,
+    };
+    const gas = await publicClient.estimateGas(request);
+    // BNB Chain's base fee is 0, so the node's gas price is the price to pay.
+    const gasPrice = await publicClient.getGasPrice();
+    hash = await client.sendTransaction({ ...request, chain: NETWORK.chain, gas: (gas * 12n) / 10n, gasPrice });
+  } catch (cause) {
+    throw hostError(cause, "invalidTransaction");
+  }
+  setPendingHash(hash);
+  return settle(hash);
+}
+
 export interface HostOptions {
   /** The Launcher the detail page shows; null on the creation page. */
   launcher: Address | null;

@@ -3,7 +3,7 @@ import { formatEther, isAddress, type Address } from "viem";
 import { Launcher, LauncherConfig } from "@launcher-ui/Component";
 import i18n from "@launcher-ui/i18n.json";
 import { CHAIN_ID, FACTORY, NETWORK, factoryAbi, launcherSummaryAbi } from "./config";
-import { belongsToFactory, createHost, publicClient, readSnapshot, type Snapshot } from "./host";
+import { belongsToFactory, createHost, deployFactory, publicClient, readSnapshot, type Snapshot } from "./host";
 import { connect, switchChain, useWallet } from "./wallet";
 
 type Locale = "en" | "zh" | "ko";
@@ -213,8 +213,58 @@ function statusOf(row: LaunchRow): { label: string; tone: "good" | "gold" | "mut
   return { label: "Refunds open", tone: "muted" };
 }
 
+const DEPLOY_ERRORS: Record<string, string> = {
+  walletUnavailable: "No browser wallet was found.",
+  connectWallet: "Connect your wallet first.",
+  wrongChain: `Switch your wallet to ${NETWORK.label} first.`,
+  walletRejected: "The request was rejected in the wallet.",
+  simulationFailed: "The deployment would revert. The factory may already be deployed: reload the page.",
+};
+
+/** Shown while the factory has no code on this network: one transaction from any wallet deploys it. */
+function DeployFactory({ onDeployed }: { onDeployed(): void }) {
+  const wallet = useWallet();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const ready = wallet.available && !!wallet.account && wallet.chainId === NETWORK.chain.id;
+
+  const deploy = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await deployFactory();
+      if (result.status === "success") onDeployed();
+      else if (result.status === "reverted") setMessage("The deployment transaction reverted.");
+      else setMessage("The transaction was sent but has no receipt yet. Reload the page in a moment.");
+    } catch (cause) {
+      const code = cause instanceof Error ? cause.message : "";
+      setMessage(DEPLOY_ERRORS[code] ?? "The deployment could not be sent.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="note" data-testid="not-deployed">
+      <p>
+        The RaidPass Launcher Factory is not deployed on {NETWORK.label} yet. It will be at{" "}
+        <a href={`${NETWORK.explorer}/address/${FACTORY}`} target="_blank" rel="noreferrer"><code>{FACTORY}</code></a>,
+        whoever deploys it.
+      </p>
+      <div className="actions">
+        <button type="button" className="button" disabled={busy || !ready} onClick={() => void deploy()}>
+          {busy ? "Deploying…" : "Deploy the factory"}
+        </button>
+      </div>
+      {!ready && <p className="dim">Connect a wallet on {NETWORK.label} to deploy it. It is one transaction and costs only gas.</p>}
+      {message && <p role="alert">{message}</p>}
+    </div>
+  );
+}
+
 function LaunchList({ mobile }: { mobile: boolean }) {
   const [launches, setLaunches] = useState<Launches>({ state: "loading" });
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     let current = true;
     loadLaunches().then(
@@ -224,18 +274,11 @@ function LaunchList({ mobile }: { mobile: boolean }) {
     return () => {
       current = false;
     };
-  }, []);
+  }, [reload]);
 
   if (launches.state === "loading") return <p className="note" role="status">Reading launches from {NETWORK.label}…</p>;
   if (launches.state === "error") return <p className="note" role="alert">The launches could not be read from {NETWORK.label}. Reload to try again.</p>;
-  if (launches.state === "not-deployed") {
-    return (
-      <p className="note" data-testid="not-deployed">
-        The RaidPass Launcher Factory is not deployed on {NETWORK.label} yet. It will be at{" "}
-        <a href={`${NETWORK.explorer}/address/${FACTORY}`} target="_blank" rel="noreferrer"><code>{FACTORY}</code></a>.
-      </p>
-    );
-  }
+  if (launches.state === "not-deployed") return <DeployFactory onDeployed={() => setReload((value) => value + 1)} />;
   if (launches.rows.length === 0) return <p className="note">No mints yet. <a href="#/create">Create the first one.</a></p>;
 
   if (mobile) {

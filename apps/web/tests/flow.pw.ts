@@ -3,12 +3,11 @@ import { expect, test } from "@playwright/test";
 /**
  * The whole launch, driven through the page: create a Launcher, mint every NFT, launch, claim.
  *
- * It runs against a local fork of BNB Chain Testnet, where the RaidPass factory has been deployed with
- * script/Deploy.s.sol and the fork's own unlocked account stands in for a browser wallet. The contracts, the
+ * It runs against a local fork of BNB Chain Testnet, where the fork's own unlocked account stands in for a
+ * browser wallet. The page deploys the factory itself if the fork does not have it. The contracts, the
  * Portal and the page are the real ones; only the signer is the fork's.
  *
  *   anvil --fork-url https://bsc-testnet-rpc.publicnode.com --port 8547 --block-time 1
- *   forge script script/Deploy.s.sol --rpc-url http://127.0.0.1:8547 --private-key <anvil account 0> --broadcast --legacy
  *   VITE_RPC_URL=http://127.0.0.1:8547 FLOW_RPC_URL=http://127.0.0.1:8547 npx playwright test tests/flow.pw.ts
  */
 const RPC = process.env.FLOW_RPC_URL;
@@ -45,6 +44,15 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
 
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+
+  // On a fresh fork the factory does not exist: deploy it from the page, with one transaction.
+  await page.goto("/#/");
+  const deployButton = page.getByRole("button", { name: "Deploy the factory" });
+  await expect(deployButton.or(page.getByText("No mints yet"))).toBeVisible({ timeout: 30_000 });
+  if (await deployButton.isVisible()) {
+    await deployButton.click();
+    await expect(page.getByText("No mints yet")).toBeVisible({ timeout: 90_000 });
+  }
 
   // Create: 0.5 tBNB per NFT, cap 2.5 tBNB, so five NFTs. 2.5 tBNB clears the Portal's floor at a 50% pool share.
   await page.goto("/#/create");

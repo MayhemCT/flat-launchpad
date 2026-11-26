@@ -166,13 +166,16 @@ npm run test:viewport --workspace @flat/web
 npx vitest run apps/web/tests/salt.test.ts
 ```
 
+- **Live:** https://raidpass.dry-dust-1399.workers.dev, served by Cloudflare as static files (`apps/web/wrangler.jsonc`). There is no server code and nothing secret on the site: visitors sign with their own wallets, and the page reads public chain data.
+- **No key needed to deploy the factory.** While the factory has no code on the network, the page offers a "Deploy the factory" button: one transaction from any browser wallet, through the deterministic CREATE2 deployer, to the same address `Deploy.s.sol` produces.
+- **Security headers** (`apps/web/public/_headers`): a Content-Security-Policy that allows only the page's own scripts and the one RPC endpoint it reads from, no framing by other sites, HSTS, and no referrer or content-type leaks.
 - **Network and factory** come from the package's `manifest.json` (BNB Chain Testnet).
 - **Launches** are listed from the factory's own `launchers` array, so no indexer is needed.
 - **Background.** The BNB mark in three.js, loaded after first paint. It drifts when idle and leans toward the pointer; with reduced motion it renders once and stays still.
 - **Phone layout.** Under 768 px the page renders a separate shell: compact top bar, cards in place of the table, and a tab bar at the bottom.
 - **Viewport tests.** 30 Playwright checks across ten screen sizes, from a folded Galaxy Fold to an ultrawide monitor, on every page: no sideways scroll, the right shell for the size, the canvas covering the viewport, every control on-screen and at least 44 px tall on touch screens, and the tab bar never covering content. They run in the Edge or Chrome already installed.
 - **Salt test.** The token-address prediction is checked against every salt the live Portal has locked.
-- **Flow test.** `tests/flow.pw.ts` drives the whole launch through the page on a local fork of BNB Chain Testnet: create a Launcher, mint every NFT, launch, claim. The contracts, the Portal and the page are the real ones; the fork's own account stands in for the wallet. The steps to run it are at the top of the file.
+- **Flow test.** `tests/flow.pw.ts` drives the whole launch through the page on a local fork of BNB Chain Testnet: deploy the factory, create a Launcher, mint every NFT, launch, claim. The contracts, the Portal and the page are the real ones; the fork's own account stands in for the wallet. The steps to run it are at the top of the file.
 - **Endpoint.** `VITE_RPC_URL` points the page at another RPC endpoint.
 
 ## Pool Launch indexer
