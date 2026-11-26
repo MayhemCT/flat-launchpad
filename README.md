@@ -45,6 +45,7 @@ Neither is deployed yet. Each address depends only on the contract bytecode, so 
 | `contracts/test/raidpass/` | Fork tests that run the whole flow against Flap's live contracts. |
 | `contracts/script/` | Deploy and create scripts for both paths. |
 | `flap-ui/raidpass-launcher/` | The launch UI in Flap's Launcher UI template format: creation form and mint page. |
+| `apps/web/` | A site that hosts the launch UI package against the chain with a browser wallet. |
 | `packages/protocol/`, `scripts/pull-factories.ts`, `data/` | Pool Launch indexing: decodes Portal events and aggregates every factory, Launcher, token and deployer. |
 | `apps/worker/` | Cloudflare Worker + D1 indexer and read API for the same data. Written, not yet run. |
 
@@ -153,6 +154,24 @@ Check it from a checkout of [flap-vault-component-template](https://github.com/f
 ```sh
 yarn launcher:check-source /path/to/flat-launchpad/flap-ui/raidpass-launcher
 ```
+
+## Web app
+
+`apps/web` is a site that runs the launch UI package against the chain directly. Flap's site runs a Launcher UI package inside its own host, which reads the contract and sends every transaction. `apps/web/src/host.ts` implements that same host contract with a browser wallet, so the exact files in `flap-ui/raidpass-launcher/` run here unchanged: the creation form, the mint page, claim and refund.
+
+```sh
+npm install
+npm run dev --workspace @flat/web          # http://localhost:5173
+npm run test:viewport --workspace @flat/web
+npx vitest run apps/web/tests/salt.test.ts
+```
+
+- **Network and factory** come from the package's `manifest.json` (BNB Chain Testnet).
+- **Launches** are listed from the factory's own `launchers` array, so no indexer is needed.
+- **Background.** The BNB mark in three.js, loaded after first paint. It drifts when idle and leans toward the pointer; with reduced motion it renders once and stays still.
+- **Phone layout.** Under 768 px the page renders a separate shell: compact top bar, cards in place of the table, and a tab bar at the bottom.
+- **Viewport tests.** 30 Playwright checks across ten screen sizes, from a folded Galaxy Fold to an ultrawide monitor, on every page: no sideways scroll, the right shell for the size, the canvas covering the viewport, every control on-screen and at least 44 px tall on touch screens, and the tab bar never covering content. They run in the Edge or Chrome already installed.
+- **Salt test.** The token-address prediction is checked against every salt the live Portal has locked.
 
 ## Pool Launch indexer
 
