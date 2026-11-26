@@ -82,6 +82,8 @@ export interface SyncResult {
   factoriesChecked: number
   raisesUpdated: number
   imagesResolved: number
+  /** Why raise progress or pictures could not be read this run, when they could not. */
+  enrichError: string | null
   caughtUp: boolean
 }
 
@@ -144,9 +146,22 @@ export async function syncChain(
   // 3. The Portal is the authority on whether a factory is enabled.
   const factoriesChecked = await refreshFactoryStatus(db, chain, rpc, budget, now)
 
-  // 4. How far each open raise has come, and where each token's picture is.
-  const raisesUpdated = await refreshRaises(db, chain, rpc, budget, now)
-  const imagesResolved = await resolveImages(db, chain, budget, now)
+  // 4. How far each open raise has come, and where each token's picture is. These are read again on every
+  //    run, so one that fails (a fallback endpoint that refuses the request, a slow gateway) is reported in
+  //    the result and left for the next run. It must not mark the event index, already committed, as failed.
+  let raisesUpdated = 0
+  let imagesResolved = 0
+  let enrichError: string | null = null
+  try {
+    raisesUpdated = await refreshRaises(db, chain, rpc, budget, now)
+  } catch (error) {
+    enrichError = String(error).slice(0, 200)
+  }
+  try {
+    imagesResolved = await resolveImages(db, chain, budget, now)
+  } catch (error) {
+    enrichError ??= String(error).slice(0, 200)
+  }
 
   return {
     chain: key,
@@ -158,6 +173,7 @@ export async function syncChain(
     factoriesChecked,
     raisesUpdated,
     imagesResolved,
+    enrichError,
     caughtUp: nextBlock > safeHead,
   }
 }
