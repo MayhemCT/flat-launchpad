@@ -56,6 +56,11 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
 
   // Create: 0.5 tBNB per NFT, cap 2.5 tBNB, so five NFTs. 2.5 tBNB clears the Portal's floor at a 50% pool share.
   await page.goto("/#/create");
+  // The page reads the Portal's floor and shows the smallest cap that can launch, for three pool shares.
+  const guide = page.getByTestId("floor-guide");
+  await expect(guide).toBeVisible({ timeout: 30_000 });
+  await expect(guide.locator("dd")).toHaveCount(3);
+  await expect(guide.locator("dd").first()).toContainText("tBNB");
   await page.locator("input[name=name]").fill("Flow Test");
   await page.locator("input[name=symbol]").fill("FLOW");
   await page.locator("input[name=price]").fill("0.5");
@@ -71,6 +76,9 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
   await expect(page).toHaveURL(/#\/launcher\/0x[0-9a-f]{40}$/);
   await expect(page.getByText("0 / 5")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Minting")).toBeVisible();
+  // 2.5 tBNB clears the floor, so the page raises no warning.
+  await page.waitForTimeout(3000);
+  await expect(page.getByTestId("floor-warning")).toHaveCount(0);
   await page.locator("input[name=quantity]").fill("5");
   await expect(page.getByText("2.5 tBNB").first()).toBeVisible();
   await page.getByRole("button", { name: "Mint", exact: true }).click();
@@ -89,5 +97,19 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
   await page.goto("/#/");
   await expect(page.getByText("Flow Test")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Launched")).toBeVisible();
+  // A mint whose cap is under the Portal's floor is flagged before anyone puts BNB into it.
+  await page.goto("/#/create");
+  await page.locator("input[name=name]").fill("Too Small");
+  await page.locator("input[name=symbol]").fill("SMALL");
+  await page.locator("input[name=price]").fill("0.5");
+  await page.locator("input[name=cap]").fill("1");
+  await page.getByRole("button", { name: "Review creation" }).click();
+  await page.getByRole("button", { name: "Prepare transaction" }).click();
+  await page.getByRole("button", { name: "Create Launcher" }).click({ timeout: 90_000 });
+  await expect(page.getByText("Confirmed")).toBeVisible({ timeout: 90_000 });
+  await page.getByRole("button", { name: "Open mint page" }).click();
+  await expect(page.getByTestId("floor-warning")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("floor-warning")).toContainText("cannot launch");
+
   expect(errors, "page errors").toEqual([]);
 });

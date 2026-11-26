@@ -4,6 +4,7 @@ import { Launcher, LauncherConfig } from "@launcher-ui/Component";
 import i18n from "@launcher-ui/i18n.json";
 import { CHAIN_ID, FACTORY, NETWORK, factoryAbi, launcherSummaryAbi } from "./config";
 import { belongsToFactory, createHost, deployFactory, publicClient, readSnapshot, type Snapshot } from "./host";
+import { formatMinimum, readFloorGuide, readLaunchability, type FloorGuide, type Launchability } from "./floor";
 import { connect, switchChain, useWallet } from "./wallet";
 
 type Locale = "en" | "zh" | "ko";
@@ -362,7 +363,21 @@ function LauncherPage({ address, locale }: { address: Address; locale: Locale })
   const [valid, setValid] = useState<boolean | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [tick, setTick] = useState(0);
+  const [launchability, setLaunchability] = useState<Launchability | null>(null);
   const refresh = useCallback(() => setTick((value) => value + 1), []);
+
+  useEffect(() => {
+    if (!valid) return;
+    let current = true;
+    setLaunchability(null);
+    readLaunchability(address).then(
+      (next) => current && setLaunchability(next),
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, [address, valid]);
 
   useEffect(() => {
     let current = true;
@@ -409,8 +424,16 @@ function LauncherPage({ address, locale }: { address: Address; locale: Locale })
     );
   }
   const token = typeof snapshot?.token === "string" ? snapshot.token : null;
+  const blocked = launchability !== null && !launchability.canLaunch && snapshot?.launched !== true;
   return (
     <>
+      {blocked && (
+        <p className="note note-warn" role="alert" data-testid="floor-warning">
+          This mint cannot launch as it is configured. Its cap is {formatEther(launchability.capWei)} {NETWORK.unit}, and
+          the Portal's liquidity floor for its pool share is {formatMinimum(launchability.floorWei)} {NETWORK.unit}. NFTs
+          become refundable after the deadline.
+        </p>
+      )}
       <Launcher context={{ identity, locale, launcherAddress: address, snapshot }} messages={messagesByLocale[locale]} host={host} />
       <p className="links">
         <a href={`${NETWORK.explorer}/address/${address}`} target="_blank" rel="noreferrer">Launcher on the explorer</a>
@@ -428,7 +451,55 @@ function CreatePage({ locale }: { locale: Locale }) {
     () => createHost({ launcher: null, refresh: () => undefined, openLauncher: (next) => (window.location.hash = `#/launcher/${next}`) }),
     [wallet.account, wallet.chainId, wallet.pendingHash, wallet.available],
   );
-  return <LauncherConfig context={{ identity, locale }} messages={messagesByLocale[locale]} host={host} />;
+  return (
+    <>
+      <LauncherConfig context={{ identity, locale }} messages={messagesByLocale[locale]} host={host} />
+      <FloorGuidePanel />
+    </>
+  );
+}
+
+const GUIDE_POOL_SHARES = [5000, 7500, 9000] as const;
+
+/** The smallest cap that can launch, read from the Portal, so a creator does not open a mint that never can. */
+function FloorGuidePanel() {
+  const [guide, setGuide] = useState<FloorGuide | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let current = true;
+    readFloorGuide(GUIDE_POOL_SHARES).then(
+      (next) => current && setGuide(next),
+      () => current && setFailed(true),
+    );
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  if (failed) {
+    return <p className="note" role="alert">The Portal's liquidity floor could not be read. Check the cap against Flap's floor before creating a mint.</p>;
+  }
+  if (!guide) return <p className="note" role="status">Reading the Portal's liquidity floor…</p>;
+  return (
+    <section className="note" data-testid="floor-guide">
+      <h2>Minimum raise to launch</h2>
+      <p>
+        The Portal rejects a launch whose pool is too small, and a mint whose cap is under that floor can never
+        launch. At the Portal's current price, the cap must be at least:
+      </p>
+      <dl className="floor-rows">
+        {guide.rows.map((row) => (
+          <div key={row.poolShareBps}>
+            <dt>{row.poolShareBps / 100}% of supply in the pool</dt>
+            <dd className="num">{formatMinimum(row.minRaiseWei)} {NETWORK.unit}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="dim">
+        This factory's floor multiplier is {guide.multiplierBps / 100}%. Flap sets it per factory and can lower it.
+      </p>
+    </section>
+  );
 }
 
 export function App() {

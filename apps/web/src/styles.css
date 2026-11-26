@@ -98,6 +98,12 @@ h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -0.01em; }
 
 .note p { margin: 0; }
 .note { display: grid; gap: 12px; margin: 0; color: var(--dim); background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.note h2 { margin: 0; font-size: 17px; color: var(--ink); }
+.note-warn { border-color: var(--warn); color: var(--ink); }
+.floor-rows { margin: 0; display: grid; gap: 8px; }
+.floor-rows > div { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--line); }
+.floor-rows dt { color: var(--ink); }
+.floor-rows dd { margin: 0; color: var(--gold); font-weight: 700; }
 .links { margin: 0; display: flex; gap: 18px; flex-wrap: wrap; font-size: 14px; color: var(--dim); }
 .links a { display: inline-flex; align-items: center; min-height: 44px; }
 .dim { color: var(--dim); }
