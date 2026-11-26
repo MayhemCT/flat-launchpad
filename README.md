@@ -45,13 +45,13 @@ All three are the same mint with the same rules. `CallZLauncher` is the design t
 ```
 CallZLauncherFactory     0x2D085c23BBB95e8f0C34b046573BDc88fAd538F0   (CREATE2: same on BNB Chain and Testnet)
 CallZCurveFactory        0x05F66F0D60ea2B871291d7CA5d0198Ea3B279ece   (CREATE2: BNB Chain)
-CallZPancakeFactory      0x28507071955b19E99C5DDa572fc690b8856f65D0   (CREATE2: BNB Chain, takes the launch fee)
-CallZRouter              0x1439694F14999D5999b1735bC67e70260CAce10C   (CREATE2: BNB Chain, takes the trading fee)
-CallZVault               0x68459955E16EDd44319218101f60aD2b379401b6   (CREATE2: BNB Chain, holds and pays every fee)
+CallZPancakeFactory      0x28507071955b19E99C5DDa572fc690b8856f65D0   (deployed on BNB Chain; takes the launch fee)
+CallZRouter              0x1439694F14999D5999b1735bC67e70260CAce10C   (deployed on BNB Chain; takes the trading fee)
+CallZVault               0x68459955E16EDd44319218101f60aD2b379401b6   (deployed on BNB Chain; holds and pays every fee)
 CallZPancakeFactory v1   0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (deployed on BNB Chain; no fee; its mints still list)
 ```
 
-The site's launch pages deploy `CallZLauncherFactory` and the three CallZ contracts from a browser wallet, with one transaction each. Until the CallZ contracts are deployed, trades on the site go straight to PancakeSwap's router with no CallZ fee. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
+The three CallZ fee contracts were deployed on BNB Chain on 27 Nov 2026 from the site's Launch page, and the site trades and launches through them. Their sources must not change now: a change would move their addresses. `CallZLauncherFactory` deploys from the testnet launch page with one transaction. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
 
 ## Fees and the vault
 
