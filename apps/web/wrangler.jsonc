@@ -1,0 +1,11 @@
+{
+  // The RaidPass site: static files only. No server code, no bindings and no secrets.
+  // Visitors sign with their own wallets, and the page reads public chain data.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "raidpass",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
