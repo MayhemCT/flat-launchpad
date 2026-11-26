@@ -1,7 +1,7 @@
 // The browser wallet's state, over plain EIP-1193. No chain library, so every page can show the wallet button
-// without paying for one. Transactions are built in host.ts, which loads only on the RaidPass pages.
+// without paying for one. Transactions are built in host.ts and trade.ts, which load only where they are used.
 import { useSyncExternalStore } from "react";
-import { RAIDPASS } from "./site";
+import { RAIDPASS, type Site } from "./site";
 
 export interface Eip1193Provider {
   request(args: { method: string; params?: unknown }): Promise<unknown>;
@@ -66,11 +66,11 @@ export function connect(): void {
   void refresh("eth_requestAccounts").catch(() => undefined);
 }
 
-/** Asks the wallet to switch to RaidPass's network, adding it first if the wallet does not know it. */
-export async function switchChain(): Promise<void> {
+/** Asks the wallet to switch to `target` (the launchpad's network by default), adding it first if the wallet does not know it. */
+export async function switchChain(target: Site = RAIDPASS): Promise<void> {
   const provider = window.ethereum;
   if (!provider) throw new Error("walletUnavailable");
-  const chainId = `0x${RAIDPASS.id.toString(16)}`;
+  const chainId = `0x${target.id.toString(16)}`;
   try {
     await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId }] });
   } catch (cause) {
@@ -81,10 +81,10 @@ export async function switchChain(): Promise<void> {
       params: [
         {
           chainId,
-          chainName: RAIDPASS.label,
-          nativeCurrency: { name: "BNB", symbol: RAIDPASS.unit, decimals: 18 },
-          rpcUrls: [RAIDPASS.rpcUrl],
-          blockExplorerUrls: [RAIDPASS.explorer],
+          chainName: target.label,
+          nativeCurrency: { name: "BNB", symbol: target.unit, decimals: 18 },
+          rpcUrls: [target.rpcUrl],
+          blockExplorerUrls: [target.explorer],
         },
       ],
     });

@@ -4,6 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type Re
 import { useApi, type Scope, type ScopeRaise, type ScopeToken } from "./api";
 import { ago, amount, compact, percent, price, short } from "./format";
 import { platformOf, type Platform } from "./platform";
+import { QUICK_AMOUNTS, useQuickBuy, type QuickBuy } from "./quickbuy";
 import { ZERO_ADDRESS, flapLauncherUrl, flapTokenUrl, type Site } from "./site";
 
 /** A raise at or past this share of its target is in the final stretch. In basis points. */
@@ -113,17 +114,10 @@ function RaiseRow({ site, item, unit, decimals, fresh }: { site: Site; item: Rai
   );
 }
 
-function TokenRow({ site, item, unit, fresh }: { site: Site; item: TokenItem; unit: string; fresh: boolean }) {
+function TokenRow({ site, item, unit, fresh, quickBuy }: { site: Site; item: TokenItem; unit: string; fresh: boolean; quickBuy: QuickBuy | null }) {
   const { row, platform } = item;
-  return (
-    <a
-      className={`scope-row${fresh ? " scope-fresh" : ""}`}
-      data-testid="scope-row"
-      style={{ "--tone": platform.colour } as CSSProperties}
-      href={flapTokenUrl(site, row.address)}
-      target="_blank"
-      rel="noreferrer"
-    >
+  const content = (
+    <>
       <TokenImage key={row.image ?? "none"} image={row.image} label={row.symbol || row.name || "?"} colour={platform.colour} />
       <span className="scope-body">
         <span className="scope-line">
@@ -141,6 +135,25 @@ function TokenRow({ site, item, unit, fresh }: { site: Site; item: TokenItem; un
           <span className={`tag tag-${row.graduated ? "good" : "muted"}`}>{row.graduated ? "Graduated" : "Live"}</span>
         </span>
       </span>
+    </>
+  );
+  const className = `scope-row${fresh ? " scope-fresh" : ""}`;
+  const style = { "--tone": platform.colour } as CSSProperties;
+  // On mainnet the token opens on this site (chart, trading, chat) and can be bought in one click.
+  if (quickBuy) {
+    const busy = quickBuy.buying.has(row.address);
+    return (
+      <div className={`${className} scope-split`} data-testid="scope-row" style={style}>
+        <a className="scope-main" href={`#/token/${row.address}`}>{content}</a>
+        <button type="button" className="quick-buy" disabled={busy} title={`Buy ${quickBuy.amount} BNB of ${row.symbol || "this token"} through PancakeSwap`} onClick={() => quickBuy.buy({ address: row.address, symbol: row.symbol })}>
+          {busy ? "…" : <>⚡ {quickBuy.amount}</>}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <a className={className} data-testid="scope-row" style={style} href={flapTokenUrl(site, row.address)} target="_blank" rel="noreferrer">
+      {content}
       <span className="scope-cta" data-flap="true">Flap ↗</span>
     </a>
   );
@@ -192,6 +205,9 @@ export function ScopePage({ site, mobile }: { site: Site; mobile: boolean }) {
   const [column, setColumn] = useState<ColumnId>("new");
   const [allChips, setAllChips] = useState(false);
   const data = result.state === "ready" ? result.data : null;
+  // Trading runs through PancakeSwap on BNB Chain mainnet; testnet tokens open on Flap.
+  const quick = useQuickBuy();
+  const quickBuy = site.key === "bsc" ? quick : null;
 
   // A filter picked on one network means nothing on the other.
   useEffect(() => setPicked(new Set()), [site.key]);
@@ -202,7 +218,7 @@ export function ScopePage({ site, mobile }: { site: Site; mobile: boolean }) {
     const raising: RaiseItem[] = data.raising.map((row) => ({ row, platform: platformOf(site, row.factory, titles), progress: progressOf(row) }));
     const launched: TokenItem[] = data.launched.map((row) => ({ row, platform: platformOf(site, row.factory, titles) }));
 
-    // Launchpads with something on the board: Flap first, then RaidPass, then by how much they have here.
+    // Launchpads with something on the board: Flap first, then CallZ, then by how much they have here.
     const counts = new Map<string, { platform: Platform; count: number }>();
     for (const { platform } of [...raising, ...launched]) {
       const entry = counts.get(platform.key) ?? { platform, count: 0 };
@@ -287,6 +303,16 @@ export function ScopePage({ site, mobile }: { site: Site; mobile: boolean }) {
             <button key={id} type="button" aria-pressed={rank === id} title={hint} onClick={() => setRank(id)}>{label}</button>
           ))}
         </div>
+        {quickBuy && (
+          <div className="quick-amounts">
+            <span className="stat-label">⚡ One-click buy</span>
+            <div className="seg seg-small" role="group" aria-label="One-click buy amount">
+              {QUICK_AMOUNTS.map((value) => (
+                <button key={value} type="button" aria-pressed={quickBuy.amount === value} onClick={() => quickBuy.setAmount(value)}>{value} BNB</button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="chips" role="group" aria-label="Filter by launchpad" data-testid="platform-chips">
           <button type="button" className="chip" aria-pressed={picked.size === 0} onClick={() => setPicked(new Set())}><span>All</span></button>
           {chips.map(({ platform, count }) => (
@@ -325,7 +351,7 @@ export function ScopePage({ site, mobile }: { site: Site; mobile: boolean }) {
           {COLUMNS.map(({ id, title, blurb }) => (
             <Column key={id} id={id} title={title} blurb={blurb} count={columns[id].length} hidden={mobile && column !== id}>
               {id === "launched"
-                ? columns.launched.map((item) => <TokenRow key={item.row.address} site={site} item={item} unit={unitOf(item.row.quoteToken)} fresh={fresh.has(item.row.address)} />)
+                ? columns.launched.map((item) => <TokenRow key={item.row.address} site={site} item={item} unit={unitOf(item.row.quoteToken)} fresh={fresh.has(item.row.address)} quickBuy={quickBuy} />)
                 : columns[id].map((item) => (
                     <RaiseRow key={item.row.address} site={site} item={item} unit={unitOf(item.row.quoteToken)} decimals={decimalsOf(item.row.quoteToken)} fresh={fresh.has(item.row.address)} />
                   ))}
@@ -333,6 +359,8 @@ export function ScopePage({ site, mobile }: { site: Site; mobile: boolean }) {
           ))}
         </div>
       )}
+
+      {quickBuy?.layer}
 
       <p className="scope-source dim">
         Progress is the quote balance each Launcher holds against its target raise, read on-chain every minute.

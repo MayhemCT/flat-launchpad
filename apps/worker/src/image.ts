@@ -65,3 +65,56 @@ export async function handleImage(request: Request, ctx: ExecutionContext): Prom
   ctx.waitUntil(cache.put(cacheKey, response.clone()))
   return response
 }
+
+const META_MAX_BYTES = 262_144
+/** The text fields a token's metadata may carry to the page. Anything else in the file is dropped. */
+const META_FIELDS = ['name', 'symbol', 'description', 'image', 'website', 'twitter', 'telegram', 'github', 'youtube'] as const
+
+/**
+ * `/api/meta/<ipfs path>`: the metadata a token's creator pinned at launch, as plain strings: its
+ * description and links. Read from IPFS once and cached for good, since IPFS content never changes.
+ * The page shows these as text and as plain https links; nothing in the file is ever run.
+ */
+export async function handleMeta(request: Request, ctx: ExecutionContext): Promise<Response> {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return failure(405, 'method not allowed')
+  const url = new URL(request.url)
+  let requested: string
+  try {
+    requested = decodeURIComponent(url.pathname.slice('/api/meta/'.length))
+  } catch {
+    return failure(400, 'malformed path')
+  }
+  const path = ipfsPath(requested)
+  if (!path) return failure(400, 'not an IPFS path')
+
+  const cache = caches.default
+  const cacheKey = new Request(`${url.origin}/api/meta/${path}`)
+  const cached = await cache.match(cacheKey)
+  if (cached) return cached
+
+  const upstream = await fetchIpfs(path, { accept: 'application/json', timeoutMs: 10_000 })
+  if (!upstream) return failure(404, 'metadata not available', 300)
+  const bytes = await readCapped(upstream, META_MAX_BYTES)
+  let source: unknown = null
+  try {
+    source = bytes ? JSON.parse(new TextDecoder().decode(bytes)) : null
+  } catch {
+    // Not JSON: some tokens point their metadata straight at a picture.
+  }
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return failure(404, 'no metadata', 3600)
+
+  const meta: Record<string, string> = {}
+  for (const field of META_FIELDS) {
+    const value = (source as Record<string, unknown>)[field]
+    if (typeof value === 'string' && value !== '') meta[field] = value.slice(0, field === 'description' ? 2000 : 300)
+  }
+  const response = new Response(JSON.stringify(meta), {
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'public, max-age=31536000, immutable',
+      'x-content-type-options': 'nosniff',
+    },
+  })
+  ctx.waitUntil(cache.put(cacheKey, response.clone()))
+  return response
+}

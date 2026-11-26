@@ -1,4 +1,4 @@
-// The RaidPass launchpad: our own section of the site. It talks to the chain and the visitor's wallet, so it
+// The CallZ launchpad: our own section of the site. It talks to the chain and the visitor's wallet, so it
 // (and the chain library it needs) loads only when one of its pages is opened.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatEther, type Address } from "viem";
@@ -33,7 +33,7 @@ interface LaunchRow {
 
 type Launches = { state: "loading" } | { state: "not-deployed" } | { state: "error" } | { state: "ready"; rows: LaunchRow[] };
 
-/** RaidPass mints, read straight from the factory's own list: current to the block, with no indexer in between. */
+/** CallZ mints, read straight from the factory's own list: current to the block, with no indexer in between. */
 async function loadLaunches(): Promise<Launches> {
   const code = await publicClient.getCode({ address: FACTORY });
   if (!code || code === "0x") return { state: "not-deployed" };
@@ -109,7 +109,7 @@ function DeployFactory({ onDeployed }: { onDeployed(): void }) {
   return (
     <div className="note" data-testid="not-deployed">
       <p>
-        The RaidPass Launcher Factory is not deployed on {NETWORK.label} yet. It will be at{" "}
+        The CallZ Launcher Factory is not deployed on {NETWORK.label} yet. It will be at{" "}
         <a href={`${NETWORK.explorer}/address/${FACTORY}`} target="_blank" rel="noreferrer"><code>{FACTORY}</code></a>,
         whoever deploys it.
       </p>
@@ -138,7 +138,7 @@ function MintList({ mobile }: { mobile: boolean }) {
     };
   }, [reload]);
 
-  if (launches.state === "loading") return <p className="note" role="status">Reading RaidPass mints from {NETWORK.label}…</p>;
+  if (launches.state === "loading") return <p className="note" role="status">Reading CallZ mints from {NETWORK.label}…</p>;
   if (launches.state === "error") return <p className="note" role="alert">The mints could not be read from {NETWORK.label}. Reload to try again.</p>;
   if (launches.state === "not-deployed") return <DeployFactory onDeployed={() => setReload((value) => value + 1)} />;
   if (launches.rows.length === 0) return <p className="note">No mints yet. <a href="#/create">Create the first one.</a></p>;
@@ -197,7 +197,7 @@ function RaidPassHome({ mobile }: { mobile: boolean }) {
         <p className="eyebrow">Our launchpad · {NETWORK.label}</p>
         <h1>The presale is an <span className="accent">NFT mint.</span></h1>
         <p className="lede">
-          Buyers mint RaidPass NFTs at a flat price. The mint that reaches the cap launches the token straight into a
+          Buyers mint CallZ pass NFTs at a flat price. The mint that reaches the cap launches the token straight into a
           liquidity pool on Flap Pool Launch, with the LP burned. Every NFT then claims an equal share of the supply
           and stays in your wallet as a pass.
         </p>
@@ -212,7 +212,7 @@ function RaidPassHome({ mobile }: { mobile: boolean }) {
         <li><strong>Claim, or refund.</strong> Each NFT claims once. If the cap is missed, burn the NFT for its price.</li>
       </ol>
       <section>
-        <h2>RaidPass mints</h2>
+        <h2>CallZ mints</h2>
         <MintList mobile={mobile} />
       </section>
     </>
@@ -337,7 +337,7 @@ function LauncherPage({ address, locale }: { address: Address; locale: Locale })
   if (!valid) {
     return (
       <p className="note" role="alert" data-testid="unknown-launcher">
-        <code>{short(address)}</code> is not a Launcher created by the RaidPass factory on {NETWORK.label}.
+        <code>{short(address)}</code> is not a Launcher created by the CallZ factory on {NETWORK.label}.
       </p>
     );
   }

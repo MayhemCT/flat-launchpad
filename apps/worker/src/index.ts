@@ -1,6 +1,6 @@
 import { CHAINS, type ChainKey } from '@flat/protocol'
 import { handleApi } from './api.js'
-import { handleImage } from './image.js'
+import { handleImage, handleMeta } from './image.js'
 import { Budget, syncChain } from './sync.js'
 
 export interface Env {
@@ -60,6 +60,7 @@ export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname.startsWith('/api/image/')) return handleImage(request, ctx)
+    if (url.pathname.startsWith('/api/meta/')) return handleMeta(request, ctx)
     if (url.pathname.startsWith('/api/')) return handleApi(request, env.DB)
     return env.ASSETS.fetch(request)
   },

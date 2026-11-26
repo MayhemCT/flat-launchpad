@@ -30,7 +30,7 @@ Nobody can withdraw the raise. It leaves the mint only through the launch or thr
 Both are the same mint with the same rules. `RaidPassLauncher` is the design the Flap track asks for. `RaidPassCurve` exists because Pool Launch is permissioned on BNB Chain: it is the way to run the mint live on mainnet without waiting for an audit.
 
 ```
-RaidPassLauncherFactory  0xFb25C1B10ADE658D9c547D1d9A2eDcd6F00147E5   (CREATE2: same on BNB Chain and Testnet)
+RaidPassLauncherFactory  0x1F28ba409797a1309e52F90B331934092D1b4aBD   (CREATE2: same on BNB Chain and Testnet)
 RaidPassCurveFactory     0xAF9cfB507271D8bFD3A8284555C7C54026Fe3FB4   (CREATE2: BNB Chain)
 ```
 
@@ -125,7 +125,7 @@ cd contracts
 export BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com
 forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy
 
-export FACTORY=0xFb25C1B10ADE658D9c547D1d9A2eDcd6F00147E5
+export FACTORY=0x1F28ba409797a1309e52F90B331934092D1b4aBD
 export TOKEN_NAME="Raid Example" TOKEN_SYMBOL=RAIDX
 export NFT_PRICE=250000000000000000 CAP=2500000000000000000 SALE_DURATION=86400   # 0.25 tBNB x 10 NFTs
 forge script script/CreateLauncher.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy

@@ -1,13 +1,15 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { DeployersPage, FactoriesPage, HomePage, LaunchesPage, TokensPage } from "./aggregator";
 import { short } from "./format";
-import { RAIDPASS, SITES, type ChainKey } from "./site";
+import { RAIDPASS, SITES, type ChainKey, type Site } from "./site";
 import { connect, switchChain, useWallet } from "./wallet";
 import { ScopePage } from "./scope";
 import type { Locale, RaidPassRoute } from "./raidpass";
 
 // The launchpad needs a chain library and the launch UI package: both load only when one of its pages opens.
 const RaidPassSection = lazy(() => import("./raidpass"));
+// A token's page trades through PancakeSwap, which needs the chain library too.
+const TokenPage = lazy(() => import("./token"));
 
 const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
   { id: "en", label: "EN" },
@@ -16,7 +18,7 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
 ];
 
 type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
-type Route = AggregatorRoute | RaidPassRoute | { name: "missing" };
+type Route = AggregatorRoute | RaidPassRoute | { name: "token"; address: string } | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
@@ -24,7 +26,9 @@ function parseRoute(hash: string): Route {
   if (path === "/scope" || path === "/launches" || path === "/tokens" || path === "/factories" || path === "/deployers") {
     return { name: path.slice(1) as AggregatorRoute["name"] };
   }
-  if (path === "/raidpass") return { name: "raidpass" };
+  if (path === "/launch" || path === "/raidpass") return { name: "raidpass" };
+  const token = /^\/token\/(0x[0-9a-fA-F]{40})$/.exec(path);
+  if (token?.[1]) return { name: "token", address: token[1].toLowerCase() };
   if (path === "/create") return { name: "create" };
   const launcher = /^\/launcher\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (launcher?.[1]) return { name: "launcher", address: launcher[1].toLowerCase() };
@@ -80,14 +84,15 @@ function Backdrop() {
   return <canvas ref={canvas} className="backdrop" aria-hidden="true" data-testid="backdrop" />;
 }
 
-function WalletButton() {
+/** The wallet, and whether it is on the network this page works on. */
+function WalletButton({ target }: { target: Site }) {
   const wallet = useWallet();
   if (!wallet.available) return <span className="pill pill-muted" data-testid="wallet">No wallet found</span>;
   if (!wallet.account) return <button type="button" className="button" data-testid="wallet" onClick={connect}>Connect wallet</button>;
-  if (wallet.chainId !== RAIDPASS.id) {
+  if (wallet.chainId !== target.id) {
     return (
-      <button type="button" className="button button-warn" data-testid="wallet" onClick={() => void switchChain().catch(() => undefined)}>
-        Switch to {RAIDPASS.short}
+      <button type="button" className="button button-warn" data-testid="wallet" onClick={() => void switchChain(target).catch(() => undefined)}>
+        Switch to {target.short}
       </button>
     );
   }
@@ -122,12 +127,15 @@ const NAV: ReadonlyArray<{ href: string; label: string; short?: string; routes: 
   { href: "#/tokens", label: "Tokens", routes: ["tokens"] },
   { href: "#/factories", label: "Factories", routes: ["factories"] },
   { href: "#/deployers", label: "Deployers", routes: ["deployers"] },
-  { href: "#/raidpass", label: "RaidPass", routes: ["raidpass", "create", "launcher"] },
+  { href: "#/launch", label: "Launch", routes: ["raidpass", "create", "launcher"] },
 ];
+
+/** What a page works with: the index for either network, the launchpad's own network, or one mainnet token. */
+type Mode = "board" | "launchpad" | "token";
 
 interface ShellProps {
   route: Route;
-  launchpad: boolean;
+  mode: Mode;
   chain: ChainKey;
   onChain(next: ChainKey): void;
   locale: Locale;
@@ -147,9 +155,10 @@ function NavLinks({ route, compact = false }: { route: Route; compact?: boolean 
   );
 }
 
-/** The aggregator picks its chain; the launchpad shows the one network it runs on, and the language of its UI. */
-function Controls({ launchpad, chain, onChain, locale, onLocale }: Omit<ShellProps, "route" | "children">) {
-  return launchpad ? (
+/** The board picks its chain; the launchpad shows the one network it runs on and its language; a token page is on mainnet. */
+function Controls({ mode, chain, onChain, locale, onLocale }: Omit<ShellProps, "route" | "children">) {
+  if (mode === "token") return <span className="pill pill-muted">{SITES.bsc.label}</span>;
+  return mode === "launchpad" ? (
     <>
       <span className="pill pill-muted">{RAIDPASS.short}</span>
       <LocaleSwitch locale={locale} onChange={onLocale} />
@@ -159,15 +168,18 @@ function Controls({ launchpad, chain, onChain, locale, onLocale }: Omit<ShellPro
   );
 }
 
+/** The network a page's wallet button checks for. */
+const walletTarget = (mode: Mode, chain: ChainKey): Site => (mode === "launchpad" ? RAIDPASS : mode === "token" ? SITES.bsc : SITES[chain]);
+
 function DesktopShell({ route, children, ...controls }: ShellProps) {
   return (
     <div className="shell shell-desktop" data-testid="desktop-shell">
       <header className="topbar">
-        <a className="brand" href="#/"><img src="/raidpass-logo.svg" alt="" width="28" height="28" />RaidPass</a>
+        <a className="brand" href="#/"><img src="/callz-logo.svg" alt="" width="30" height="30" />CallZ</a>
         <nav className="nav" aria-label="Main" data-testid="desktop-nav"><NavLinks route={route} /></nav>
         <div className="topbar-end">
           <Controls {...controls} />
-          <WalletButton />
+          <WalletButton target={walletTarget(controls.mode, controls.chain)} />
         </div>
       </header>
       <main className="content">{children}</main>
@@ -179,10 +191,10 @@ function MobileShell({ route, children, ...controls }: ShellProps) {
   return (
     <div className="shell shell-mobile" data-testid="mobile-shell">
       <header className="topbar">
-        <a className="brand" href="#/"><img src="/raidpass-logo.svg" alt="" width="26" height="26" />RaidPass</a>
+        <a className="brand" href="#/"><img src="/callz-logo.svg" alt="" width="28" height="28" />CallZ</a>
         <div className="topbar-end">
           <Controls {...controls} />
-          {controls.launchpad && <WalletButton />}
+          {controls.mode !== "board" && <WalletButton target={walletTarget(controls.mode, controls.chain)} />}
         </div>
       </header>
       <main className="content">{children}</main>
@@ -205,7 +217,7 @@ export function App() {
   return (
     <>
       <Backdrop />
-      <Shell route={route} launchpad={isLaunchpad(route)} chain={chain} onChain={setChain} locale={locale} onLocale={setLocale}>
+      <Shell route={route} mode={isLaunchpad(route) ? "launchpad" : route.name === "token" ? "token" : "board"} chain={chain} onChain={setChain} locale={locale} onLocale={setLocale}>
         {route.name === "home" && <HomePage site={site} mobile={mobile} />}
         {route.name === "scope" && <ScopePage site={site} mobile={mobile} />}
         {route.name === "launches" && <LaunchesPage site={site} mobile={mobile} />}
@@ -215,6 +227,11 @@ export function App() {
         {isLaunchpad(route) && (
           <Suspense fallback={<p className="note" role="status">Loading the launchpad…</p>}>
             <RaidPassSection route={route} locale={locale} mobile={mobile} />
+          </Suspense>
+        )}
+        {route.name === "token" && (
+          <Suspense fallback={<p className="note" role="status">Loading the token…</p>}>
+            <TokenPage key={route.address} address={route.address} mobile={mobile} />
           </Suspense>
         )}
         {route.name === "missing" && <p className="note" role="alert">That page does not exist. <a href="#/">Back to the board.</a></p>}

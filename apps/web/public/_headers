@@ -1,7 +1,8 @@
-# Security headers for every response. The page runs only its own scripts, talks only to the BNB Chain
-# endpoint it reads from, and cannot be embedded in another site (so nobody can frame it to trick a wallet click).
+# Security headers for every response. The page runs only its own scripts. It talks only to its own API, the
+# two BNB Chain endpoints it reads from and DexScreener's market data; the only thing it frames is DexScreener's
+# chart. It cannot be embedded in another site, so nobody can frame it to trick a wallet click.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://bsc-testnet-rpc.publicnode.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://bsc-rpc.publicnode.com https://bsc-testnet-rpc.publicnode.com https://api.dexscreener.com; frame-src https://dexscreener.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin

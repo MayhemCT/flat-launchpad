@@ -1,5 +1,5 @@
 // Launchpads. On Pool Launch every Launcher Factory is somebody's launchpad: this gives each one a name and a
-// colour that stay the same on every page. Flap itself, and RaidPass, have fixed ones.
+// colour that stay the same on every page. Flap itself, and CallZ's own launchpad, have fixed ones.
 import { short } from "./format";
 import { FACTORY, RAIDPASS_CHAIN, type Site } from "./site";
 
@@ -25,7 +25,7 @@ function shorten(title: string): string {
   return characters.length > 26 ? `${characters.slice(0, 25).join("")}…` : head;
 }
 
-/** One hue per factory address, kept clear of RaidPass's gold and Flap's lime. */
+/** One hue per factory address, kept clear of CallZ's gold and Flap's lime. */
 function colourOf(address: string): string {
   let hash = 0;
   for (let index = 0; index < address.length; index++) hash = (hash * 31 + address.charCodeAt(index)) >>> 0;
@@ -39,7 +39,7 @@ export const FLAP: Platform = { key: "flap", name: "Flap", colour: FLAP_COLOUR, 
 export function platformOf(site: Site, factory: string | null, titles: ReadonlyMap<string, string | null>): Platform {
   if (!factory) return FLAP;
   if (site.key === RAIDPASS_CHAIN && factory === FACTORY) {
-    return { key: factory, name: "RaidPass", colour: RAIDPASS_COLOUR, factory, kind: "raidpass", named: true };
+    return { key: factory, name: "CallZ", colour: RAIDPASS_COLOUR, factory, kind: "raidpass", named: true };
   }
   const title = titles.get(factory);
   return {

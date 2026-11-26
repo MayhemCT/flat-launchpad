@@ -84,7 +84,7 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
     /// @inheritdoc LauncherFactoryBase
     function launcherDataSchema() external pure override returns (LauncherDataSchema memory schema) {
         schema.description =
-            "RaidPass NFT mint: NFTs are sold at a flat BNB price until the raise reaches its cap. The raise and the pool share of the supply then seed the pool, and every NFT claims an equal share of the rest. If the cap is not reached by the deadline, NFTs are burned for a refund.";
+            "CallZ NFT mint: NFTs are sold at a flat BNB price until the raise reaches its cap. The raise and the pool share of the supply then seed the pool, and every NFT claims an equal share of the rest. If the cap is not reached by the deadline, NFTs are burned for a refund.";
         schema.isArray = false;
 
         FieldDescriptor[] memory fields = new FieldDescriptor[](10);

@@ -33,6 +33,15 @@ export function percent(ratio: bigint | undefined): string {
   return `${bps / 100}%`;
 }
 
+/** A dollar amount for display: $1.2M, $8,410, $0.004215. */
+export function usd(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  if (value === 0) return "$0";
+  if (value >= 10_000) return `$${new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(value)}`;
+  if (value >= 1) return `$${value.toLocaleString("en", { maximumFractionDigits: 2 })}`;
+  return `$${value.toPrecision(4).replace(/\.?0+$/, "")}`;
+}
+
 export function ago(timestamp: number | null | undefined, now = Date.now()): string {
   if (!timestamp) return "—";
   const seconds = Math.max(0, Math.floor(now / 1000) - timestamp);

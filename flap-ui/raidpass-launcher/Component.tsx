@@ -53,7 +53,7 @@ type DetailProps = {
 
 // The RaidPassLauncherFactory this UI was written for. It is deployed with CREATE2, so the address is the
 // same on BNB Chain and BNB Chain Testnet.
-const raidPassFactory = "0xfb25c1b10ade658d9c547d1d9a2edcd6f00147e5";
+const raidPassFactory = "0x1f28ba409797a1309e52f90b331934092d1b4abd";
 // abi.encode(RaidPassConfig): one tuple, in the factory's field order.
 const configParameters: readonly AbiParameter[] = [
   { name: "config", type: "tuple", components: [
@@ -183,7 +183,7 @@ function Header({ title, intro, network }: { title: string; intro: string; netwo
       justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap",
     }}>
       <div style={{ flex: "1 1 240px", minWidth: 0 }}>
-        <p style={{ ...caption, color: gold }}>RaidPass</p>
+        <p style={{ ...caption, color: gold }}>CallZ</p>
         <h2 style={{ margin: "4px 0 0", fontSize: "clamp(22px, 5vw, 32px)", lineHeight: 1.15, letterSpacing: "-0.02em" }}>{title}</h2>
         <p style={{ ...small, marginBlockStart: 8, maxWidth: 560 }}>{intro}</p>
       </div>

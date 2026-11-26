@@ -161,7 +161,7 @@ abstract contract RaidPassFork is ForkBase {
         assertEq(launcher.cap(), PRICE * NFTS);
         assertEq(launcher.targetRaise(), PRICE * NFTS);
         assertEq(launcher.maxNFTs(), NFTS, "cap / nftPrice NFTs are for sale");
-        assertEq(launcher.name(), "Raid Example RaidPass");
+        assertEq(launcher.name(), "Raid Example CallZ Pass");
         assertEq(launcher.symbol(), "RAIDX-PASS");
         _assertLauncherDescription(launcherAddr, c.name, c.symbol, PRICE * NFTS, creation);
 

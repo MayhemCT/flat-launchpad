@@ -15,12 +15,12 @@ import {LaunchExtensionHelper} from "src/flap/LaunchExtensionHelper.sol";
 import {LauncherDescription} from "src/flap/LauncherHelper.sol";
 
 // Display copy for `description()`. Constants only: no quotes or backslashes, as the description spec requires.
-string constant RAIDPASS_TITLE_ZH = unicode"RaidPass NFT 铸造发射";
-string constant RAIDPASS_TITLE_EN = "RaidPass NFT mint";
+string constant RAIDPASS_TITLE_ZH = unicode"CallZ NFT 铸造发射";
+string constant RAIDPASS_TITLE_EN = "CallZ NFT mint";
 string constant RAIDPASS_SUMMARY_ZH =
-    unicode"以固定价格用 BNB 铸造 RaidPass NFT。募集达到上限时，全部 BNB 与入池份额的代币一起注入流动性池，LP 被销毁。其余代币由所有 NFT 平均领取，NFT 仍归持有人所有。若在截止时间前未达到上限，销毁 NFT 即可取回铸造价。";
+    unicode"以固定价格用 BNB 铸造 CallZ NFT。募集达到上限时，全部 BNB 与入池份额的代币一起注入流动性池，LP 被销毁。其余代币由所有 NFT 平均领取，NFT 仍归持有人所有。若在截止时间前未达到上限，销毁 NFT 即可取回铸造价。";
 string constant RAIDPASS_SUMMARY_EN =
-    "Mint a RaidPass NFT with BNB at a flat price. When the raise reaches its cap, all of it and the pool share of the supply seed the pool and the LP is burned. Every NFT then claims an equal share of the rest of the supply and stays with its holder. If the cap is not reached by the deadline, burn an NFT to get its price back.";
+    "Mint a CallZ NFT with BNB at a flat price. When the raise reaches its cap, all of it and the pool share of the supply seed the pool and the LP is burned. Every NFT then claims an equal share of the rest of the supply and stays with its holder. If the cap is not reached by the deadline, burn an NFT to get its price back.";
 
 /// @notice Payload the creator passes to `Portal.newLauncher(factory, abi.encode(RaidPassConfig))`.
 /// @param name          Token name. The NFT collection is named after it.
@@ -75,7 +75,7 @@ struct RaidPassInfo {
 /// @title RaidPassLauncher
 /// @notice A Pool Launch Launcher whose raise is an NFT mint.
 ///
-///         Buyers mint RaidPass NFTs with BNB at a flat price. The mint that brings the raise to its cap launches
+///         Buyers mint CallZ NFTs with BNB at a flat price. The mint that brings the raise to its cap launches
 ///         the token in the same transaction: all the BNB raised is the pool's quote side, the pool share of the
 ///         supply is its token side, the LP is burned, and the rest of the supply comes back here. Every NFT
 ///         then claims an equal share of that rest, once, and stays with its holder as a membership pass.
@@ -568,9 +568,9 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     // ERC721 metadata
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// @notice Collection name: the token name followed by "RaidPass".
+    /// @notice Collection name: the token name followed by "CallZ Pass".
     function name() public view override returns (string memory) {
-        return string.concat(tokenName, " RaidPass");
+        return string.concat(tokenName, " CallZ Pass");
     }
 
     function symbol() public view override returns (string memory) {
@@ -592,7 +592,7 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
                     '<path d="M200 150 250 200 200 250 150 200Z" fill="#f0b90b"/>',
                     '<text x="200" y="368" fill="#eaecef" font-family="monospace" font-size="20" text-anchor="middle">',
                     LibString.escapeHTML(tokenSymbol),
-                    " RaidPass #",
+                    " CallZ Pass #",
                     id,
                     "</text></svg>"
                 )
@@ -607,7 +607,7 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
                         LibString.escapeJSON(name(), false),
                         " #",
                         id,
-                        '","description":"RaidPass for ',
+                        '","description":"CallZ pass for ',
                         LibString.escapeJSON(tokenName, false),
                         '. Claims an equal share of the supply that is not in the pool, once, and stays with its holder.",',
                         '"attributes":[{"trait_type":"Status","value":"',

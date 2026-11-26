@@ -95,7 +95,7 @@ struct RaidPassCurveInfo {
 /// @title RaidPassCurve
 /// @notice An NFT mint that is the entry to a Flap bonding curve launch.
 ///
-///         Buyers mint RaidPass NFTs with BNB at a flat price. The mint that brings the raise to its cap creates
+///         Buyers mint CallZ NFTs with BNB at a flat price. The mint that brings the raise to its cap creates
 ///         the token on Flap's bonding curve and spends the whole raise on the curve in that same transaction, as
 ///         the launch's first buy. Every NFT then claims an equal share of the tokens bought, once, and stays
 ///         with its holder as a membership pass.
@@ -509,7 +509,7 @@ contract RaidPassCurve is Initializable, ERC721 {
     // ─────────────────────────────────────────────────────────────────────────
 
     function name() public view override returns (string memory) {
-        return string.concat(tokenName, " RaidPass");
+        return string.concat(tokenName, " CallZ Pass");
     }
 
     function symbol() public view override returns (string memory) {
@@ -531,7 +531,7 @@ contract RaidPassCurve is Initializable, ERC721 {
                     '<path d="M200 150 250 200 200 250 150 200Z" fill="#f0b90b"/>',
                     '<text x="200" y="368" fill="#eaecef" font-family="monospace" font-size="20" text-anchor="middle">',
                     LibString.escapeHTML(tokenSymbol),
-                    " RaidPass #",
+                    " CallZ Pass #",
                     id,
                     "</text></svg>"
                 )
@@ -546,7 +546,7 @@ contract RaidPassCurve is Initializable, ERC721 {
                         LibString.escapeJSON(name(), false),
                         " #",
                         id,
-                        '","description":"RaidPass for ',
+                        '","description":"CallZ pass for ',
                         LibString.escapeJSON(tokenName, false),
                         '. Claims an equal share of the tokens bought on the bonding curve at launch and stays with its holder.",',
                         '"attributes":[{"trait_type":"Status","value":"',

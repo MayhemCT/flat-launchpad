@@ -33,6 +33,8 @@ export interface TokenRow {
   symbol: string | null;
   /** IPFS path of the token's picture, when its metadata names one. */
   image: string | null;
+  /** IPFS path of the metadata its creator pinned at launch: description and links. */
+  meta: string | null;
   quoteToken: string | null;
   totalSupply: string | null;
   initialPriceWad: string | null;
@@ -42,6 +44,8 @@ export interface TokenRow {
   graduated: boolean;
   launcher: string | null;
   launcherFactory: string | null;
+  /** The title the Launcher that launched it carries: what its launchpad calls its launches. */
+  launcherTitle: string | null;
 }
 
 export interface LauncherFactoryRow {

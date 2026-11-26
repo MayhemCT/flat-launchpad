@@ -30,7 +30,7 @@ function Status<T>({ result, children }: { result: Loaded<T>; children(data: T):
 
 const isRaidPass = (site: Site, factory: string | null) => site.key === RAIDPASS_CHAIN && factory === FACTORY;
 
-/** Where a Launcher opens: our own mint page for a RaidPass mint, its page on Flap for any other factory. */
+/** Where a Launcher opens: our own mint page for a CallZ mint, its page on Flap for any other factory. */
 function launcherLink(site: Site, row: LauncherRow) {
   return isRaidPass(site, row.factory)
     ? { href: `#/launcher/${row.address}`, external: false }
@@ -76,7 +76,7 @@ function LaunchCard({ site, row }: { site: Site; row: LauncherRow }) {
         </span>
       </span>
       <span className="launch-foot">
-        {isRaidPass(site, row.factory) ? <span className="tag tag-gold">RaidPass</span> : <span className="dim">Factory {short(row.factory)}</span>}
+        {isRaidPass(site, row.factory) ? <span className="tag tag-gold">CallZ</span> : <span className="dim">Factory {short(row.factory)}</span>}
         <span className="dim">{link.external ? "Open on Flap ↗" : "Open mint →"}</span>
       </span>
     </a>
@@ -127,14 +127,14 @@ export function HomePage({ site, mobile }: PageProps) {
     <>
       <section className="hero">
         <p className="eyebrow">Built on Flap Pool Launch · BNB Chain</p>
-        <h1>Every Pool Launch, <span className="accent">live.</span></h1>
+        <h1>Mint the pass. <span className="accent">Make the call.</span></h1>
         <p className="lede">
-          One board for every launch on Flap's Pool Launch protocol, across every Launcher Factory: who is raising,
-          what has launched, and who is deploying. Plus RaidPass, our own launchpad, where the presale is an NFT mint.
+          Mint an NFT pass to help fund a token's first liquidity pool. After launch, use the same pass to join the
+          holder room and earn rewards for verified callouts.
         </p>
         <div className="actions">
           <a className="button" href="#/scope">Open Memescope</a>
-          <a className="button button-quiet" href="#/raidpass">RaidPass launchpad</a>
+          <a className="button button-quiet" href="#/launch">Launch a pass mint</a>
           <a className="button button-quiet" href="https://flap.sh" target="_blank" rel="noreferrer">Flap ↗</a>
         </div>
       </section>
@@ -155,7 +155,7 @@ const FILTERS: ReadonlyArray<{ id: LaunchFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "raising", label: "Raising" },
   { id: "launched", label: "Launched" },
-  { id: "raidpass", label: "RaidPass" },
+  { id: "raidpass", label: "CallZ" },
 ];
 
 export function LaunchesPage({ site }: PageProps) {
@@ -189,6 +189,11 @@ export function LaunchesPage({ site }: PageProps) {
   );
 }
 
+/** A launched token's page: this site's own on mainnet (chart, trading, chat), Flap's on testnet. */
+function tokenLink(site: Site, token: string) {
+  return site.key === "bsc" ? { href: `#/token/${token}` } : { href: flapTokenUrl(site, token), target: "_blank", rel: "noreferrer" };
+}
+
 function ExternalAddress({ site, address }: { site: Site; address: string }) {
   return <a href={explorerAddressUrl(site, address)} target="_blank" rel="noreferrer"><code>{short(address)}</code></a>;
 }
@@ -199,7 +204,7 @@ export function TokensPage({ site, mobile }: PageProps) {
     <>
       <div className="page-head">
         <h1 className="page-title">Tokens</h1>
-        <p className="lede">Every token launched through Pool Launch on {site.label}. A token graduates when its pool clears Flap's floor at launch.</p>
+        <p className="lede">Every token launched through Pool Launch on {site.label}. A token graduates when its pool clears Flap's floor at launch.{site.key === "bsc" ? " Open one for its chart, trading and chat." : ""}</p>
       </div>
       <Status result={tokens}>
         {(data) => {
@@ -209,7 +214,7 @@ export function TokensPage({ site, mobile }: PageProps) {
               <ul className="cards" data-testid="token-cards">
                 {data.items.map((token) => (
                   <li key={token.address}>
-                    <a className="card" href={flapTokenUrl(site, token.address)} target="_blank" rel="noreferrer">
+                    <a className="card" {...tokenLink(site, token.address)}>
                       <span className="card-head">
                         <span className="token-cell">
                           <TokenImage key={token.image ?? "none"} image={token.image} label={token.symbol || token.name || "?"} colour="var(--line)" size={32} />
@@ -235,7 +240,7 @@ export function TokensPage({ site, mobile }: PageProps) {
                   {data.items.map((token) => (
                     <tr key={token.address}>
                       <td>
-                        <a className="token-cell" href={flapTokenUrl(site, token.address)} target="_blank" rel="noreferrer">
+                        <a className="token-cell" {...tokenLink(site, token.address)}>
                           <TokenImage key={token.image ?? "none"} image={token.image} label={token.symbol || token.name || "?"} colour="var(--line)" size={32} />
                           <strong>{token.name ?? short(token.address)}</strong> <span className="dim">{token.symbol}</span>
                         </a>
@@ -243,7 +248,7 @@ export function TokensPage({ site, mobile }: PageProps) {
                       <td className="num">{compact(token.totalSupply)}</td>
                       <td className="num">{price(token.initialPriceWad)}</td>
                       <td><span className={`tag tag-${token.graduated ? "good" : "muted"}`}>{token.graduated ? "Graduated" : "New"}</span></td>
-                      <td>{token.launcherFactory ? (isRaidPass(site, token.launcherFactory) ? "RaidPass" : <>Launcher <code>{short(token.launcherFactory)}</code></>) : "Direct"}</td>
+                      <td>{token.launcherFactory ? (isRaidPass(site, token.launcherFactory) ? "CallZ" : <>Launcher <code>{short(token.launcherFactory)}</code></>) : "Direct"}</td>
                       <td>{token.vault ? "Yes" : "—"}</td>
                       <td className="num">{ago(token.timestamp)}</td>
                       <td><ExternalAddress site={site} address={token.creator} /></td>

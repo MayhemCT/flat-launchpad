@@ -251,7 +251,10 @@ async function tokens(db: D1Database, chain: ChainKey, url: URL): Promise<Respon
   const { limit, offset } = page(url)
   const creator = addressParam(url, 'creator')
   const vaultFactory = addressParam(url, 'vaultFactory')
-  if (creator === null || vaultFactory === null) return badRequest('creator and vaultFactory must be 0x addresses')
+  const address = addressParam(url, 'address')
+  if (creator === null || vaultFactory === null || address === null) {
+    return badRequest('creator, vaultFactory and address must be 0x addresses')
+  }
 
   const where = ['t.chain = ?']
   const params: Array<string | number> = [chain]
@@ -263,11 +266,15 @@ async function tokens(db: D1Database, chain: ChainKey, url: URL): Promise<Respon
     where.push('t.vault_factory = ?')
     params.push(vaultFactory)
   }
+  if (address) {
+    where.push('t.address = ?')
+    params.push(address)
+  }
   const rows = await db
     .prepare(
       `SELECT t.address, t.kind, t.creator, t.name, t.symbol, t.meta, t.image, t.pool, t.quote_token, t.total_supply,
   t.initial_price_wad, t.block_number, t.tx_hash, t.timestamp, t.vault, t.vault_factory, t.graduated,
-  t.dist_target, t.dist_amount, t.launcher, l.factory AS launcher_factory
+  t.dist_target, t.dist_amount, t.launcher, l.factory AS launcher_factory, l.description AS launcher_description
 FROM tokens t
 LEFT JOIN launchers l ON l.chain = t.chain AND l.address = t.launcher
 WHERE ${where.join(' AND ')}
@@ -300,8 +307,16 @@ LIMIT ? OFFSET ?`,
       distribution: r.dist_target === null ? null : { target: r.dist_target, amount: r.dist_amount },
       launcher: r.launcher,
       launcherFactory: r.launcher_factory,
+      launcherTitle: launcherTitle(r.launcher_description),
     })),
   })
+}
+
+/** The English title a Launcher's own description carries: what its launchpad calls its launches. */
+function launcherTitle(description: string | number | null | undefined): string | null {
+  if (typeof description !== 'string') return null
+  const parsed = parseLauncherDescription(description)
+  return parsed.kind === 'v1' ? localized(parsed.description.titles, 'en') ?? null : null
 }
 
 const SCOPE_RAISING = 300

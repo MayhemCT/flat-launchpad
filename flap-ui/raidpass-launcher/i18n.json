@@ -1,8 +1,8 @@
 {
   "en": {
     "createTitle": "Create an NFT mint launch",
-    "createIntro": "Sell RaidPass NFTs at a flat price until the raise reaches its cap. The raise and the pool share of the supply then seed the pool, the LP is burned, and every NFT claims an equal share of the rest.",
-    "detailTitle": "RaidPass mint",
+    "createIntro": "Sell CallZ NFTs at a flat price until the raise reaches its cap. The raise and the pool share of the supply then seed the pool, the LP is burned, and every NFT claims an equal share of the rest.",
+    "detailTitle": "CallZ mint",
     "detailIntro": "Mint an NFT with BNB. The mint that reaches the cap launches the token in the same transaction.",
     "testnet": "BNB Chain Testnet",
     "mainnet": "BNB Chain",
@@ -97,8 +97,8 @@
   },
   "zh": {
     "createTitle": "创建 NFT 铸造发射",
-    "createIntro": "以固定价格出售 RaidPass NFT，直到募集达到上限。届时募集的资金与入池份额的代币注入流动性池，LP 被销毁，其余代币由所有 NFT 平均领取。",
-    "detailTitle": "RaidPass 铸造",
+    "createIntro": "以固定价格出售 CallZ NFT，直到募集达到上限。届时募集的资金与入池份额的代币注入流动性池，LP 被销毁，其余代币由所有 NFT 平均领取。",
+    "detailTitle": "CallZ 铸造",
     "detailIntro": "使用 BNB 铸造 NFT。使募集达到上限的那笔铸造交易会同时发射代币。",
     "testnet": "BNB Chain 测试网",
     "mainnet": "BNB Chain",
@@ -193,8 +193,8 @@
   },
   "ko": {
     "createTitle": "NFT 민팅 런치 만들기",
-    "createIntro": "모금액이 상한에 도달할 때까지 RaidPass NFT를 고정 가격으로 판매합니다. 상한에 도달하면 모금액과 풀 몫의 공급량이 풀에 들어가고 LP는 소각되며, 나머지는 모든 NFT가 똑같이 나눠 받습니다.",
-    "detailTitle": "RaidPass 민팅",
+    "createIntro": "모금액이 상한에 도달할 때까지 CallZ NFT를 고정 가격으로 판매합니다. 상한에 도달하면 모금액과 풀 몫의 공급량이 풀에 들어가고 LP는 소각되며, 나머지는 모든 NFT가 똑같이 나눠 받습니다.",
+    "detailTitle": "CallZ 민팅",
     "detailIntro": "BNB로 NFT를 민팅하세요. 상한에 도달하는 민팅 거래에서 토큰이 함께 출시됩니다.",
     "testnet": "BNB Chain 테스트넷",
     "mainnet": "BNB Chain",

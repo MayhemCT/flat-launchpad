@@ -89,7 +89,7 @@ contract RaidPassCurveBSCForkTest is Test {
         assertEq(mint.cap(), PRICE * NFTS);
         assertEq(mint.targetRaise(), PRICE * NFTS);
         assertEq(mint.maxNFTs(), NFTS, "cap / nftPrice NFTs are for sale");
-        assertEq(mint.name(), "Raid Example RaidPass");
+        assertEq(mint.name(), "Raid Example CallZ Pass");
         assertEq(factory.mintCount(), 1);
 
         // Alice mints 4 NFTs and sells one to Bob before the launch.
