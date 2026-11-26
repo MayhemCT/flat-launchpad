@@ -121,6 +121,11 @@ contract RaidPassCurve is Initializable, ERC721 {
     uint16 public constant MAX_TAX_BPS = 1000;
     uint256 public constant MIN_SALE_DURATION = 10 minutes;
     uint256 public constant MAX_SALE_DURATION = 30 days;
+    /// @notice Longest token name, symbol and metadata CID, in bytes. The Portal reads at most 4,096 bytes of a
+    ///         Launcher's `description()` and stores an empty one past that, so the user-supplied part is capped.
+    uint256 public constant MAX_NAME_BYTES = 64;
+    uint256 public constant MAX_SYMBOL_BYTES = 32;
+    uint256 public constant MAX_META_BYTES = 128;
     /// @dev Flap's TOKEN_TAXED_V3.
     uint8 internal constant TOKEN_VERSION = 6;
 
@@ -198,7 +203,9 @@ contract RaidPassCurve is Initializable, ERC721 {
     ///      launch a token at the reserved address.
     function initialize(address portal_, address creator_, RaidPassCurveConfig calldata c) external payable initializer {
         if (portal_ == address(0) || creator_ == address(0) || c.salt == bytes32(0)) revert InvalidConfig();
-        if (bytes(c.name).length == 0 || bytes(c.symbol).length == 0) revert InvalidConfig();
+        if (bytes(c.name).length == 0 || bytes(c.name).length > MAX_NAME_BYTES) revert InvalidConfig();
+        if (bytes(c.symbol).length == 0 || bytes(c.symbol).length > MAX_SYMBOL_BYTES) revert InvalidConfig();
+        if (bytes(c.meta).length > MAX_META_BYTES) revert InvalidConfig();
         // The cap is a whole number of NFTs, so the raise can land on it exactly.
         if (c.nftPrice == 0 || c.cap == 0 || c.cap > MAX_CAP || c.cap % c.nftPrice != 0) revert InvalidConfig();
         uint256 count = c.cap / c.nftPrice;
@@ -228,6 +235,11 @@ contract RaidPassCurve is Initializable, ERC721 {
     /// @notice The raise target: the same value as `cap`.
     function targetRaise() external view returns (uint256) {
         return cap;
+    }
+
+    /// @notice Implementation version.
+    function version() external pure returns (string memory) {
+        return "1.0.0";
     }
 
     /// @notice The mint's whole state, for a mint page.

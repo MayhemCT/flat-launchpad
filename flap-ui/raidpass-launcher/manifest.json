@@ -4,7 +4,7 @@
   "artifactId": "raidpass-launcher",
   "name": "RaidPass NFT Mint Launcher",
   "chainId": 97,
-  "factoryAddress": "0x32dc29aaea897380ca4b802ab41ad181f8845976",
+  "factoryAddress": "0xfb25c1b10ade658d9c547d1d9a2edcd6f00147e5",
   "configContract": "launcher-config-preview/v1",
   "surfaces": [
     "launcher-config",

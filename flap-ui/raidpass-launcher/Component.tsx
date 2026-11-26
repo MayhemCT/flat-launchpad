@@ -53,7 +53,7 @@ type DetailProps = {
 
 // The RaidPassLauncherFactory this UI was written for. It is deployed with CREATE2, so the address is the
 // same on BNB Chain and BNB Chain Testnet.
-const raidPassFactory = "0x32dc29aaea897380ca4b802ab41ad181f8845976";
+const raidPassFactory = "0xfb25c1b10ade658d9c547d1d9a2edcd6f00147e5";
 // abi.encode(RaidPassConfig): one tuple, in the factory's field order.
 const configParameters: readonly AbiParameter[] = [
   { name: "config", type: "tuple", components: [
@@ -240,9 +240,20 @@ function capError(price: bigint | null, cap: bigint | null) {
   return null;
 }
 
+// UTF-8 length: the contract caps the name at 64 bytes, the symbol at 32 and the metadata CID at 128.
+function byteLength(input: string) {
+  let bytes = 0;
+  for (const character of input) {
+    const code = character.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
+
 function readForm(form: Form) {
   const name = form.name.trim();
   const symbol = form.symbol.trim();
+  if (byteLength(name) > 64 || byteLength(symbol) > 32 || byteLength(form.meta.trim()) > 128) return null;
   const price = parseAmount(form.price);
   const cap = parseAmount(form.cap);
   const poolShareBps = percentBps(form.poolShare, 1000, 9000);

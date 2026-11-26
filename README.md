@@ -24,15 +24,15 @@ Nobody can withdraw the raise. It leaves the mint only through the launch or thr
 Both are the same mint with the same rules. `RaidPassLauncher` is the design the Flap track asks for. `RaidPassCurve` exists because Pool Launch is permissioned on BNB Chain: it is the way to run the mint live on mainnet without waiting for an audit.
 
 ```
-RaidPassLauncherFactory  0x32dc29aAeA897380CA4b802ab41AD181F8845976   (CREATE2: same on BNB Chain and Testnet)
-RaidPassCurveFactory     0x4bb858A819Ac972b04B70f850271e6b322b461b2   (CREATE2: BNB Chain)
+RaidPassLauncherFactory  0xFb25C1B10ADE658D9c547D1d9A2eDcd6F00147E5   (CREATE2: same on BNB Chain and Testnet)
+RaidPassCurveFactory     0xAF9cfB507271D8bFD3A8284555C7C54026Fe3FB4   (CREATE2: BNB Chain)
 ```
 
 Neither is deployed yet. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change.
 
 ## Status
 
-- `RaidPassLauncher`: 12 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
+- `RaidPassLauncher`: 15 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
 - `RaidPassCurve`: 7 fork tests pass against Flap's bonding curve Portal on a fork of BNB Chain, with nothing impersonated. The deploy, create, mint and claim commands below were rehearsed end to end on a local fork.
 - Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. It has not been run inside Flap's host.
 - The contracts are not audited.
@@ -55,6 +55,7 @@ Neither is deployed yet. Each address depends only on the contract bytecode, so 
 | Price | Flat `nftPrice` | Flat `nftPrice` |
 | Cap | At most 10 BNB, exact multiple of the price | Same |
 | NFTs | `cap / nftPrice`, at most 10,000; 50 per `mint()` call | Same |
+| Name, symbol, metadata CID | At most 64, 32 and 128 bytes | Same |
 | Supply | 1,000,000,000 | 1,000,000,000 (Flap's curve) |
 | Pool share | `poolShareBps`, 1000 to 9000 | Not applicable: the raise buys on the curve |
 | Tax | `buyTaxBps`, `sellTaxBps`, each at most 1000, for 30 days | Each 100 to 1000 (Flap's range on the curve), for 30 days |
@@ -99,7 +100,7 @@ cd contracts
 cast wallet new ~/.foundry/keystores raidpass      # prints the new address; fund it
 forge script script/DeployCurve.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
 
-export CURVE_FACTORY=0x4bb858A819Ac972b04B70f850271e6b322b461b2
+export CURVE_FACTORY=0xAF9cfB507271D8bFD3A8284555C7C54026Fe3FB4
 export TOKEN_NAME="RaidPass" TOKEN_SYMBOL=RAID
 export NFT_PRICE=10000000000000000 CAP=50000000000000000 SALE_DURATION=3600   # 0.01 BNB x 5 NFTs, 1 hour
 forge script script/CreateCurveMint.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
@@ -117,7 +118,7 @@ cd contracts
 export BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com
 forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy
 
-export FACTORY=0x32dc29aAeA897380CA4b802ab41AD181F8845976
+export FACTORY=0xFb25C1B10ADE658D9c547D1d9A2eDcd6F00147E5
 export TOKEN_NAME="Raid Example" TOKEN_SYMBOL=RAIDX
 export NFT_PRICE=250000000000000000 CAP=2500000000000000000 SALE_DURATION=86400   # 0.25 tBNB x 10 NFTs
 forge script script/CreateLauncher.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy
@@ -137,7 +138,8 @@ On BNB Chain Testnet the Portal accepts Launchers from any factory. On BNB Chain
 - **Send with `--legacy`.** BNB Chain's base fee is 0, and Foundry's EIP-1559 estimate on BNB Chain Testnet comes out at 1 wei, far below the node's quoted gas price. With `--legacy` Foundry uses the node's gas price (0.05 gwei on BNB Chain, the network minimum, and 0.1 gwei on Testnet when this was written).
 - **Per-transaction gas cap: 16,777,216** (BEP-652, live since the Mendel upgrade). The heaviest RaidPass transaction, a mint of the 50-NFT per-call maximum that also runs the launch, uses about 9.3M gas on either path. Each suite asserts the margin.
 - **Large holders.** `claim()` costs about 30,000 gas per NFT, so one call covers roughly 500 NFTs; a wallet holding more uses `claimNFTs(ids)` in batches. The same applies to `refund()` and `refundNFTs(ids)`.
-- **Contract size.** `RaidPassLauncher` is 22.7 KB of runtime code and `RaidPassCurve` 18.2 KB, under the 24,576-byte limit.
+- **Contract size.** `RaidPassLauncher` is 23.0 KB of runtime code and `RaidPassCurve` 18.6 KB, under the 24,576-byte limit.
+- **Launcher description.** The Pool Launch Portal reads at most 4,096 bytes of a Launcher's `description()` with at most 200,000 gas, and stores an empty description past either limit. With the longest name and symbol the Launcher accepts, the description is 1,449 bytes and costs about 53,000 gas; `test_13` asserts it.
 
 ## Launch UI
 

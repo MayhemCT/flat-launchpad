@@ -407,6 +407,98 @@ abstract contract RaidPassFork is ForkBase {
         impl.initialize(portalAddr, alice, c);
     }
 
+    /// @dev The Portal reads at most 4,096 bytes of `description()` with at most 200,000 gas, and stores an empty
+    ///      description past either limit with no revert. The longest name and symbol the Launcher accepts, made of
+    ///      the characters that grow the most when escaped, must still come through in the creation event.
+    function test_13_descriptionFitsThePortalLimitsAtTheLongestNameAndSymbol() public {
+        _open();
+        RaidPassConfig memory c = _config("raid-description");
+        bytes memory longName = new bytes(64);
+        bytes memory longSymbol = new bytes(32);
+        for (uint256 i; i < longName.length; ++i) {
+            longName[i] = 0x01; // a control character: six bytes once escaped
+        }
+        for (uint256 i; i < longSymbol.length; ++i) {
+            longSymbol[i] = 0x01;
+        }
+        c.name = string(longName);
+        c.symbol = string(longSymbol);
+
+        vm.recordLogs();
+        address launcherAddr = _newLauncher(address(factory), abi.encode(c));
+        Vm.Log[] memory creation = vm.getRecordedLogs();
+        RaidPassLauncher launcher = RaidPassLauncher(launcherAddr);
+
+        uint256 gasBefore = gasleft();
+        string memory d = launcher.description();
+        uint256 gasUsed = gasBefore - gasleft();
+
+        assertEq(_launcherDescriptionFromLogs(creation, launcherAddr), d, "the Portal kept the whole description");
+        assertGt(bytes(d).length, 0);
+        assertLt(bytes(d).length, 4096 / 2, "under half of the Portal's 4,096-byte limit");
+        assertLt(gasUsed, 200_000 / 2, "under half of the Portal's 200,000 gas limit");
+        emit log_named_uint("longest description, bytes", bytes(d).length);
+        emit log_named_uint("description() gas", gasUsed);
+
+        // One byte more is refused.
+        c.name = string(new bytes(65));
+        c.salt = _mineSalt("raid-description-long-name");
+        _expectInvalid(c);
+        c.name = "Raid Example";
+        c.symbol = string(new bytes(33));
+        _expectInvalid(c);
+        c.symbol = "RAIDX";
+        c.meta = string(new bytes(129));
+        _expectInvalid(c);
+    }
+
+    function test_14_onlyThePortalDeliversTheHoldersSupplyAndOnlyDuringTheLaunch() public {
+        _open();
+        RaidPassLauncher launcher = _create("raid-distribution");
+        uint256 amount = launcher.holderPool();
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(LauncherBase.NotHub.selector, alice));
+        launcher.initializeDistribution(address(1), amount, "", bytes32(0));
+
+        // Even the Portal cannot call it outside the launch.
+        vm.prank(portalAddr);
+        vm.expectRevert(RaidPassLauncher.UnauthorizedDistribution.selector);
+        launcher.initializeDistribution(address(1), amount, "", bytes32(0));
+    }
+
+    function test_15_aGuardianUpgradeKeepsEveryLaunchersState() public {
+        _open();
+        RaidPassLauncher launcher = _create("raid-upgrade");
+        assertEq(factory.launcherCount(), 1);
+        assertEq(factory.launchers(0), address(launcher), "the factory lists its Launchers");
+        assertEq(launcher.version(), "1.0.0");
+
+        vm.prank(alice);
+        launcher.mint{value: 3 * PRICE}();
+
+        // The Guardian retargets the beacon to a fresh implementation in the middle of the mint.
+        address impl = address(new RaidPassLauncher());
+        vm.prank(guardian);
+        factory.upgradeVaultImplementation(impl);
+        assertEq(factory.beaconImplementation(), impl);
+
+        assertEq(launcher.minted(), 3, "minted survives");
+        assertEq(launcher.raised(), 3 * PRICE, "raised survives");
+        assertEq(launcher.ownerOf(2), alice, "ownership survives");
+        assertEq(launcher.nftsOf(alice).length, 3, "the ownership index survives");
+        assertEq(launcher.cap(), PRICE * NFTS, "config survives");
+        assertEq(address(launcher).balance, 3 * PRICE, "the raise is untouched");
+
+        // The mint carries on to the launch and the claims.
+        vm.prank(bob);
+        launcher.mint{value: 7 * PRICE}();
+        assertTrue(launcher.launched());
+        vm.prank(alice);
+        launcher.claim();
+        assertEq(IERC20(launcher.token()).balanceOf(alice), 3 * launcher.tokensPerNFT());
+    }
+
     /// @dev BNB Chain rejects any transaction above 16,777,216 gas (BEP-652, live since the Mendel upgrade). The
     ///      heaviest RaidPass transaction is the mint that buys the per-call maximum and also runs the launch.
     ///      Run with `forge test --isolate` so each call is metered as its own transaction.

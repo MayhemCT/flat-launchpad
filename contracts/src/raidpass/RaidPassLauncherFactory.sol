@@ -24,6 +24,9 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
     /// @notice The solady `UpgradeableBeacon` every Launcher proxy points at.
     address public immutable beacon;
 
+    /// @notice Every Launcher this factory created, oldest first.
+    address[] public launchers;
+
     event RaidPassLauncherCreated(
         address indexed launcher, address indexed creator, bytes32 launchSalt, uint256 nftPrice, uint256 cap
     );
@@ -50,6 +53,10 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
         return UpgradeableBeacon(beacon).implementation();
     }
 
+    function launcherCount() external view returns (uint256) {
+        return launchers.length;
+    }
+
     /// @notice The address a Launcher created with `salt` will have.
     function predictLauncher(bytes32 salt) external view returns (address) {
         return LibClone.predictDeterministicAddressERC1967BeaconProxy(beacon, salt, address(this));
@@ -63,6 +70,7 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
 
         launcher = LibClone.deployDeterministicERC1967BeaconProxy(beacon, config.salt);
         RaidPassLauncher(launcher).initialize{value: msg.value}(_getHub(), creator, config);
+        launchers.push(launcher);
 
         emit RaidPassLauncherCreated(launcher, creator, config.salt, config.nftPrice, config.cap);
     }
