@@ -1,4 +1,5 @@
 import { CHAINS, isChainKey, type ChainKey } from '@flat/protocol'
+import { localized, parseLauncherDescription } from '@flat/protocol/description'
 
 const MAX_LIMIT = 200
 const DEFAULT_LIMIT = 50
@@ -80,8 +81,36 @@ async function overview(db: D1Database, chain: ChainKey): Promise<Response> {
   })
 }
 
+/**
+ * What each Launcher Factory calls its launches: the title most of its Launchers carry. A factory whose
+ * Launchers each carry a different title (the creator typed it) has no name of its own, and gets none.
+ */
+function factoryTitles(rows: ReadonlyArray<Record<string, string | number | null>>): Map<string, string> {
+  const counts = new Map<string, Map<string, number>>()
+  const totals = new Map<string, number>()
+  for (const row of rows) {
+    const factory = String(row.factory)
+    totals.set(factory, (totals.get(factory) ?? 0) + 1)
+    const parsed = parseLauncherDescription(String(row.description ?? ''))
+    const title = parsed.kind === 'v1' ? localized(parsed.description.titles, 'en') : undefined
+    if (!title) continue
+    const byTitle = counts.get(factory) ?? new Map<string, number>()
+    byTitle.set(title, (byTitle.get(title) ?? 0) + 1)
+    counts.set(factory, byTitle)
+  }
+  const titles = new Map<string, string>()
+  for (const [factory, byTitle] of counts) {
+    const [title, count] = [...byTitle].sort((a, b) => b[1] - a[1])[0]!
+    const total = totals.get(factory) ?? count
+    if (total === 1 || count * 2 > total) titles.set(factory, title)
+  }
+  return titles
+}
+
+const TITLE_ROWS = 'SELECT factory, description FROM launchers WHERE chain = ?'
+
 async function factories(db: D1Database, chain: ChainKey): Promise<Response> {
-  const [launcher, vault] = await db.batch<Record<string, string | number | null>>([
+  const [launcher, vault, described] = await db.batch<Record<string, string | number | null>>([
     db
       .prepare(
         `SELECT f.address, f.enabled, f.multiplier_bps, f.first_seen_block,
@@ -105,11 +134,14 @@ FROM vault_factories f WHERE f.chain = ?
 ORDER BY vaults DESC, f.first_seen_block, f.address`,
       )
       .bind(chain),
+    db.prepare(TITLE_ROWS).bind(chain),
   ])
   const flag = (value: string | number | null | undefined) => (value === null || value === undefined ? null : value === 1)
+  const titles = factoryTitles(described?.results ?? [])
   return json({
     launcher: (launcher?.results ?? []).map((r) => ({
       address: r.address,
+      title: titles.get(String(r.address)) ?? null,
       enabled: flag(r.enabled),
       multiplierBps: r.multiplier_bps,
       firstSeenBlock: r.first_seen_block,
@@ -233,7 +265,7 @@ async function tokens(db: D1Database, chain: ChainKey, url: URL): Promise<Respon
   }
   const rows = await db
     .prepare(
-      `SELECT t.address, t.kind, t.creator, t.name, t.symbol, t.meta, t.pool, t.quote_token, t.total_supply,
+      `SELECT t.address, t.kind, t.creator, t.name, t.symbol, t.meta, t.image, t.pool, t.quote_token, t.total_supply,
   t.initial_price_wad, t.block_number, t.tx_hash, t.timestamp, t.vault, t.vault_factory, t.graduated,
   t.dist_target, t.dist_amount, t.launcher, l.factory AS launcher_factory
 FROM tokens t
@@ -254,6 +286,7 @@ LIMIT ? OFFSET ?`,
       name: r.name,
       symbol: r.symbol,
       meta: r.meta,
+      image: r.image,
       pool: r.pool,
       quoteToken: r.quote_token,
       totalSupply: r.total_supply,
@@ -267,6 +300,91 @@ LIMIT ? OFFSET ?`,
       distribution: r.dist_target === null ? null : { target: r.dist_target, amount: r.dist_amount },
       launcher: r.launcher,
       launcherFactory: r.launcher_factory,
+    })),
+  })
+}
+
+const SCOPE_RAISING = 300
+const SCOPE_LAUNCHED = 150
+
+/**
+ * Everything the Memescope page shows, in one response: Launchers still raising with how far they have come,
+ * tokens that launched, the launchpad (Launcher Factory) behind each, and the quote tokens they raise in.
+ */
+async function scope(db: D1Database, chain: ChainKey): Promise<Response> {
+  const [sync, raising, launched, platforms, described, quotes] = await db.batch<Record<string, string | number | null>>([
+    db.prepare('SELECT head, updated_at FROM sync_state WHERE chain = ?').bind(chain),
+    db
+      .prepare(
+        `SELECT l.address, l.factory, l.creator, l.description, l.timestamp, l.raised, l.raised_at FROM launchers l
+WHERE l.chain = ?1 AND NOT EXISTS (SELECT 1 FROM tokens t WHERE t.chain = l.chain AND t.launcher = l.address)
+ORDER BY l.block_number DESC, l.address LIMIT ?2`,
+      )
+      .bind(chain, SCOPE_RAISING),
+    db
+      .prepare(
+        `SELECT t.address, t.creator, t.name, t.symbol, t.image, t.quote_token, t.total_supply, t.initial_price_wad,
+  t.timestamp, t.graduated, t.vault_factory, t.launcher, l.factory AS launcher_factory
+FROM tokens t LEFT JOIN launchers l ON l.chain = t.chain AND l.address = t.launcher
+WHERE t.chain = ?1 ORDER BY t.block_number DESC, t.address LIMIT ?2`,
+      )
+      .bind(chain, SCOPE_LAUNCHED),
+    db
+      .prepare(
+        `SELECT f.address, f.enabled,
+  (SELECT COUNT(*) FROM launchers l WHERE l.chain = f.chain AND l.factory = f.address) AS launchers,
+  (SELECT COUNT(*) FROM tokens t JOIN launchers l ON l.chain = t.chain AND l.address = t.launcher
+     WHERE l.chain = f.chain AND l.factory = f.address) AS tokens
+FROM launcher_factories f WHERE f.chain = ? ORDER BY launchers DESC, f.first_seen_block, f.address`,
+      )
+      .bind(chain),
+    db.prepare(TITLE_ROWS).bind(chain),
+    db.prepare('SELECT address, symbol, decimals FROM quote_tokens WHERE chain = ?').bind(chain),
+  ])
+  const titles = factoryTitles(described?.results ?? [])
+  const state = sync?.results[0]
+  return json({
+    updatedAt: state?.updated_at ?? null,
+    head: state?.head ?? null,
+    platforms: (platforms?.results ?? []).map((r) => ({
+      factory: r.address,
+      title: titles.get(String(r.address)) ?? null,
+      enabled: r.enabled === null ? null : r.enabled === 1,
+      launchers: r.launchers,
+      tokens: r.tokens,
+    })),
+    quotes: Object.fromEntries((quotes?.results ?? []).map((r) => [r.address, { symbol: r.symbol, decimals: r.decimals }])),
+    raising: (raising?.results ?? []).map((r) => {
+      const parsed = parseLauncherDescription(String(r.description ?? ''))
+      const d = parsed.kind === 'v1' ? parsed.description : null
+      return {
+        address: r.address,
+        factory: r.factory,
+        creator: r.creator,
+        name: d?.name ?? null,
+        symbol: d?.symbol ?? null,
+        quoteToken: d?.quoteToken ?? null,
+        targetRaise: d?.targetRaise?.toString() ?? null,
+        poolTokenRatio: d?.poolTokenRatio?.toString() ?? null,
+        raised: r.raised,
+        raisedAt: r.raised_at,
+        timestamp: r.timestamp,
+      }
+    }),
+    launched: (launched?.results ?? []).map((r) => ({
+      address: r.address,
+      creator: r.creator,
+      name: r.name,
+      symbol: r.symbol,
+      image: r.image,
+      quoteToken: r.quote_token,
+      totalSupply: r.total_supply,
+      initialPriceWad: r.initial_price_wad,
+      timestamp: r.timestamp,
+      graduated: r.graduated === 1,
+      vaultFactory: r.vault_factory,
+      launcher: r.launcher,
+      factory: r.launcher_factory,
     })),
   })
 }
@@ -298,6 +416,8 @@ export async function handleApi(request: Request, db: D1Database): Promise<Respo
       return launchers(db, chain, url)
     case 'tokens':
       return tokens(db, chain, url)
+    case 'scope':
+      return scope(db, chain)
     default:
       return notFound('unknown resource')
   }

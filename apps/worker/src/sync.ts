@@ -11,6 +11,7 @@ import {
   type RawLog,
   type Rpc,
 } from '@flat/protocol'
+import { refreshRaises, resolveImages } from './enrich.js'
 import {
   checkpointStatement,
   ensureSyncStatement,
@@ -79,13 +80,16 @@ export interface SyncResult {
   events: number
   linked: number
   factoriesChecked: number
+  raisesUpdated: number
+  imagesResolved: number
   caughtUp: boolean
 }
 
 /**
  * One sync step for one chain: scan new blocks, write their events, link new
- * tokens to their Launchers, refresh factory status. Each part commits on its
- * own, so running out of budget part-way loses nothing.
+ * tokens to their Launchers, refresh factory status, then read raise progress
+ * and token pictures. Each part commits on its own, so running out of budget
+ * part-way loses nothing.
  */
 export async function syncChain(
   db: D1Database,
@@ -140,6 +144,10 @@ export async function syncChain(
   // 3. The Portal is the authority on whether a factory is enabled.
   const factoriesChecked = await refreshFactoryStatus(db, chain, rpc, budget, now)
 
+  // 4. How far each open raise has come, and where each token's picture is.
+  const raisesUpdated = await refreshRaises(db, chain, rpc, budget, now)
+  const imagesResolved = await resolveImages(db, chain, budget, now)
+
   return {
     chain: key,
     fromBlock,
@@ -148,6 +156,8 @@ export async function syncChain(
     events: events.length,
     linked,
     factoriesChecked,
+    raisesUpdated,
+    imagesResolved,
     caughtUp: nextBlock > safeHead,
   }
 }

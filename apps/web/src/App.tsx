@@ -3,6 +3,7 @@ import { DeployersPage, FactoriesPage, HomePage, LaunchesPage, TokensPage } from
 import { short } from "./format";
 import { RAIDPASS, SITES, type ChainKey } from "./site";
 import { connect, switchChain, useWallet } from "./wallet";
+import { ScopePage } from "./scope";
 import type { Locale, RaidPassRoute } from "./raidpass";
 
 // The launchpad needs a chain library and the launch UI package: both load only when one of its pages opens.
@@ -14,13 +15,13 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
   { id: "ko", label: "한국어" },
 ];
 
-type AggregatorRoute = { name: "home" | "launches" | "tokens" | "factories" | "deployers" };
+type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
 type Route = AggregatorRoute | RaidPassRoute | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
   if (path === "/") return { name: "home" };
-  if (path === "/launches" || path === "/tokens" || path === "/factories" || path === "/deployers") {
+  if (path === "/scope" || path === "/launches" || path === "/tokens" || path === "/factories" || path === "/deployers") {
     return { name: path.slice(1) as AggregatorRoute["name"] };
   }
   if (path === "/raidpass") return { name: "raidpass" };
@@ -115,8 +116,9 @@ function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange(next: Loc
   );
 }
 
-const NAV: ReadonlyArray<{ href: string; label: string; routes: ReadonlyArray<Route["name"]> }> = [
-  { href: "#/launches", label: "Launches", routes: ["launches"] },
+// `short` is the label on the phone tab bar, where five tabs share the width.
+const NAV: ReadonlyArray<{ href: string; label: string; short?: string; routes: ReadonlyArray<Route["name"]> }> = [
+  { href: "#/scope", label: "Memescope", short: "Scope", routes: ["scope", "launches"] },
   { href: "#/tokens", label: "Tokens", routes: ["tokens"] },
   { href: "#/factories", label: "Factories", routes: ["factories"] },
   { href: "#/deployers", label: "Deployers", routes: ["deployers"] },
@@ -133,11 +135,13 @@ interface ShellProps {
   children: ReactNode;
 }
 
-function NavLinks({ route }: { route: Route }) {
+function NavLinks({ route, compact = false }: { route: Route; compact?: boolean }) {
   return (
     <>
       {NAV.map((item) => (
-        <a key={item.href} href={item.href} aria-current={item.routes.includes(route.name) ? "page" : undefined}>{item.label}</a>
+        <a key={item.href} href={item.href} aria-current={item.routes.includes(route.name) ? "page" : undefined}>
+          {compact ? item.short ?? item.label : item.label}
+        </a>
       ))}
     </>
   );
@@ -182,7 +186,7 @@ function MobileShell({ route, children, ...controls }: ShellProps) {
         </div>
       </header>
       <main className="content">{children}</main>
-      <nav className="tabbar" aria-label="Main" data-testid="mobile-nav"><NavLinks route={route} /></nav>
+      <nav className="tabbar" aria-label="Main" data-testid="mobile-nav"><NavLinks route={route} compact /></nav>
     </div>
   );
 }
@@ -203,6 +207,7 @@ export function App() {
       <Backdrop />
       <Shell route={route} launchpad={isLaunchpad(route)} chain={chain} onChain={setChain} locale={locale} onLocale={setLocale}>
         {route.name === "home" && <HomePage site={site} mobile={mobile} />}
+        {route.name === "scope" && <ScopePage site={site} mobile={mobile} />}
         {route.name === "launches" && <LaunchesPage site={site} mobile={mobile} />}
         {route.name === "tokens" && <TokensPage site={site} mobile={mobile} />}
         {route.name === "factories" && <FactoriesPage site={site} mobile={mobile} />}

@@ -17,6 +17,7 @@ const VIEWPORTS = [
 // The aggregator pages read the live index, so they are checked with real rows in them.
 const PAGES = [
   { name: "home", hash: "#/", ready: "[data-testid=launch-card]" },
+  { name: "scope", hash: "#/scope", ready: "[data-testid=scope-row]" },
   { name: "launches", hash: "#/launches", ready: "[data-testid=launch-card]" },
   { name: "tokens", hash: "#/tokens", ready: "[data-testid=token-table], [data-testid=token-cards]" },
   { name: "factories", hash: "#/factories", ready: "[data-testid=factory-table], [data-testid=factory-cards]" },
@@ -31,7 +32,7 @@ const PAGES = [
 const PHONE_MAX = 1023;
 const MIN_TOUCH_TARGET = 44;
 // Controls a finger has to hit. Links inside a sentence are text, not controls.
-const CONTROLS = "button, select, input, a.button, a.brand, a.card, a.launch-card, .nav a, .tabbar a, .links a, .section-head a";
+const CONTROLS = "button, select, input, a.button, a.brand, a.card, a.launch-card, a.scope-row, a.flap-strip, .seg a, .nav a, .tabbar a, .links a, .section-head a";
 
 async function open(page: Page, hash: string, ready: string) {
   await page.goto(`/${hash}`);

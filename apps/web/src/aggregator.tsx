@@ -13,6 +13,8 @@ import {
   type TokenRow,
 } from "./api";
 import { ago, amount, compact, percent, price, short } from "./format";
+import { platformOf } from "./platform";
+import { LaunchModes, PlatformTag, TokenImage } from "./scope";
 import { FACTORY, RAIDPASS_CHAIN, ZERO_ADDRESS, explorerAddressUrl, flapLauncherUrl, flapTokenUrl, type Site } from "./site";
 
 interface PageProps {
@@ -131,7 +133,7 @@ export function HomePage({ site, mobile }: PageProps) {
           what has launched, and who is deploying. Plus RaidPass, our own launchpad, where the presale is an NFT mint.
         </p>
         <div className="actions">
-          <a className="button" href="#/launches">Live launches</a>
+          <a className="button" href="#/scope">Open Memescope</a>
           <a className="button button-quiet" href="#/raidpass">RaidPass launchpad</a>
           <a className="button button-quiet" href="https://flap.sh" target="_blank" rel="noreferrer">Flap ↗</a>
         </div>
@@ -162,7 +164,10 @@ export function LaunchesPage({ site }: PageProps) {
   return (
     <>
       <div className="page-head">
-        <h1 className="page-title">Launches</h1>
+        <div className="scope-head">
+          <h1 className="page-title">Launches</h1>
+          <LaunchModes mode="board" />
+        </div>
         <p className="lede">Every Launcher created through the Pool Launch Portal on {site.label}, newest first.</p>
       </div>
       <div className="seg" role="tablist" aria-label="Filter launches">
@@ -206,7 +211,10 @@ export function TokensPage({ site, mobile }: PageProps) {
                   <li key={token.address}>
                     <a className="card" href={flapTokenUrl(site, token.address)} target="_blank" rel="noreferrer">
                       <span className="card-head">
-                        <strong>{token.name ?? short(token.address)}</strong>
+                        <span className="token-cell">
+                          <TokenImage key={token.image ?? "none"} image={token.image} label={token.symbol || token.name || "?"} colour="var(--line)" size={32} />
+                          <strong>{token.name ?? short(token.address)}</strong>
+                        </span>
                         <span className={`tag tag-${token.graduated ? "good" : "muted"}`}>{token.graduated ? "Graduated" : "New"}</span>
                       </span>
                       <span className="card-line">{token.symbol} · supply {compact(token.totalSupply)}</span>
@@ -227,7 +235,8 @@ export function TokensPage({ site, mobile }: PageProps) {
                   {data.items.map((token) => (
                     <tr key={token.address}>
                       <td>
-                        <a href={flapTokenUrl(site, token.address)} target="_blank" rel="noreferrer">
+                        <a className="token-cell" href={flapTokenUrl(site, token.address)} target="_blank" rel="noreferrer">
+                          <TokenImage key={token.image ?? "none"} image={token.image} label={token.symbol || token.name || "?"} colour="var(--line)" size={32} />
                           <strong>{token.name ?? short(token.address)}</strong> <span className="dim">{token.symbol}</span>
                         </a>
                       </td>
@@ -258,22 +267,25 @@ export function FactoriesPage({ site, mobile }: PageProps) {
     <>
       <div className="page-head">
         <h1 className="page-title">Factories</h1>
-        <p className="lede">The contracts launches come from. A Launcher Factory deploys one Launcher per launch; a Vault Factory deploys a token's vault.</p>
+        <p className="lede">The launchpads built on Pool Launch. Each Launcher Factory is one launchpad's contract: it deploys one Launcher per launch, and is named here by the title its launches carry. A Vault Factory deploys a token's vault.</p>
       </div>
       <Status result={factories}>
-        {(data) => (
+        {(data) => {
+          const titles = new Map(data.launcher.map((factory) => [factory.address, factory.title]));
+          return (
           <>
             <section>
-              <h2>Launcher factories <span className="dim">{data.launcher.length}</span></h2>
+              <h2>Launchpads <span className="dim">{data.launcher.length} Launcher Factories</span></h2>
               {data.launcher.length === 0 ? <p className="note" data-testid="empty">None yet.</p> : mobile ? (
                 <ul className="cards" data-testid="factory-cards">
                   {data.launcher.map((factory) => (
                     <li key={factory.address}>
                       <a className="card" href={explorerAddressUrl(site, factory.address)} target="_blank" rel="noreferrer">
                         <span className="card-head">
-                          <strong>{isRaidPass(site, factory.address) ? "RaidPass" : short(factory.address)}</strong>
+                          <PlatformTag platform={platformOf(site, factory.address, titles)} />
                           <span className={`tag tag-${factory.enabled ? "good" : "muted"}`}>{factory.enabled ? "Enabled" : "Not enabled"}</span>
                         </span>
+                        <span className="card-line">{short(factory.address)}</span>
                         <span className="card-line">{factory.launchers} launchers · {factory.tokens} launched · {factory.graduated} graduated</span>
                         <span className="card-line">{factory.deployers} deployers · floor {factory.multiplierBps === null ? "—" : `${factory.multiplierBps / 100}%`}</span>
                       </a>
@@ -284,15 +296,13 @@ export function FactoriesPage({ site, mobile }: PageProps) {
                 <div className="table-wrap">
                   <table className="table" data-testid="factory-table">
                     <thead>
-                      <tr><th>Factory</th><th>Status</th><th>Floor multiplier</th><th>Launchers</th><th>Launched</th><th>Graduated</th><th>Deployers</th></tr>
+                      <tr><th>Launchpad</th><th>Factory</th><th>Status</th><th>Floor multiplier</th><th>Launchers</th><th>Launched</th><th>Graduated</th><th>Deployers</th></tr>
                     </thead>
                     <tbody>
                       {data.launcher.map((factory) => (
                         <tr key={factory.address}>
-                          <td>
-                            <ExternalAddress site={site} address={factory.address} />
-                            {isRaidPass(site, factory.address) && <> <span className="tag tag-gold">RaidPass</span></>}
-                          </td>
+                          <td><PlatformTag platform={platformOf(site, factory.address, titles)} /></td>
+                          <td><ExternalAddress site={site} address={factory.address} /></td>
                           <td><span className={`tag tag-${factory.enabled ? "good" : "muted"}`}>{factory.enabled ? "Enabled" : "Not enabled"}</span></td>
                           <td className="num">{factory.multiplierBps === null ? "—" : `${factory.multiplierBps / 100}%`}</td>
                           <td className="num">{factory.launchers}</td>
@@ -342,7 +352,8 @@ export function FactoriesPage({ site, mobile }: PageProps) {
               )}
             </section>
           </>
-        )}
+          );
+        }}
       </Status>
     </>
   );

@@ -5,6 +5,7 @@ A board for every launch on [Flap](https://docs.flap.sh) Pool Launch, and RaidPa
 Live: https://raidpass.dry-dust-1399.workers.dev
 
 - **Aggregator.** Every Launcher, launched token, factory and deployer on Pool Launch, across all Launcher Factories, on BNB Chain and BNB Chain Testnet. Each launch opens on Flap, where its own factory's UI lives.
+- **Memescope.** Every launchpad built on Pool Launch on one live board, in three columns a launch crosses as it fills: New, Final stretch, Launched. Raises are ranked by how much of their target they hold, launchpads are named and colour-coded, and launched tokens show their own pictures.
 - **RaidPass launchpad.** Our own Launcher Factory: create an NFT mint, mint, launch, claim.
 
 ## The mechanism
@@ -177,9 +178,9 @@ npx vitest run apps/web/tests/salt.test.ts
 - **Floor check.** A mint whose cap is under the Portal's liquidity floor can never launch. The Create page reads the floor from the Portal and shows the smallest cap that can launch for three pool shares, and a mint page warns when its mint cannot launch (`apps/web/src/floor.ts`).
 - **Network and factory** come from the package's `manifest.json` (BNB Chain Testnet).
 - **Launches** are listed from the factory's own `launchers` array, so no indexer is needed.
-- **Background.** The BNB mark in three.js, loaded after first paint. It drifts when idle and leans toward the pointer; with reduced motion it renders once and stays still.
+- **Background.** The BNB mark in about 9,000 gold particles (three.js, loaded after first paint). They fly in to form it; left alone it breathes, sways and catches a passing light; particles move out of the pointer's way and close in behind it. All motion runs in the vertex shader, one draw call per frame. With reduced motion it renders once and stays still.
 - **Phone and tablet layout.** Under 1024 px the page renders a separate shell: compact top bar, cards in place of tables, and a tab bar at the bottom.
-- **Viewport tests.** 80 Playwright checks, eight pages at ten screen sizes from a folded Galaxy Fold to an ultrawide monitor, with live index data in them: no sideways scroll, the right shell for the size, the canvas covering the viewport, every control on-screen and at least 44 px tall on touch screens, and the tab bar never covering content. They run in the Edge or Chrome already installed.
+- **Viewport tests.** 90 Playwright checks, nine pages at ten screen sizes from a folded Galaxy Fold to an ultrawide monitor, with live index data in them: no sideways scroll, the right shell for the size, the canvas covering the viewport, every control on-screen and at least 44 px tall on touch screens, and the tab bar never covering content. They run in the Edge or Chrome already installed.
 - **Salt test.** The token-address prediction is checked against every salt the live Portal has locked.
 - **Flow test.** `tests/flow.pw.ts` drives the whole launch through the page on a local fork of BNB Chain Testnet: deploy the factory, create a Launcher, mint every NFT, launch, claim. The contracts, the Portal and the page are the real ones; the fork's own account stands in for the wallet. The steps to run it are at the top of the file.
 - **Endpoint.** `VITE_RPC_URL` points the page at another RPC endpoint.
@@ -188,9 +189,11 @@ npx vitest run apps/web/tests/salt.test.ts
 
 The site and its indexer are one Cloudflare Worker (`apps/web/wrangler.jsonc`, code in `apps/worker/`):
 
-- **Pages.** Static files. `/` and `/launches`, `/tokens`, `/factories`, `/deployers` read the index; `/raidpass`, `/create` and `/launcher/<address>` are the launchpad and talk to the chain and the visitor's wallet.
-- **`/api/<chain>/<resource>`.** Read-only JSON: `overview`, `launchers`, `tokens`, `factories`, `deployers`, for `bsc` and `bscTestnet`.
-- **Cron, every minute.** Reads new Pool Launch Portal events into a D1 database (`apps/worker/migrations/`). It follows the head in steps of at most 2,000 blocks, stays 20 blocks behind it, and records its last error where `overview` shows it.
+- **Pages.** Static files. `/`, `/scope` (Memescope), `/launches`, `/tokens`, `/factories` and `/deployers` read the index; `/raidpass`, `/create` and `/launcher/<address>` are the launchpad and talk to the chain and the visitor's wallet.
+- **`/api/<chain>/<resource>`.** Read-only JSON: `overview`, `scope`, `launchers`, `tokens`, `factories`, `deployers`, for `bsc` and `bscTestnet`.
+- **`/api/image/<ipfs path>?w=64|128|256`.** A token's picture as a small thumbnail, so the page loads pictures from its own origin and its content policy stays `img-src 'self'`. Only IPFS paths are accepted, only raster images are passed on, nothing over 2 MB.
+- **Cron, every minute.** Reads new Pool Launch Portal events into a D1 database (`apps/worker/migrations/`). It follows the head in steps of at most 2,000 blocks, stays 20 blocks behind it, and records its last error where `overview` shows it. Each run also reads, in one Multicall3 call per chain, the quote balance every open Launcher holds (its raise progress), and resolves a few tokens' pictures from their metadata on IPFS (`apps/worker/src/enrich.ts`).
+- **Launchpad names.** A Launcher Factory is named by the title most of its Launchers carry in their own on-chain description. A factory whose Launchers each carry a different title is shown by its address.
 - **No secrets.** The Worker holds no keys. Visitors sign with their own wallets.
 
 History is loaded once with `scripts/backfill-d1.ts`, from a machine whose RPC endpoint serves the whole log range, because public endpoints answer large history queries unreliably from Cloudflare's network (timeouts on BNB Chain, silently shortened results on Testnet). The script writes the same idempotent statements the Worker runs:
@@ -204,7 +207,7 @@ For production, point the Worker at a private RPC endpoint: add `BSC_RPC_URL` an
 
 `npm run pull` is the same scan as a local command: it writes `data/bsc.json` and `data/bscTestnet.json`.
 
-**Loading.** The first page loads 76 KB of script (gzip). The launchpad's chain library (110 KB) and the three.js scene (141 KB) load only when they are needed.
+**Loading.** The first page loads 79 KB of script (gzip). The launchpad's chain library (110 KB) and the three.js scene (133 KB) load only when they are needed.
 
 ## Credits
 
