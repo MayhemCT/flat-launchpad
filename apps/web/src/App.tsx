@@ -11,6 +11,8 @@ import type { Locale, RaidPassRoute } from "./raidpass";
 const RaidPassSection = lazy(() => import("./raidpass"));
 // A token's page trades through PancakeSwap, which needs the chain library too.
 const TokenPage = lazy(() => import("./token"));
+// A token's pop-out window: chart on top, chat under it. Several can be open at once.
+const PopPage = lazy(() => import("./token").then((module) => ({ default: module.PopPage })));
 // The launchpad on BNB Chain mainnet: pass mints that launch into PancakeSwap.
 const PancakeSection = lazy(() => import("./pancake"));
 // The wallet's positions read balances and sell through the same library: loaded when first opened.
@@ -23,7 +25,7 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
 ];
 
 type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
-type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | { name: "token"; address: string } | { name: "missing" };
+type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
@@ -37,6 +39,8 @@ function parseRoute(hash: string): Route {
   if (path === "/launch/testnet" || path === "/raidpass") return { name: "raidpass" };
   const mint = /^\/mint\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (mint?.[1]) return { name: "mint", address: mint[1].toLowerCase() };
+  const pop = /^\/pop\/(0x[0-9a-fA-F]{40})$/.exec(path);
+  if (pop?.[1]) return { name: "pop", address: pop[1].toLowerCase() };
   const token = /^\/token\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (token?.[1]) return { name: "token", address: token[1].toLowerCase() };
   if (path === "/create") return { name: "create" };
@@ -284,6 +288,15 @@ export function App() {
   const [chain, setChain] = useState<ChainKey>("bsc");
   const site = SITES[chain];
   const Shell = mobile ? MobileShell : DesktopShell;
+
+  // A pop-out window is only the chart and the chat: no navigation, no background scene.
+  if (route.name === "pop") {
+    return (
+      <Suspense fallback={<p className="note" role="status">Loading…</p>}>
+        <PopPage key={route.address} address={route.address} />
+      </Suspense>
+    );
+  }
 
   return (
     <>

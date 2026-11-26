@@ -8,9 +8,11 @@ import { TokenChat } from "./chat";
 import { chartEmbedUrl, dexPaidStatus, pairLinks, pairPageUrl, tokenPairs, venueName, type DsPair, type TokenLink } from "./dexscreener";
 import { ago, amount, short, usd } from "./format";
 import { platformOf } from "./platform";
+import { QUICK_AMOUNTS, useQuickBuy } from "./quickbuy";
 import { PlatformTag, TokenImage } from "./scope";
 import { SITES, explorerAddressUrl, flapTokenUrl } from "./site";
 import { TradeError, balances, buy, loadMarket, quoteBuy, quoteSell, sell, type Market, type Quote, type TradeStep } from "./trade";
+import { TradesTable } from "./trades";
 import { connect, switchChain, useWallet } from "./wallet";
 
 const SITE = SITES.bsc;
@@ -291,6 +293,83 @@ function TradePanel({ market, error, loading, onTraded }: { market: Market | nul
   );
 }
 
+/** Opens a token's chart and chat in a small window of their own. Each token gets its own, so several can be open at once. */
+function popOut(token: string) {
+  window.open(`${window.location.origin}/#/pop/${token}`, `callz-pop-${token}`, "popup,width=440,height=780");
+}
+
+/**
+ * The pop-out window: the chart on top, the chat under it, and a one-click buy. Clicking its title brings the
+ * token's full page back in the window it was opened from.
+ */
+export function PopPage({ address }: { address: string }) {
+  const token = address.toLowerCase() as Address;
+  const indexed = useApi<Page<TokenRow>>("bsc", `tokens?address=${token}`);
+  const row = indexed.state === "ready" ? indexed.data.items[0] ?? null : null;
+  const { pairs } = useDexScreener(token);
+  const { market } = useMarket(token);
+  const quick = useQuickBuy();
+  const pair = pairs?.find((candidate) => candidate.baseToken.address.toLowerCase() === token) ?? pairs?.[0] ?? null;
+  const symbol = row?.symbol || market?.symbol || pair?.baseToken.symbol || short(token);
+  const change = pair?.priceChange?.h24;
+  const chartId = pair?.pairAddress ?? market?.pair ?? null;
+
+  useEffect(() => {
+    document.title = `${symbol} · CallZ`;
+  }, [symbol]);
+
+  const expand = () => {
+    const page = `#/token/${token}`;
+    try {
+      // Back to the window this one was opened from, when it is still there.
+      if (window.opener && !window.opener.closed) {
+        window.opener.location.hash = page;
+        window.opener.focus();
+        window.close();
+        return;
+      }
+    } catch {
+      // The opener has gone elsewhere: open the page here instead.
+    }
+    window.location.hash = page;
+  };
+
+  return (
+    <div className="pop" data-testid="pop-page">
+      <header className="pop-head">
+        <button type="button" className="pop-title" onClick={expand} title="Open this token's full page">
+          <TokenImage key={row?.image ?? "none"} image={row?.image ?? null} label={symbol} colour="var(--gold)" size={36} />
+          <span>
+            <strong>{symbol}</strong>
+            <span className="num dim">
+              {pair?.priceUsd ? usd(Number(pair.priceUsd)) : "—"}
+              {change !== undefined && <span className={change >= 0 ? "tone-good" : "tone-warn"}> {change >= 0 ? "+" : ""}{change.toFixed(1)}%</span>}
+            </span>
+          </span>
+          <span className="pop-expand">Full page ⤢</span>
+        </button>
+        <div className="pop-buy">
+          <select aria-label="One-click buy amount" value={quick.amount} onChange={(event) => quick.setAmount(event.target.value)}>
+            {QUICK_AMOUNTS.map((value) => <option key={value} value={value}>{value} BNB</option>)}
+          </select>
+          <button type="button" className="quick-buy" disabled={quick.buying.has(token)} onClick={() => quick.buy({ address: token, symbol })}>
+            {quick.buying.has(token) ? "…" : "⚡ Buy"}
+          </button>
+        </div>
+      </header>
+      <div className="pop-chart">
+        {chartId ? (
+          <iframe key={chartId} title={`${symbol} price chart`} src={chartEmbedUrl(chartId, "5")} referrerPolicy="no-referrer" sandbox="allow-scripts allow-same-origin" />
+        ) : (
+          <p className="token-nochart dim">No pool yet.</p>
+        )}
+      </div>
+      <TokenChat chain="bsc" token={token} />
+      {quick.layer}
+    </div>
+  );
+}
+
 export default function TokenPage({ address, mobile }: { address: string; mobile: boolean }) {
   const token = address.toLowerCase() as Address;
   const indexed = useApi<Page<TokenRow>>("bsc", `tokens?address=${token}`);
@@ -327,8 +406,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
   const change = pair?.priceChange?.h24;
   const trades = pair?.txns?.h24;
   const chartId = pair?.pairAddress ?? market?.pair ?? null;
-  // The frame holds the chart and, under it, the pool's own trades as DexScreener lists them.
-  const chartHeight = mobile ? 720 : 860;
+  const chartHeight = mobile ? 380 : 480;
 
   const copy = () => {
     void navigator.clipboard?.writeText(token).then(() => {
@@ -354,6 +432,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
         </div>
         <div className="token-actions">
           <button type="button" className="button button-quiet" onClick={copy} title={token}>{copied ? "Copied" : <><code>{short(token)}</code>&nbsp;Copy</>}</button>
+          <button type="button" className="button button-quiet" data-testid="pop-out" title="Open the chart and chat in a small window of their own" onClick={() => popOut(token)}>Pop out ⧉</button>
           <a className="button button-flap" href={flapTokenUrl(SITE, token)} target="_blank" rel="noreferrer">Flap ↗</a>
           <a className="button button-quiet" href={pairPageUrl(pair, chartId ?? token)} target="_blank" rel="noreferrer">DexScreener ↗</a>
           <a className="button button-quiet" href={explorerAddressUrl(SITE, token)} target="_blank" rel="noreferrer">BscScan ↗</a>
@@ -372,9 +451,9 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
 
       <div className="token-grid">
         <div className="token-main">
-        <section className="token-chart" aria-label="Price chart and trades">
+        <section className="token-chart" aria-label="Price chart">
           <div className="token-chart-head">
-            <h2>Chart and trades</h2>
+            <h2>Chart</h2>
             <div className="seg seg-small" role="group" aria-label="Chart interval">
               {INTERVALS.map(({ id, label }) => (
                 <button key={id} type="button" aria-pressed={interval === id} onClick={() => setIntervalId(id)}>{label}</button>
@@ -386,7 +465,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
               <iframe
                 key={`${chartId}-${interval}`}
                 title={`${symbol || "Token"} price chart`}
-                src={chartEmbedUrl(chartId, interval, true)}
+                src={chartEmbedUrl(chartId, interval)}
                 style={{ height: chartHeight + FOOTER_CROP }}
                 referrerPolicy="no-referrer"
                 sandbox="allow-scripts allow-same-origin"
@@ -397,11 +476,12 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
             <p className="token-nochart dim">{pairs === null && loading ? "Loading the chart…" : "No pool yet. The chart appears once this token has a PancakeSwap pool."}</p>
           )}
         </section>
-        <TokenChat chain="bsc" token={token} />
+        {market && <TradesTable market={market} dexScreenerUrl={pairPageUrl(pair, chartId ?? token)} />}
         </div>
 
         <aside className="token-side">
           <TradePanel market={market} error={error} loading={loading} onTraded={reload} />
+          <TokenChat chain="bsc" token={token} />
           {(meta?.description || links.length > 0) && (
             <section className="token-about" aria-label="About this token">
               <h2>About</h2>

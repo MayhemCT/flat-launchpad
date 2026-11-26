@@ -136,3 +136,17 @@ test("one-click buy from the Memescope board", async ({ page }) => {
   await expect(page.locator(".toast").last()).toContainText("Bought.", { timeout: 90_000 });
   await expect(page.locator(".toast-error")).toHaveCount(0);
 });
+
+test("the token page lists the pool's trades, and its pop-out opens the full page again", async ({ page }) => {
+  await useForkWallet(page);
+  await page.goto(`/#/token/${BNB_POOLED}`);
+  // The earlier tests traded this pool on the fork, so its own Swap events are there to read.
+  await expect(page.getByTestId("token-trades").locator("tbody tr").first()).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("pop-out")).toBeVisible();
+
+  await page.goto(`/#/pop/${BNB_POOLED}`);
+  const pop = page.getByTestId("pop-page");
+  await expect(pop.getByTestId("token-chat")).toBeVisible({ timeout: 30_000 });
+  await pop.locator("button.pop-title").click();
+  await expect(page).toHaveURL(new RegExp(`#/token/${BNB_POOLED}$`));
+});

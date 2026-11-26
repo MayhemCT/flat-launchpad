@@ -209,6 +209,79 @@ export async function balances(market: Market, account: Address): Promise<{ bnb:
   return { bnb, token };
 }
 
+const swapEvent = parseAbi([
+  "event Swap(address indexed sender, uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out, address indexed to)",
+])[0];
+/** Blocks per log query, within what the public endpoint serves, and how many queries one load may make. */
+const TRADE_SPAN = 5_000n;
+const TRADE_QUERIES = 8;
+
+export interface PoolTrade {
+  side: "buy" | "sell";
+  tokenAmount: bigint;
+  /** In the pool's quote asset: BNB or USDT, both with 18 decimals on BNB Chain. */
+  quoteAmount: bigint;
+  /** Unix seconds, worked out from the block number and the chain's measured block time. */
+  time: number;
+  hash: Hex;
+  logIndex: number;
+}
+
+/**
+ * The pool's latest trades, newest first, from its own Swap events. With `after` (the head returned by the
+ * previous call) only trades since then, in one request; without it, it walks back from the head in spans of
+ * 5,000 blocks until it has `want` trades or has looked through eight spans (about five hours).
+ */
+export async function poolTrades(market: Market, after: bigint | null, want: number): Promise<{ trades: PoolTrade[]; head: bigint }> {
+  const head = await client.getBlockNumber();
+  const [token0, newest, older] = await Promise.all([
+    client.readContract({ address: market.pair, abi: pairAbi, functionName: "token0" }),
+    client.getBlock({ blockNumber: head }),
+    client.getBlock({ blockNumber: head - 20_000n }),
+  ]);
+  const tokenIsZero = lower(token0) === lower(market.token);
+  // Seconds per block, measured over the last 20,000 blocks: a trade's time follows from its block number.
+  const perBlock = Number(newest.timestamp - older.timestamp) / 20_000;
+  const timeOf = (block: bigint) => Math.round(Number(newest.timestamp) - Number(head - block) * perBlock);
+
+  const trades: PoolTrade[] = [];
+  const read = async (fromBlock: bigint, toBlock: bigint) => {
+    const logs = await client.getLogs({ address: market.pair, event: swapEvent, fromBlock, toBlock });
+    const batch: PoolTrade[] = [];
+    for (const log of logs) {
+      const { amount0In, amount1In, amount0Out, amount1Out } = log.args;
+      if (amount0In === undefined || amount1In === undefined || amount0Out === undefined || amount1Out === undefined) continue;
+      const tokenIn = tokenIsZero ? amount0In : amount1In;
+      const tokenOut = tokenIsZero ? amount0Out : amount1Out;
+      const quoteIn = tokenIsZero ? amount1In : amount0In;
+      const quoteOut = tokenIsZero ? amount1Out : amount0Out;
+      // The pool pays the token out on a buy and takes it in on a sell.
+      const buy = tokenOut > tokenIn;
+      batch.push({
+        side: buy ? "buy" : "sell",
+        tokenAmount: buy ? tokenOut - tokenIn : tokenIn - tokenOut,
+        quoteAmount: buy ? quoteIn - quoteOut : quoteOut - quoteIn,
+        time: timeOf(log.blockNumber),
+        hash: log.transactionHash,
+        logIndex: log.logIndex,
+      });
+    }
+    trades.push(...batch.reverse());
+  };
+
+  if (after !== null) {
+    if (after < head) await read(after + 1n, head);
+    return { trades, head };
+  }
+  let toBlock = head;
+  for (let query = 0; query < TRADE_QUERIES && trades.length < want && toBlock > 0n; query++) {
+    const fromBlock = toBlock > TRADE_SPAN ? toBlock - TRADE_SPAN + 1n : 0n;
+    await read(fromBlock, toBlock);
+    toBlock = fromBlock - 1n;
+  }
+  return { trades: trades.slice(0, want), head };
+}
+
 const BOUGHT_KEY = "callz.bought";
 
 /** Tokens this browser bought through the site, newest first: they show under the wallet's positions. */
