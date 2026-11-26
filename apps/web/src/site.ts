@@ -38,9 +38,9 @@ export const SITES: Record<ChainKey, Site> = {
   },
 };
 
-/** The chain and factory the RaidPass launch UI package was written for. */
-export const RAIDPASS_CHAIN: ChainKey = manifest.chainId === 56 ? "bsc" : "bscTestnet";
-export const RAIDPASS: Site = SITES[RAIDPASS_CHAIN];
+/** The chain and factory the Flap launch UI package was written for. */
+export const FLAP_LAUNCH_CHAIN: ChainKey = manifest.chainId === 56 ? "bsc" : "bscTestnet";
+export const FLAP_LAUNCH: Site = SITES[FLAP_LAUNCH_CHAIN];
 export const FACTORY = manifest.factoryAddress.toLowerCase();
 
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";

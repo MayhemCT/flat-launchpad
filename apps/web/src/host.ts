@@ -3,7 +3,7 @@
  *
  * Flap's site runs a Launcher UI package inside its own host: the host reads the contract, owns the wallet and
  * sends every transaction, and the package only renders and asks. This file implements that same host contract
- * against the chain directly, so the exact package in flap-ui/raidpass-launcher runs here unchanged.
+ * against the chain directly, so the exact package in flap-ui/callz-launcher runs here unchanged.
  *
  * Contract: https://github.com/flap-sh/flap-vault-component-template (branch test/pool-launch-developer-preview),
  * examples/launcher-runtime/README.md.
@@ -155,7 +155,7 @@ async function settle(hash: Hex): Promise<Submission> {
 }
 
 /**
- * Deploys the RaidPass Launcher Factory from the connected wallet, through the deterministic CREATE2 deployer.
+ * Deploys the CallZ Launcher Factory from the connected wallet, through the deterministic CREATE2 deployer.
  * The address depends only on the bytecode and the salt, so it is the one in the manifest whoever sends this.
  * It is the same transaction `contracts/script/Deploy.s.sol` broadcasts.
  */

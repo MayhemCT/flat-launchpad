@@ -1,7 +1,7 @@
 import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 
-// RaidPass Launcher UI for the Flap Launcher runtime (launcher-config-preview/v1).
-// LauncherConfig creates a RaidPass Launcher through the Portal; Launcher is the mint page:
+// CallZ Launcher UI for the Flap Launcher runtime (launcher-config-preview/v1).
+// LauncherConfig creates a CallZ Launcher through the Portal; Launcher is the mint page:
 // mint passes, then claim tokens after the launch or burn passes for a refund if the mint fails.
 // Every transaction goes through the host wallet bridge. All contract data comes from the host snapshot.
 
@@ -51,10 +51,10 @@ type DetailProps = {
   host?: Host;
 };
 
-// The RaidPassLauncherFactory this UI was written for. It is deployed with CREATE2, so the address is the
+// The CallZLauncherFactory this UI was written for. It is deployed with CREATE2, so the address is the
 // same on BNB Chain and BNB Chain Testnet.
-const raidPassFactory = "0x1f28ba409797a1309e52f90b331934092d1b4abd";
-// abi.encode(RaidPassConfig): one tuple, in the factory's field order.
+const callZFactory = "0x2d085c23bbb95e8f0c34b046573bdc88fad538f0";
+// abi.encode(CallZConfig): one tuple, in the factory's field order.
 const configParameters: readonly AbiParameter[] = [
   { name: "config", type: "tuple", components: [
     { name: "name", type: "string" },
@@ -69,13 +69,13 @@ const configParameters: readonly AbiParameter[] = [
     { name: "sellTaxBps", type: "uint16" },
   ] },
 ];
-// Limits enforced by RaidPassLauncher.initialize and mint.
+// Limits enforced by CallZLauncher.initialize and mint.
 const maxCap = 10n * 10n ** 18n;
 const maxNfts = 10_000n;
 const maxMintPerCall = 50n;
 const minSaleSeconds = 600n;
 const maxSaleSeconds = 2_592_000n;
-// RaidPassLauncher.TOTAL_SUPPLY.
+// CallZLauncher.TOTAL_SUPPLY.
 const totalSupply = 1_000_000_000n * 10n ** 18n;
 
 const bg = "#0b0e11";
@@ -149,7 +149,7 @@ function isHash(input: unknown): input is string {
 }
 
 function supported(identity: Identity) {
-  return (identity.chainId === 97 || identity.chainId === 56) && identity.factoryAddress.toLowerCase() === raidPassFactory;
+  return (identity.chainId === 97 || identity.chainId === 56) && identity.factoryAddress.toLowerCase() === callZFactory;
 }
 
 function symbolFor(identity: Identity) {

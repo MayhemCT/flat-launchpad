@@ -15,7 +15,7 @@ import {
 import { ago, amount, compact, percent, price, short } from "./format";
 import { platformOf } from "./platform";
 import { LaunchModes, PlatformTag, TokenImage } from "./scope";
-import { FACTORY, RAIDPASS_CHAIN, ZERO_ADDRESS, explorerAddressUrl, flapLauncherUrl, flapTokenUrl, type Site } from "./site";
+import { FACTORY, FLAP_LAUNCH_CHAIN, ZERO_ADDRESS, explorerAddressUrl, flapLauncherUrl, flapTokenUrl, type Site } from "./site";
 
 interface PageProps {
   site: Site;
@@ -28,11 +28,11 @@ function Status<T>({ result, children }: { result: Loaded<T>; children(data: T):
   return <>{children(result.data)}</>;
 }
 
-const isRaidPass = (site: Site, factory: string | null) => site.key === RAIDPASS_CHAIN && factory === FACTORY;
+const isCallZ = (site: Site, factory: string | null) => site.key === FLAP_LAUNCH_CHAIN && factory === FACTORY;
 
 /** Where a Launcher opens: our own mint page for a CallZ mint, its page on Flap for any other factory. */
 function launcherLink(site: Site, row: LauncherRow) {
-  return isRaidPass(site, row.factory)
+  return isCallZ(site, row.factory)
     ? { href: `#/launcher/${row.address}`, external: false }
     : { href: flapLauncherUrl(site, row.address), external: true };
 }
@@ -76,7 +76,7 @@ function LaunchCard({ site, row }: { site: Site; row: LauncherRow }) {
         </span>
       </span>
       <span className="launch-foot">
-        {isRaidPass(site, row.factory) ? <span className="tag tag-gold">CallZ</span> : <span className="dim">Factory {short(row.factory)}</span>}
+        {isCallZ(site, row.factory) ? <span className="tag tag-gold">CallZ</span> : <span className="dim">Factory {short(row.factory)}</span>}
         <span className="dim">{link.external ? "Open on Flap ↗" : "Open mint →"}</span>
       </span>
     </a>
@@ -150,12 +150,12 @@ export function HomePage({ site, mobile }: PageProps) {
   );
 }
 
-type LaunchFilter = "all" | "raising" | "launched" | "raidpass";
+type LaunchFilter = "all" | "raising" | "launched" | "callz";
 const FILTERS: ReadonlyArray<{ id: LaunchFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "raising", label: "Raising" },
   { id: "launched", label: "Launched" },
-  { id: "raidpass", label: "CallZ" },
+  { id: "callz", label: "CallZ" },
 ];
 
 export function LaunchesPage({ site }: PageProps) {
@@ -180,7 +180,7 @@ export function LaunchesPage({ site }: PageProps) {
           <LaunchGrid
             site={site}
             rows={data.items.filter((row) =>
-              filter === "raising" ? !row.token : filter === "launched" ? !!row.token : filter === "raidpass" ? isRaidPass(site, row.factory) : true,
+              filter === "raising" ? !row.token : filter === "launched" ? !!row.token : filter === "callz" ? isCallZ(site, row.factory) : true,
             )}
           />
         )}
@@ -248,7 +248,7 @@ export function TokensPage({ site, mobile }: PageProps) {
                       <td className="num">{compact(token.totalSupply)}</td>
                       <td className="num">{price(token.initialPriceWad)}</td>
                       <td><span className={`tag tag-${token.graduated ? "good" : "muted"}`}>{token.graduated ? "Graduated" : "New"}</span></td>
-                      <td>{token.launcherFactory ? (isRaidPass(site, token.launcherFactory) ? "CallZ" : <>Launcher <code>{short(token.launcherFactory)}</code></>) : "Direct"}</td>
+                      <td>{token.launcherFactory ? (isCallZ(site, token.launcherFactory) ? "CallZ" : <>Launcher <code>{short(token.launcherFactory)}</code></>) : "Direct"}</td>
                       <td>{token.vault ? "Yes" : "—"}</td>
                       <td className="num">{ago(token.timestamp)}</td>
                       <td><ExternalAddress site={site} address={token.creator} /></td>

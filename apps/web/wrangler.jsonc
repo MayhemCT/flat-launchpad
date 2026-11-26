@@ -1,5 +1,5 @@
 {
-  // The RaidPass site and its indexer, as one Worker.
+  // The CallZ site and its indexer, as one Worker.
   //   - Static files for the pages. Visitors sign with their own wallets. The Worker holds no key that can move
   //     funds or approve anything. Its one optional secret, RELAYER_PRIVATE_KEY (set in the Cloudflare dashboard,
   //     never in this file), only pays the gas of relaying approved callouts to the vault.

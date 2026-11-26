@@ -79,7 +79,7 @@ interface TokenItem {
 
 function RaiseRow({ site, item, unit, decimals, fresh }: { site: Site; item: RaiseItem; unit: string; decimals: number; fresh: boolean }) {
   const { row, platform, progress } = item;
-  const own = platform.kind === "raidpass";
+  const own = platform.kind === "callz";
   const shown = progress === null ? null : Math.min(100, Math.round(progress / 100));
   return (
     <a
@@ -225,7 +225,7 @@ export function ScopePage({ site, mobile }: { site: Site; mobile: boolean }) {
       entry.count++;
       counts.set(platform.key, entry);
     }
-    const order = { flap: 0, raidpass: 1, factory: 2 } as const;
+    const order = { flap: 0, callz: 1, factory: 2 } as const;
     const platforms = [...counts.values()].sort(
       (a, b) => order[a.platform.kind] - order[b.platform.kind] || Number(b.platform.named) - Number(a.platform.named) || b.count - a.count,
     );

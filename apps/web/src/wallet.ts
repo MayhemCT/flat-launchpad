@@ -1,7 +1,7 @@
 // The browser wallet's state, over plain EIP-1193. No chain library, so every page can show the wallet button
 // without paying for one. Transactions are built in host.ts and trade.ts, which load only where they are used.
 import { useSyncExternalStore } from "react";
-import { RAIDPASS, type Site } from "./site";
+import { FLAP_LAUNCH, type Site } from "./site";
 
 export interface Eip1193Provider {
   request(args: { method: string; params?: unknown }): Promise<unknown>;
@@ -67,7 +67,7 @@ export function connect(): void {
 }
 
 /** Asks the wallet to switch to `target` (the launchpad's network by default), adding it first if the wallet does not know it. */
-export async function switchChain(target: Site = RAIDPASS): Promise<void> {
+export async function switchChain(target: Site = FLAP_LAUNCH): Promise<void> {
   const provider = window.ethereum;
   if (!provider) throw new Error("walletUnavailable");
   const chainId = `0x${target.id.toString(16)}`;

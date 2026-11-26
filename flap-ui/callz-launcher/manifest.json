@@ -1,10 +1,10 @@
 {
   "schemaVersion": 2,
   "kind": "launcher-ui",
-  "artifactId": "raidpass-launcher",
+  "artifactId": "callz-launcher",
   "name": "CallZ NFT Mint Launcher",
   "chainId": 97,
-  "factoryAddress": "0x1f28ba409797a1309e52f90b331934092d1b4abd",
+  "factoryAddress": "0x2d085c23bbb95e8f0c34b046573bdc88fad538f0",
   "configContract": "launcher-config-preview/v1",
   "surfaces": [
     "launcher-config",

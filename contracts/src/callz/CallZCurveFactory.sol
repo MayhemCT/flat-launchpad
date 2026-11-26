@@ -2,23 +2,23 @@
 pragma solidity ^0.8.26;
 
 import {LibClone} from "solady/utils/LibClone.sol";
-import {RaidPassCurve, RaidPassCurveConfig} from "./RaidPassCurve.sol";
+import {CallZCurve, CallZCurveConfig} from "./CallZCurve.sol";
 
-/// @title RaidPassCurveFactory
-/// @notice Deploys one `RaidPassCurve` mint per launch, as an immutable minimal clone.
+/// @title CallZCurveFactory
+/// @notice Deploys one `CallZCurve` mint per launch, as an immutable minimal clone.
 ///
 ///         Anyone can create a mint: Flap's bonding curve Portal is permissionless. The factory has no owner,
 ///         takes no fee and cannot touch a mint after creating it.
-contract RaidPassCurveFactory {
+contract CallZCurveFactory {
     /// @notice Flap's bonding curve Portal on this chain.
     address public immutable portal;
-    /// @notice The RaidPassCurve every mint is a clone of.
+    /// @notice The CallZCurve every mint is a clone of.
     address public immutable implementation;
 
     /// @notice Every mint this factory created, oldest first.
     address[] public mints;
 
-    event RaidPassCurveCreated(
+    event CallZCurveCreated(
         address indexed mint, address indexed creator, bytes32 launchSalt, uint256 nftPrice, uint256 cap
     );
 
@@ -27,17 +27,17 @@ contract RaidPassCurveFactory {
     constructor(address portal_) {
         if (portal_ == address(0)) revert ZeroAddress();
         portal = portal_;
-        implementation = address(new RaidPassCurve());
+        implementation = address(new CallZCurve());
     }
 
     /// @notice Create a mint. Send exactly the Portal's `SALT_LOCK_FEE()`; the mint uses it to reserve the token
     ///         address for itself.
-    function create(RaidPassCurveConfig calldata config) external payable returns (address mint) {
+    function create(CallZCurveConfig calldata config) external payable returns (address mint) {
         // The clone's address depends on the caller, so nobody else can take it first.
         mint = LibClone.cloneDeterministic(implementation, keccak256(abi.encode(msg.sender, config.salt)));
-        RaidPassCurve(payable(mint)).initialize{value: msg.value}(portal, msg.sender, config);
+        CallZCurve(payable(mint)).initialize{value: msg.value}(portal, msg.sender, config);
         mints.push(mint);
-        emit RaidPassCurveCreated(mint, msg.sender, config.salt, config.nftPrice, config.cap);
+        emit CallZCurveCreated(mint, msg.sender, config.salt, config.nftPrice, config.cap);
     }
 
     /// @notice The address a mint created by `creator` with `salt` will have.

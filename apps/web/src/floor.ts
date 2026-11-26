@@ -9,7 +9,7 @@ import { parseAbi, zeroAddress, type Address } from "viem";
 import { FACTORY, PORTAL } from "./config";
 import { publicClient } from "./host";
 
-/** RaidPassLauncher.TOTAL_SUPPLY. */
+/** CallZLauncher.TOTAL_SUPPLY. */
 const TOTAL_SUPPLY = 10n ** 27n;
 /** LaunchKind.DIRECT_V2_POOL_TAX. */
 const LAUNCH_KIND = 0;

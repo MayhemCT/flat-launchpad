@@ -1,11 +1,11 @@
 // Launchpads. On Pool Launch every Launcher Factory is somebody's launchpad: this gives each one a name and a
 // colour that stay the same on every page. Flap itself, and CallZ's own launchpad, have fixed ones.
 import { short } from "./format";
-import { FACTORY, RAIDPASS_CHAIN, type Site } from "./site";
+import { FACTORY, FLAP_LAUNCH_CHAIN, type Site } from "./site";
 
 /** Flap's own lime, used wherever the page points at Flap. */
 export const FLAP_COLOUR = "#d0ff00";
-const RAIDPASS_COLOUR = "#f0b90b";
+const CALLZ_COLOUR = "#f0b90b";
 
 export interface Platform {
   /** Stable id: the factory address, or "flap" for tokens launched straight through Flap's Portal. */
@@ -13,7 +13,7 @@ export interface Platform {
   name: string;
   colour: string;
   factory: string | null;
-  kind: "flap" | "raidpass" | "factory";
+  kind: "flap" | "callz" | "factory";
   /** False when the factory's Launchers carry no common title, so the name is only its address. */
   named: boolean;
 }
@@ -38,8 +38,8 @@ export const FLAP: Platform = { key: "flap", name: "Flap", colour: FLAP_COLOUR, 
 
 export function platformOf(site: Site, factory: string | null, titles: ReadonlyMap<string, string | null>): Platform {
   if (!factory) return FLAP;
-  if (site.key === RAIDPASS_CHAIN && factory === FACTORY) {
-    return { key: factory, name: "CallZ", colour: RAIDPASS_COLOUR, factory, kind: "raidpass", named: true };
+  if (site.key === FLAP_LAUNCH_CHAIN && factory === FACTORY) {
+    return { key: factory, name: "CallZ", colour: CALLZ_COLOUR, factory, kind: "callz", named: true };
   }
   const title = titles.get(factory);
   return {

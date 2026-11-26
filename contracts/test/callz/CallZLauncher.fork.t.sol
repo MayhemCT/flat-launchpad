@@ -4,21 +4,21 @@ pragma solidity ^0.8.26;
 import {Vm} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 
-import {RaidPassLauncher, RaidPassConfig, RaidPassInfo} from "src/raidpass/RaidPassLauncher.sol";
-import {RaidPassLauncherFactory} from "src/raidpass/RaidPassLauncherFactory.sol";
+import {CallZLauncher, CallZConfig, CallZInfo} from "src/callz/CallZLauncher.sol";
+import {CallZLauncherFactory} from "src/callz/CallZLauncherFactory.sol";
 import {LauncherFactoryBase} from "src/flap/LauncherFactoryBase.sol";
 import {LauncherBase} from "src/flap/LauncherBase.sol";
 import {ForkBase} from "test/ForkBase.sol";
 
-/// @notice The whole RaidPass flow against the live Pool Launch Portal: create a Launcher, mint NFTs, launch,
+/// @notice The whole CallZ flow against the live Pool Launch Portal: create a Launcher, mint NFTs, launch,
 ///         claim, trade, and the refund paths. `ForkBase` stands in for Flap by enabling the factory.
-abstract contract RaidPassFork is ForkBase {
+abstract contract CallZLauncherFork is ForkBase {
     uint256 internal constant PRICE = 1 ether;
     uint256 internal constant NFTS = 10;
 
-    RaidPassLauncherFactory internal factory;
+    CallZLauncherFactory internal factory;
 
-    function _config(bytes32 seed) internal returns (RaidPassConfig memory c) {
+    function _config(bytes32 seed) internal returns (CallZConfig memory c) {
         c.name = "Raid Example";
         c.symbol = "RAIDX";
         c.meta = "bafkreig4y5nwb4izyilbbmiydumvkld446d4k7j4ohg3x3q2lfel3fo4yq";
@@ -32,18 +32,18 @@ abstract contract RaidPassFork is ForkBase {
     }
 
     function _open() internal {
-        factory = new RaidPassLauncherFactory();
+        factory = new CallZLauncherFactory();
         _openLauncherFactory(address(factory));
     }
 
-    function _create(bytes32 seed) internal returns (RaidPassLauncher launcher) {
-        launcher = RaidPassLauncher(_newLauncher(address(factory), abi.encode(_config(seed))));
+    function _create(bytes32 seed) internal returns (CallZLauncher launcher) {
+        launcher = CallZLauncher(_newLauncher(address(factory), abi.encode(_config(seed))));
     }
 
-    function _expectInvalid(RaidPassConfig memory c) internal {
+    function _expectInvalid(CallZConfig memory c) internal {
         uint256 fee = portal.SALT_LOCK_FEE();
         vm.prank(creator);
-        vm.expectRevert(RaidPassLauncher.InvalidConfig.selector);
+        vm.expectRevert(CallZLauncher.InvalidConfig.selector);
         portal.newLauncher{value: fee}(address(factory), abi.encode(c));
     }
 
@@ -57,7 +57,7 @@ abstract contract RaidPassFork is ForkBase {
     /// @dev BNB Chain is permissioned: only a factory Flap has enabled can create Launchers. BNB Chain Testnet
     ///      is open (creation is not paused there and the Portal accepts any factory), so the same call succeeds.
     function test_01_anUnopenedFactoryIsClosedOnMainnetAndOpenOnTestnet() public {
-        factory = new RaidPassLauncherFactory();
+        factory = new CallZLauncherFactory();
         bytes memory data = abi.encode(_config("raid-unopened"));
         uint256 fee = portal.SALT_LOCK_FEE();
 
@@ -88,7 +88,7 @@ abstract contract RaidPassFork is ForkBase {
         factory.newLauncher(creator, data);
 
         // Only the Guardian upgrades them.
-        address impl = address(new RaidPassLauncher());
+        address impl = address(new CallZLauncher());
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(LauncherFactoryBase.NotGuardian.selector, creator));
         factory.upgradeVaultImplementation(impl);
@@ -102,7 +102,7 @@ abstract contract RaidPassFork is ForkBase {
         uint256 fee = portal.SALT_LOCK_FEE();
         bytes memory data = bytes.concat(abi.encode(_config("raid-strict")), bytes32(uint256(1)));
         vm.prank(creator);
-        vm.expectRevert(RaidPassLauncherFactory.InvalidData.selector);
+        vm.expectRevert(CallZLauncherFactory.InvalidData.selector);
         portal.newLauncher{value: fee}(address(factory), data);
     }
 
@@ -110,7 +110,7 @@ abstract contract RaidPassFork is ForkBase {
         _open();
 
         // The cap is at most 10 BNB.
-        RaidPassConfig memory c = _config("raid-config");
+        CallZConfig memory c = _config("raid-config");
         c.cap = 11 ether;
         _expectInvalid(c);
 
@@ -148,12 +148,12 @@ abstract contract RaidPassFork is ForkBase {
         _open();
         assertTrue(_paused(), "the Portal is paused, so the opened factory is what lets this launch through");
 
-        RaidPassConfig memory c = _config("raid-journey");
+        CallZConfig memory c = _config("raid-journey");
         address predicted = factory.predictLauncher(c.salt);
         vm.recordLogs();
         address launcherAddr = _newLauncher(address(factory), abi.encode(c));
         Vm.Log[] memory creation = vm.getRecordedLogs();
-        RaidPassLauncher launcher = RaidPassLauncher(launcherAddr);
+        CallZLauncher launcher = CallZLauncher(launcherAddr);
 
         assertEq(launcherAddr, predicted, "the Launcher address is known before creation");
         assertEq(portal.getLauncher(launcherAddr).launcherFactory, address(factory), "Portal recorded the Launcher");
@@ -179,7 +179,7 @@ abstract contract RaidPassFork is ForkBase {
         // Nothing is claimable before the launch.
         assertEq(launcher.claimableOf(alice), 0);
         vm.prank(alice);
-        vm.expectRevert(RaidPassLauncher.NotLaunched.selector);
+        vm.expectRevert(CallZLauncher.NotLaunched.selector);
         launcher.claim();
 
         // Bob mints the last 6: that mint launches the token.
@@ -197,7 +197,7 @@ abstract contract RaidPassFork is ForkBase {
         assertEq(_launchedCreator(logs, token), creator, "the launch event names the creator, not the Launcher");
         assertEq(IERC20(token).balanceOf(launcherAddr), launcher.holderPool(), "the holders' supply is here");
 
-        RaidPassInfo memory i = launcher.info();
+        CallZInfo memory i = launcher.info();
         assertEq(i.minted, NFTS);
         assertEq(i.raised, PRICE * NFTS);
         assertEq(i.token, token);
@@ -225,18 +225,18 @@ abstract contract RaidPassFork is ForkBase {
 
         // An NFT claims once, even after it changes hands, and only its holder can claim.
         vm.prank(alice);
-        vm.expectRevert(RaidPassLauncher.NothingToClaim.selector);
+        vm.expectRevert(CallZLauncher.NothingToClaim.selector);
         launcher.claim();
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(RaidPassLauncher.AlreadyClaimed.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(CallZLauncher.AlreadyClaimed.selector, 1));
         launcher.claimNFTs(_ids(1, 1));
         vm.prank(alice);
         launcher.transferFrom(alice, trader, 1);
         vm.prank(trader);
-        vm.expectRevert(RaidPassLauncher.NothingToClaim.selector);
+        vm.expectRevert(CallZLauncher.NothingToClaim.selector);
         launcher.claim();
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(RaidPassLauncher.NotHolder.selector, 5));
+        vm.expectRevert(abi.encodeWithSelector(CallZLauncher.NotHolder.selector, 5));
         launcher.claimNFTs(_ids(5, 5));
 
         // The NFT stays as a membership pass and its metadata is on-chain.
@@ -245,12 +245,12 @@ abstract contract RaidPassFork is ForkBase {
 
         // The mint is over and nothing can be refunded.
         vm.prank(bob);
-        vm.expectRevert(RaidPassLauncher.AlreadyLaunched.selector);
+        vm.expectRevert(CallZLauncher.AlreadyLaunched.selector);
         launcher.mint{value: PRICE}();
         assertFalse(launcher.refundAvailable());
         assertEq(launcher.refundableOf(bob), 0);
         vm.prank(bob);
-        vm.expectRevert(RaidPassLauncher.RefundUnavailable.selector);
+        vm.expectRevert(CallZLauncher.RefundUnavailable.selector);
         launcher.refund();
 
         // Trading works on the real pool, and tax flows without reverting.
@@ -259,7 +259,7 @@ abstract contract RaidPassFork is ForkBase {
 
     function test_06_overflowOnTheLastMintIsRefunded() public {
         _open();
-        RaidPassLauncher launcher = _create("raid-overflow");
+        CallZLauncher launcher = _create("raid-overflow");
 
         vm.prank(alice);
         launcher.mint{value: 8 * PRICE}();
@@ -279,11 +279,11 @@ abstract contract RaidPassFork is ForkBase {
 
     function test_07_poolShareAndTaxesAreConfigurable() public {
         _open();
-        RaidPassConfig memory c = _config("raid-shape");
+        CallZConfig memory c = _config("raid-shape");
         c.poolShareBps = 8000; // 80% in the pool, 20% to the NFTs
         c.buyTaxBps = 100;
         c.sellTaxBps = 1000;
-        RaidPassLauncher launcher = RaidPassLauncher(_newLauncher(address(factory), abi.encode(c)));
+        CallZLauncher launcher = CallZLauncher(_newLauncher(address(factory), abi.encode(c)));
 
         assertEq(launcher.poolToken(), launcher.TOTAL_SUPPLY() * 80 / 100);
         assertEq(launcher.holderPool(), launcher.TOTAL_SUPPLY() * 20 / 100);
@@ -301,27 +301,27 @@ abstract contract RaidPassFork is ForkBase {
 
     function test_08_mintGuards() public {
         _open();
-        RaidPassLauncher launcher = _create("raid-guards");
+        CallZLauncher launcher = _create("raid-guards");
 
         vm.startPrank(alice);
-        vm.expectRevert(RaidPassLauncher.ZeroQuantity.selector);
+        vm.expectRevert(CallZLauncher.ZeroQuantity.selector);
         launcher.mint();
-        vm.expectRevert(RaidPassLauncher.ZeroQuantity.selector);
+        vm.expectRevert(CallZLauncher.ZeroQuantity.selector);
         launcher.mint{value: PRICE - 1}();
         // The value must be an exact multiple of the price.
-        vm.expectRevert(abi.encodeWithSelector(RaidPassLauncher.WrongPayment.selector, PRICE + 1, PRICE));
+        vm.expectRevert(abi.encodeWithSelector(CallZLauncher.WrongPayment.selector, PRICE + 1, PRICE));
         launcher.mint{value: PRICE + 1}();
         vm.stopPrank();
 
         vm.warp(launcher.saleDeadline());
         vm.prank(alice);
-        vm.expectRevert(RaidPassLauncher.SaleClosed.selector);
+        vm.expectRevert(CallZLauncher.SaleClosed.selector);
         launcher.mint{value: PRICE}();
     }
 
     function test_09_burnToRefundWhenTheCapIsMissed() public {
         _open();
-        RaidPassLauncher launcher = _create("raid-refund");
+        CallZLauncher launcher = _create("raid-refund");
 
         vm.prank(alice);
         launcher.mint{value: 4 * PRICE}();
@@ -332,7 +332,7 @@ abstract contract RaidPassFork is ForkBase {
         assertFalse(launcher.refundAvailable(), "the mint is still open");
         assertEq(launcher.refundableOf(alice), 0);
         vm.prank(alice);
-        vm.expectRevert(RaidPassLauncher.RefundUnavailable.selector);
+        vm.expectRevert(CallZLauncher.RefundUnavailable.selector);
         launcher.refund();
 
         vm.warp(launcher.saleDeadline());
@@ -342,7 +342,7 @@ abstract contract RaidPassFork is ForkBase {
 
         // Alice cannot refund an NFT she no longer holds.
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(RaidPassLauncher.NotHolder.selector, 3));
+        vm.expectRevert(abi.encodeWithSelector(CallZLauncher.NotHolder.selector, 3));
         launcher.refundNFTs(_ids(3, 3));
 
         // One NFT by id, then everything left in one call.
@@ -365,16 +365,16 @@ abstract contract RaidPassFork is ForkBase {
 
         // Nothing is left to refund.
         vm.prank(alice);
-        vm.expectRevert(RaidPassLauncher.NothingToRefund.selector);
+        vm.expectRevert(CallZLauncher.NothingToRefund.selector);
         launcher.refund();
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(RaidPassLauncher.NotHolder.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(CallZLauncher.NotHolder.selector, 1));
         launcher.refundNFTs(_ids(1, 1));
     }
 
     function test_10_guardianCanOpenRefundsEarly() public {
         _open();
-        RaidPassLauncher launcher = _create("raid-guardian");
+        CallZLauncher launcher = _create("raid-guardian");
         vm.prank(alice);
         launcher.mint{value: 2 * PRICE}();
 
@@ -386,7 +386,7 @@ abstract contract RaidPassFork is ForkBase {
         launcher.openRefunds();
 
         vm.prank(bob);
-        vm.expectRevert(RaidPassLauncher.SaleClosed.selector);
+        vm.expectRevert(CallZLauncher.SaleClosed.selector);
         launcher.mint{value: PRICE}();
 
         vm.prank(alice);
@@ -396,13 +396,13 @@ abstract contract RaidPassFork is ForkBase {
 
     function test_11_aLauncherCannotBeInitializedTwice() public {
         _open();
-        RaidPassLauncher launcher = _create("raid-init");
-        RaidPassConfig memory c = _config("raid-init-again");
+        CallZLauncher launcher = _create("raid-init");
+        CallZConfig memory c = _config("raid-init-again");
         vm.expectRevert();
         launcher.initialize(portalAddr, alice, c);
 
         // The implementation itself is locked.
-        RaidPassLauncher impl = RaidPassLauncher(factory.beaconImplementation());
+        CallZLauncher impl = CallZLauncher(factory.beaconImplementation());
         vm.expectRevert();
         impl.initialize(portalAddr, alice, c);
     }
@@ -412,7 +412,7 @@ abstract contract RaidPassFork is ForkBase {
     ///      the characters that grow the most when escaped, must still come through in the creation event.
     function test_13_descriptionFitsThePortalLimitsAtTheLongestNameAndSymbol() public {
         _open();
-        RaidPassConfig memory c = _config("raid-description");
+        CallZConfig memory c = _config("raid-description");
         bytes memory longName = new bytes(64);
         bytes memory longSymbol = new bytes(32);
         for (uint256 i; i < longName.length; ++i) {
@@ -427,7 +427,7 @@ abstract contract RaidPassFork is ForkBase {
         vm.recordLogs();
         address launcherAddr = _newLauncher(address(factory), abi.encode(c));
         Vm.Log[] memory creation = vm.getRecordedLogs();
-        RaidPassLauncher launcher = RaidPassLauncher(launcherAddr);
+        CallZLauncher launcher = CallZLauncher(launcherAddr);
 
         uint256 gasBefore = gasleft();
         string memory d = launcher.description();
@@ -454,7 +454,7 @@ abstract contract RaidPassFork is ForkBase {
 
     function test_14_onlyThePortalDeliversTheHoldersSupplyAndOnlyDuringTheLaunch() public {
         _open();
-        RaidPassLauncher launcher = _create("raid-distribution");
+        CallZLauncher launcher = _create("raid-distribution");
         uint256 amount = launcher.holderPool();
 
         vm.prank(alice);
@@ -463,13 +463,13 @@ abstract contract RaidPassFork is ForkBase {
 
         // Even the Portal cannot call it outside the launch.
         vm.prank(portalAddr);
-        vm.expectRevert(RaidPassLauncher.UnauthorizedDistribution.selector);
+        vm.expectRevert(CallZLauncher.UnauthorizedDistribution.selector);
         launcher.initializeDistribution(address(1), amount, "", bytes32(0));
     }
 
     function test_15_aGuardianUpgradeKeepsEveryLaunchersState() public {
         _open();
-        RaidPassLauncher launcher = _create("raid-upgrade");
+        CallZLauncher launcher = _create("raid-upgrade");
         assertEq(factory.launcherCount(), 1);
         assertEq(factory.launchers(0), address(launcher), "the factory lists its Launchers");
         assertEq(launcher.version(), "1.0.0");
@@ -478,7 +478,7 @@ abstract contract RaidPassFork is ForkBase {
         launcher.mint{value: 3 * PRICE}();
 
         // The Guardian retargets the beacon to a fresh implementation in the middle of the mint.
-        address impl = address(new RaidPassLauncher());
+        address impl = address(new CallZLauncher());
         vm.prank(guardian);
         factory.upgradeVaultImplementation(impl);
         assertEq(factory.beaconImplementation(), impl);
@@ -500,16 +500,16 @@ abstract contract RaidPassFork is ForkBase {
     }
 
     /// @dev BNB Chain rejects any transaction above 16,777,216 gas (BEP-652, live since the Mendel upgrade). The
-    ///      heaviest RaidPass transaction is the mint that buys the per-call maximum and also runs the launch.
+    ///      heaviest CallZ transaction is the mint that buys the per-call maximum and also runs the launch.
     ///      Run with `forge test --isolate` so each call is metered as its own transaction.
     function test_12_theHeaviestTransactionsFitTheGasCap() public {
         uint256 txGasCap = 16_777_216;
         _open();
 
-        RaidPassConfig memory c = _config("raid-gas");
+        CallZConfig memory c = _config("raid-gas");
         c.nftPrice = 0.1 ether;
         c.cap = 7 ether; // 70 NFTs
-        RaidPassLauncher launcher = RaidPassLauncher(_newLauncher(address(factory), abi.encode(c)));
+        CallZLauncher launcher = CallZLauncher(_newLauncher(address(factory), abi.encode(c)));
 
         vm.prank(alice);
         launcher.mint{value: 10 * c.nftPrice}();
@@ -517,7 +517,7 @@ abstract contract RaidPassFork is ForkBase {
         // 60 are left: more than the per-call maximum is refused.
         uint256 perCall = launcher.MAX_MINT_PER_TX();
         vm.prank(bob);
-        vm.expectRevert(RaidPassLauncher.MintTooLarge.selector);
+        vm.expectRevert(CallZLauncher.MintTooLarge.selector);
         launcher.mint{value: (perCall + 1) * c.nftPrice}();
 
         vm.prank(alice);

@@ -7,35 +7,59 @@ import {Base64} from "solady/utils/Base64.sol";
 import {LibString} from "solady/utils/LibString.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
-import {IPortalTypes, IPortal} from "src/flap/IPortal.sol";
-import {LauncherBase} from "src/flap/LauncherBase.sol";
-import {Distribution, DistributionTarget} from "src/flap/Distribution.sol";
-import {IStrategy} from "src/flap/IStrategy.sol";
-import {LaunchExtensionHelper} from "src/flap/LaunchExtensionHelper.sol";
-import {LauncherDescription} from "src/flap/LauncherHelper.sol";
+/// @notice The part of Flap's bonding curve Portal that CallZCurve uses.
+/// @dev Layout from https://docs.flap.sh/en/flap/v2/developers/bonding-curve/launch-tokens. Enums are `uint8`.
+interface IBondingCurvePortal {
+    struct NewTokenV6Params {
+        string name;
+        string symbol;
+        string meta;
+        uint8 dexThresh; // 1 = FOUR_FIFTHS, the only accepted value
+        bytes32 salt;
+        uint8 migratorType; // 1 = V2, required for tax tokens
+        address quoteToken; // address(0) = native
+        uint256 quoteAmt; // creator's first buy, sent as msg.value
+        address beneficiary;
+        bytes permitData;
+        bytes32 extensionID;
+        bytes extensionData;
+        uint8 dexId;
+        uint8 lpFeeProfile;
+        uint16 buyTaxRate;
+        uint16 sellTaxRate;
+        uint64 taxDuration;
+        uint64 antiFarmerDuration;
+        uint16 mktBps;
+        uint16 deflationBps;
+        uint16 dividendBps;
+        uint16 lpBps;
+        uint256 minimumShareBalance;
+        address dividendToken;
+        address commissionReceiver;
+        uint8 tokenVersion; // 6 = TOKEN_TAXED_V3
+    }
 
-// Display copy for `description()`. Constants only: no quotes or backslashes, as the description spec requires.
-string constant RAIDPASS_TITLE_ZH = unicode"CallZ NFT 铸造发射";
-string constant RAIDPASS_TITLE_EN = "CallZ NFT mint";
-string constant RAIDPASS_SUMMARY_ZH =
-    unicode"以固定价格用 BNB 铸造 CallZ NFT。募集达到上限时，全部 BNB 与入池份额的代币一起注入流动性池，LP 被销毁。其余代币由所有 NFT 平均领取，NFT 仍归持有人所有。若在截止时间前未达到上限，销毁 NFT 即可取回铸造价。";
-string constant RAIDPASS_SUMMARY_EN =
-    "Mint a CallZ NFT with BNB at a flat price. When the raise reaches its cap, all of it and the pool share of the supply seed the pool and the LP is burned. Every NFT then claims an equal share of the rest of the supply and stays with its holder. If the cap is not reached by the deadline, burn an NFT to get its price back.";
+    function newTokenV6(NewTokenV6Params calldata params) external payable returns (address token);
+    function lockSalt(bytes32 salt, uint8 tokenVersion) external payable;
+    function SALT_LOCK_FEE() external view returns (uint256);
+}
 
-/// @notice Payload the creator passes to `Portal.newLauncher(factory, abi.encode(RaidPassConfig))`.
-/// @param name          Token name. The NFT collection is named after it.
-/// @param symbol        Token symbol.
-/// @param meta          Token metadata CID, passed to the token unchanged.
-/// @param salt          CREATE2 launch salt, mined so the predicted token address ends in `0x7777`.
-/// @param nftPrice      BNB per NFT. Every NFT costs the same.
-/// @param cap           BNB the mint raises: at most 10 BNB and an exact multiple of `nftPrice`. All of it becomes
-///                      the pool's quote side. `cap / nftPrice` NFTs are sold.
-/// @param saleDuration  Length of the mint window in seconds, counted from creation.
-/// @param poolShareBps  Share of the supply that goes into the pool, in bps (1000 to 9000). The rest is split
-///                      equally between the NFTs.
-/// @param buyTaxBps     Buy tax in bps, at most 1000.
-/// @param sellTaxBps    Sell tax in bps, at most 1000.
-struct RaidPassConfig {
+interface IERC20Balance {
+    function balanceOf(address account) external view returns (uint256);
+}
+
+/// @notice Payload for `CallZCurveFactory.create`.
+/// @param name         Token name. The NFT collection is named after it.
+/// @param symbol       Token symbol.
+/// @param meta         Token metadata CID, passed to the token unchanged.
+/// @param salt         CREATE2 launch salt, mined so the predicted token address ends in `0x7777`.
+/// @param nftPrice     BNB per NFT. Every NFT costs the same.
+/// @param cap          BNB the mint raises: at most 10 BNB and an exact multiple of `nftPrice`. All of it is spent
+///                     on the curve at launch. `cap / nftPrice` NFTs are sold.
+/// @param saleDuration Length of the mint window in seconds, counted from creation.
+/// @param buyTaxBps    Buy tax in bps, 100 to 1000 (Flap's range for a tax token on the curve).
+/// @param sellTaxBps   Sell tax in bps, 100 to 1000.
+struct CallZCurveConfig {
     string name;
     string symbol;
     string meta;
@@ -43,13 +67,12 @@ struct RaidPassConfig {
     uint256 nftPrice;
     uint256 cap;
     uint256 saleDuration;
-    uint16 poolShareBps;
     uint16 buyTaxBps;
     uint16 sellTaxBps;
 }
 
-/// @notice Everything a launch page needs, in one call.
-struct RaidPassInfo {
+/// @notice Everything a mint page needs, in one call.
+struct CallZCurveInfo {
     address creator;
     string tokenName;
     string tokenSymbol;
@@ -61,59 +84,40 @@ struct RaidPassInfo {
     uint256 burned;
     uint256 raised;
     uint256 saleDeadline;
-    uint256 poolToken;
-    uint256 holderPool;
     uint256 tokensPerNFT;
+    uint256 bnbPerNFT;
     uint16 buyTaxBps;
     uint16 sellTaxBps;
     bool launched;
-    bool refundsOpen;
     address token;
-    address pool;
 }
 
-/// @title RaidPassLauncher
-/// @notice A Pool Launch Launcher whose raise is an NFT mint.
+/// @title CallZCurve
+/// @notice An NFT mint that is the entry to a Flap bonding curve launch.
 ///
-///         Buyers mint CallZ NFTs with BNB at a flat price. The mint that brings the raise to its cap launches
-///         the token in the same transaction: all the BNB raised is the pool's quote side, the pool share of the
-///         supply is its token side, the LP is burned, and the rest of the supply comes back here. Every NFT
-///         then claims an equal share of that rest, once, and stays with its holder as a membership pass.
+///         Buyers mint CallZ NFTs with BNB at a flat price. The mint that brings the raise to its cap creates
+///         the token on Flap's bonding curve and spends the whole raise on the curve in that same transaction, as
+///         the launch's first buy. Every NFT then claims an equal share of the tokens bought, once, and stays
+///         with its holder as a membership pass.
 ///
 ///         If the cap is not reached by the deadline, an NFT is burned for its price. The refund goes to whoever
-///         holds the NFT at that moment, so NFTs can change hands safely before the launch.
+///         holds the NFT at that moment.
 ///
-///         Order of events:
-///           1. `initialize` runs once, in the transaction that deploys the proxy, and locks the launch salt from
-///              this contract (the Portal requires `locker == launcher` at launch).
-///           2. `mint()` sells one NFT per `nftPrice` sent. A buyer who sends more than the NFTs left gets what is
-///              left and the rest of the BNB back. The call that reaches the cap runs `_launch()`.
-///           3. `_launch()` calls `Portal.launchTaxTokenV2` with `poolQuote = cap`. The supply that is not in the
-///              pool is routed here with `Distribution{EXPLICIT, strategy = this}`.
-///           4. Inside that call the Portal invokes `initializeDistribution`, and this contract pulls that supply.
-///           5. After the launch, `claim()` pays `tokensPerNFT` for each unclaimed NFT the caller holds.
-///           6. After a missed deadline, `refund()` burns the caller's NFTs for `nftPrice` each.
+///         Flap's bonding curve Portal is permissionless, so this works on BNB Chain without a factory approval.
+///         Nobody can withdraw the raise: it leaves this contract only through the launch or through refunds.
+///         There is no mint fee and no commission.
 ///
-///         `mint`, `claim` and `refund` take no arguments, so a host that can only call zero-argument methods
-///         (the Flap Launcher UI runtime) can offer every action. `claimNFTs` and `refundNFTs` take token ids,
-///         for holders with too many NFTs for one call.
-///
-/// @dev Deployed by `RaidPassLauncherFactory` as an ERC1967 beacon proxy. Only the Flap Guardian can upgrade the
-///      implementation. No account can withdraw the raise: it leaves only through the launch or through refunds.
-///      There is no mint fee and no commission.
-contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
+/// @dev Deployed by `CallZCurveFactory` as an immutable minimal clone. There is no owner and no upgrade path.
+contract CallZCurve is Initializable, ERC721 {
     using SafeTransferLib for address;
 
-    /// @notice Supply the Portal mints: 1,000,000,000 tokens.
-    uint256 public constant TOTAL_SUPPLY = 1_000_000_000 ether;
     /// @notice The most BNB a mint can raise.
     uint256 public constant MAX_CAP = 10 ether;
-    /// @notice The most NFTs a mint can hold. Keeps each NFT's share above the dividend minimum balance.
+    /// @notice The most NFTs a mint can hold.
     uint256 public constant MAX_NFTS = 10_000;
     /// @notice NFTs one `mint` call can buy. Bounds the gas of the mint that also runs the launch.
     uint256 public constant MAX_MINT_PER_TX = 50;
-    uint16 public constant MIN_POOL_SHARE_BPS = 1000;
-    uint16 public constant MAX_POOL_SHARE_BPS = 9000;
+    uint16 public constant MIN_TAX_BPS = 100;
     uint16 public constant MAX_TAX_BPS = 1000;
     uint256 public constant MIN_SALE_DURATION = 10 minutes;
     uint256 public constant MAX_SALE_DURATION = 30 days;
@@ -122,26 +126,21 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     uint256 public constant MAX_NAME_BYTES = 64;
     uint256 public constant MAX_SYMBOL_BYTES = 32;
     uint256 public constant MAX_META_BYTES = 128;
+    /// @dev Flap's TOKEN_TAXED_V3.
+    uint8 internal constant TOKEN_VERSION = 6;
 
-    address public hub;
+    /// @notice Flap's bonding curve Portal.
+    address public portal;
     address public creator;
     bytes32 public launchSalt;
 
     /// @notice BNB per NFT.
     uint256 public nftPrice;
-    /// @notice BNB the mint raises; also the exact `poolQuote`.
+    /// @notice BNB the mint raises, all of it spent on the curve at launch.
     uint256 public cap;
     /// @notice NFTs in the mint: `cap / nftPrice`.
     uint256 public maxNFTs;
-    /// @notice End of the mint window.
     uint256 public saleDeadline;
-
-    /// @notice Tokens that go into the pool.
-    uint256 public poolToken;
-    /// @notice Tokens the NFTs share: `TOTAL_SUPPLY - poolToken`.
-    uint256 public holderPool;
-    /// @notice Tokens each NFT claims after the launch: `holderPool / maxNFTs`.
-    uint256 public tokensPerNFT;
     uint16 public buyTaxBps;
     uint16 public sellTaxBps;
 
@@ -156,18 +155,16 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     /// @notice BNB held for the launch: `nftPrice` for every NFT that has not been refunded.
     uint256 public raised;
 
-    /// @notice Set once the Portal launch succeeded.
     bool public launched;
-    /// @notice Set by the Guardian to end the mint early and open refunds.
-    bool public refundsOpen;
-    /// @dev True only while the Portal call is running. It authorizes the distribution callback and blocks
-    ///      `mint()` from re-entering.
+    /// @dev True only while the Portal call is running: blocks re-entry and accepts the Portal's change.
     bool internal launching;
-    bool internal distributionInitialized;
 
     address public token;
-    address public pool;
-    /// @notice Whether an NFT has claimed its tokens.
+    /// @notice Tokens each NFT claims after the launch: the tokens bought on the curve, split equally.
+    uint256 public tokensPerNFT;
+    /// @notice BNB each NFT claims after the launch: any part of the raise the Portal did not spend.
+    uint256 public bnbPerNFT;
+    /// @notice Whether an NFT has claimed.
     mapping(uint256 tokenId => bool) public claimed;
 
     /// @dev NFTs held by each account, and each NFT's position in its holder's list.
@@ -175,10 +172,9 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     mapping(uint256 tokenId => uint256) internal _ownedIndex;
 
     event Minted(address indexed to, uint256 firstId, uint256 qty, uint256 paid);
-    event Launched(address indexed token, address indexed pool, uint256 poolQuote, uint256 poolToken);
+    event Launched(address indexed token, uint256 spent, uint256 tokensBought, uint256 unspent);
     event Claimed(uint256 indexed tokenId, address indexed to, uint256 amount);
     event Refunded(uint256 indexed tokenId, address indexed to, uint256 amount);
-    event RefundsOpened(address indexed guardian);
 
     error InvalidConfig();
     error SaleClosed();
@@ -186,7 +182,7 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     error MintTooLarge();
     error WrongPayment(uint256 sent, uint256 required);
     error LaunchInProgress();
-    error UnauthorizedDistribution();
+    error NothingBought();
     error NotLaunched();
     error AlreadyLaunched();
     error NotHolder(uint256 tokenId);
@@ -195,17 +191,18 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     error NothingToRefund();
     error NothingToClaim();
     error EthTransferFailed();
+    error UnexpectedPayment();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    /// @notice Called once by the factory in the transaction that deploys the proxy.
-    /// @dev `msg.value` is the salt-lock fee the factory forwarded from the Portal call. The Launcher pays it to
-    ///      the Portal itself so the Portal records this proxy as the salt's locker.
-    function initialize(address hub_, address creator_, RaidPassConfig calldata c) external payable initializer {
-        if (hub_ == address(0) || creator_ == address(0) || c.salt == bytes32(0)) revert InvalidConfig();
+    /// @notice Called once by the factory in the transaction that deploys the clone.
+    /// @dev `msg.value` must be the Portal's salt-lock fee. This contract locks the salt itself, so only it can
+    ///      launch a token at the reserved address.
+    function initialize(address portal_, address creator_, CallZCurveConfig calldata c) external payable initializer {
+        if (portal_ == address(0) || creator_ == address(0) || c.salt == bytes32(0)) revert InvalidConfig();
         if (bytes(c.name).length == 0 || bytes(c.name).length > MAX_NAME_BYTES) revert InvalidConfig();
         if (bytes(c.symbol).length == 0 || bytes(c.symbol).length > MAX_SYMBOL_BYTES) revert InvalidConfig();
         if (bytes(c.meta).length > MAX_META_BYTES) revert InvalidConfig();
@@ -213,51 +210,29 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         if (c.nftPrice == 0 || c.cap == 0 || c.cap > MAX_CAP || c.cap % c.nftPrice != 0) revert InvalidConfig();
         uint256 count = c.cap / c.nftPrice;
         if (count > MAX_NFTS) revert InvalidConfig();
-        if (c.poolShareBps < MIN_POOL_SHARE_BPS || c.poolShareBps > MAX_POOL_SHARE_BPS) revert InvalidConfig();
-        if (c.buyTaxBps > MAX_TAX_BPS || c.sellTaxBps > MAX_TAX_BPS) revert InvalidConfig();
+        if (c.buyTaxBps < MIN_TAX_BPS || c.buyTaxBps > MAX_TAX_BPS) revert InvalidConfig();
+        if (c.sellTaxBps < MIN_TAX_BPS || c.sellTaxBps > MAX_TAX_BPS) revert InvalidConfig();
         if (c.saleDuration < MIN_SALE_DURATION || c.saleDuration > MAX_SALE_DURATION) revert InvalidConfig();
 
-        hub = hub_;
+        portal = portal_;
         creator = creator_;
         launchSalt = c.salt;
         nftPrice = c.nftPrice;
         cap = c.cap;
         maxNFTs = count;
         saleDeadline = block.timestamp + c.saleDuration;
-        poolToken = (TOTAL_SUPPLY * c.poolShareBps) / 10_000;
-        holderPool = TOTAL_SUPPLY - poolToken;
-        tokensPerNFT = holderPool / count;
         buyTaxBps = c.buyTaxBps;
         sellTaxBps = c.sellTaxBps;
         tokenName = c.name;
         tokenSymbol = c.symbol;
         tokenMeta = c.meta;
 
-        uint256 fee = IPortal(hub_).SALT_LOCK_FEE();
-        // Exactly the fee: anything extra would stay here, since neither a refund nor the launch can spend it.
+        uint256 fee = IBondingCurvePortal(portal_).SALT_LOCK_FEE();
         if (msg.value != fee) revert InvalidConfig();
-        IPortal(hub_).lockSalt{value: fee}(c.salt, uint8(IPortalTypes.LaunchKind.DIRECT_V2_POOL_TAX));
+        IBondingCurvePortal(portal_).lockSalt{value: fee}(c.salt, TOKEN_VERSION);
     }
 
-    /// @inheritdoc LauncherBase
-    function _getHub() internal view override returns (address) {
-        return hub;
-    }
-
-    /// @inheritdoc LauncherBase
-    function _description() internal view override returns (LauncherDescription memory d) {
-        d.name = tokenName;
-        d.symbol = tokenSymbol;
-        d.quoteToken = address(0); // native BNB, matching `_buildParams`' p.quoteToken
-        d.targetRaise = cap;
-        d.poolTokenRatio = (poolToken * 1e18) / TOTAL_SUPPLY;
-        d.titleZh = RAIDPASS_TITLE_ZH;
-        d.titleEn = RAIDPASS_TITLE_EN;
-        d.summaryZh = RAIDPASS_SUMMARY_ZH;
-        d.summaryEn = RAIDPASS_SUMMARY_EN;
-    }
-
-    /// @notice The raise target: the same value as `cap`, under the name launch pages use.
+    /// @notice The raise target: the same value as `cap`.
     function targetRaise() external view returns (uint256) {
         return cap;
     }
@@ -267,8 +242,8 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         return "1.0.0";
     }
 
-    /// @notice The Launcher's whole state, for a launch page.
-    function info() external view returns (RaidPassInfo memory i) {
+    /// @notice The mint's whole state, for a mint page.
+    function info() external view returns (CallZCurveInfo memory i) {
         i.creator = creator;
         i.tokenName = tokenName;
         i.tokenSymbol = tokenSymbol;
@@ -280,15 +255,12 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         i.burned = burned;
         i.raised = raised;
         i.saleDeadline = saleDeadline;
-        i.poolToken = poolToken;
-        i.holderPool = holderPool;
         i.tokensPerNFT = tokensPerNFT;
+        i.bnbPerNFT = bnbPerNFT;
         i.buyTaxBps = buyTaxBps;
         i.sellTaxBps = sellTaxBps;
         i.launched = launched;
-        i.refundsOpen = refundsOpen;
         i.token = token;
-        i.pool = pool;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -296,13 +268,12 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// @notice Buy NFTs: send `nftPrice` for each one. The call that reaches the cap also launches.
-    /// @dev Takes no argument so that any host can offer it as a single payable action: the quantity is the
-    ///      value sent divided by `nftPrice`, and the value must be an exact multiple. A buyer who asks for more
-    ///      NFTs than are left gets what is left, and the BNB for the others back.
+    /// @dev The quantity is the value sent divided by `nftPrice`, and the value must be an exact multiple. A
+    ///      buyer who asks for more NFTs than are left gets what is left, and the BNB for the others back.
     function mint() external payable {
         if (launching) revert LaunchInProgress();
         if (launched) revert AlreadyLaunched();
-        if (refundsOpen || block.timestamp >= saleDeadline) revert SaleClosed();
+        if (block.timestamp >= saleDeadline) revert SaleClosed();
 
         uint256 price = nftPrice;
         uint256 quantity = msg.value / price;
@@ -314,27 +285,26 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         if (quantity > MAX_MINT_PER_TX) revert MintTooLarge();
 
         uint256 paid = quantity * price;
+        uint256 change = msg.value - paid;
         uint256 first = minted + 1;
         uint256 last = minted + quantity;
         minted = last;
         raised += paid;
-        // `_mint`, not `_safeMint`: no callback into the buyer while the sale state is changing.
         for (uint256 id = first; id <= last; ++id) {
             _mint(msg.sender, id);
         }
         emit Minted(msg.sender, first, quantity, paid);
 
-        if (last == maxNFTs) _launch();
+        // The buyer's change is still held here during the launch, so the launch must not count it.
+        if (last == maxNFTs) _launch(change);
 
         // Overflow: return what the buyer sent for NFTs that were no longer available.
-        if (msg.value > paid) _sendBnb(msg.sender, msg.value - paid);
+        if (change > 0) _sendBnb(msg.sender, change);
     }
 
-    /// @notice Whether NFTs can be burned for a refund: the mint missed its deadline without reaching the cap,
-    ///         or the Guardian opened refunds. Never after the launch.
+    /// @notice Whether NFTs can be burned for a refund: the mint missed its deadline without reaching the cap.
     function refundAvailable() public view returns (bool) {
-        if (launched || launching) return false;
-        return refundsOpen || (block.timestamp >= saleDeadline && minted < maxNFTs);
+        return !launched && !launching && block.timestamp >= saleDeadline && minted < maxNFTs;
     }
 
     /// @notice BNB `account` would get back from `refund()` right now.
@@ -359,8 +329,7 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         _payRefund(count, price);
     }
 
-    /// @notice Burn the listed NFTs for their price. For a holder with too many NFTs for one `refund()` call.
-    ///         The caller must hold every one.
+    /// @notice Burn the listed NFTs for their price. The caller must hold every one.
     function refundNFTs(uint256[] calldata tokenIds) external {
         if (!refundAvailable()) revert RefundUnavailable();
 
@@ -388,53 +357,69 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         if (!ok) revert EthTransferFailed();
     }
 
-    /// @notice Recovery path: end the mint and open refunds, for a Launcher that cannot launch.
-    function openRefunds() external onlyGuardian {
-        if (launched) revert AlreadyLaunched();
-        refundsOpen = true;
-        emit RefundsOpened(msg.sender);
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
-    // Launch and distribution
+    // Launch
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// @dev Runs inside the mint that reaches the cap.
-    function _launch() private {
-        IPortalTypes.CreateTaxTokenParams memory p = _buildParams();
-        Distribution memory dist = Distribution({
-            target: DistributionTarget.EXPLICIT,
-            strategy: address(this), // the Portal calls initializeDistribution on us
-            amount: uint128(holderPool),
-            configData: ""
-        });
-        IPortalTypes.CreatorBuyParams memory creatorBuy;
+    /// @dev Runs inside the mint that reaches the cap: creates the token and spends the raise on the curve.
+    /// @param held BNB in this contract that is not part of the raise (the last buyer's change).
+    function _launch(uint256 held) private {
+        uint256 spend = raised;
+        IBondingCurvePortal.NewTokenV6Params memory p = _buildParams(spend);
 
-        // `LauncherBase._launchOnHub` takes calldata parameters and these are built in memory, so the same
-        // Portal entry point is called directly.
         launching = true;
-        (address token_, address pool_) = IPortal(hub).launchTaxTokenV2{value: p.poolQuote}(p, dist, creatorBuy);
+        address token_ = IBondingCurvePortal(portal).newTokenV6{value: spend}(p);
         launching = false;
 
-        if (!distributionInitialized) revert UnauthorizedDistribution();
+        uint256 bought = IERC20Balance(token_).balanceOf(address(this));
+        if (bought == 0) revert NothingBought();
+        // The Portal returns any part of the first buy it could not spend; the NFTs share it.
+        uint256 unspent = address(this).balance - held;
+
         launched = true;
         token = token_;
-        pool = pool_;
-        emit Launched(token_, pool_, p.poolQuote, p.poolToken);
+        tokensPerNFT = bought / maxNFTs;
+        bnbPerNFT = unspent / maxNFTs;
+        emit Launched(token_, spend - unspent, bought, unspent);
     }
 
-    /// @inheritdoc IStrategy
-    /// @dev Portal callback inside `_launch()`. The Portal has approved `amount`; this must pull all of it.
-    function initializeDistribution(address token_, uint256 amount, bytes calldata, bytes32) external override onlyHub {
-        if (!launching || distributionInitialized) revert UnauthorizedDistribution();
-        if (token_ == address(0) || amount != holderPool) revert InvalidConfig();
-
-        distributionInitialized = true;
-        token = token_;
-
-        token_.safeTransferFrom(msg.sender, address(this), amount);
-        emit FlapDistributionInitialized(token_, amount);
+    /// @dev Accepts BNB only from the Portal while the launch is running (its change from the first buy).
+    receive() external payable {
+        if (!launching) revert UnexpectedPayment();
     }
+
+    /// @dev A tax token with the configured buy and sell tax for 30 days. The tax goes to holders as BNB
+    ///      dividends (75%), to liquidity (15%) and to burning (10%); none of it goes to the creator and there
+    ///      is no commission.
+    function _buildParams(uint256 spend) private view returns (IBondingCurvePortal.NewTokenV6Params memory p) {
+        p.name = tokenName;
+        p.symbol = tokenSymbol;
+        p.meta = tokenMeta;
+        p.dexThresh = 1;
+        p.salt = launchSalt;
+        p.migratorType = 1;
+        p.quoteToken = address(0);
+        p.quoteAmt = spend;
+        p.beneficiary = creator;
+        p.dexId = 0;
+        p.lpFeeProfile = 0;
+        p.buyTaxRate = buyTaxBps;
+        p.sellTaxRate = sellTaxBps;
+        p.taxDuration = 30 days;
+        p.antiFarmerDuration = 1 days;
+        p.mktBps = 0;
+        p.deflationBps = 1000;
+        p.dividendBps = 7500;
+        p.lpBps = 1500;
+        p.minimumShareBalance = 10_000 ether;
+        p.dividendToken = address(0);
+        p.commissionReceiver = address(0);
+        p.tokenVersion = TOKEN_VERSION;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Claim
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// @notice Tokens `account` would receive from `claim()` right now.
     function claimableOf(address account) external view returns (uint256) {
@@ -447,8 +432,8 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         return unclaimed * tokensPerNFT;
     }
 
-    /// @notice Claim the token share of every unclaimed NFT the caller holds. Each NFT claims once and stays
-    ///         with its holder.
+    /// @notice Claim the share of every unclaimed NFT the caller holds. Each NFT claims once and stays with its
+    ///         holder.
     function claim() external {
         if (!launched) revert NotLaunched();
 
@@ -463,11 +448,10 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
             emit Claimed(id, msg.sender, share);
         }
         if (count == 0) revert NothingToClaim();
-        token.safeTransfer(msg.sender, share * count);
+        _payClaim(count);
     }
 
-    /// @notice Claim the token share of each listed NFT. For a holder with too many NFTs for one `claim()` call.
-    ///         The caller must hold every one and none may have claimed.
+    /// @notice Claim the share of each listed NFT. The caller must hold every one and none may have claimed.
     function claimNFTs(uint256[] calldata tokenIds) external {
         if (!launched) revert NotLaunched();
 
@@ -481,7 +465,13 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
             claimed[id] = true;
             emit Claimed(id, msg.sender, share);
         }
-        token.safeTransfer(msg.sender, share * count);
+        _payClaim(count);
+    }
+
+    function _payClaim(uint256 count) private {
+        token.safeTransfer(msg.sender, tokensPerNFT * count);
+        uint256 bnb = bnbPerNFT * count;
+        if (bnb > 0) _sendBnb(msg.sender, bnb);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -515,60 +505,9 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Launch parameters
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// @dev The whole raise as the quote side, the configured share of the supply as the token side, and the
-    ///      configured taxes for 30 days.
-    function _buildParams() private view returns (IPortalTypes.CreateTaxTokenParams memory p) {
-        p.name = tokenName;
-        p.symbol = tokenSymbol;
-        p.meta = tokenMeta;
-        p.totalSupply = TOTAL_SUPPLY;
-        p.salt = launchSalt;
-        p.quoteToken = address(0); // native BNB
-        p.dexId = 0;
-        p.poolQuote = raised;
-        p.poolToken = poolToken;
-        p.buyTaxRate = buyTaxBps;
-        p.sellTaxRate = sellTaxBps;
-        p.taxDuration = 30 days;
-        p.antiFarmerDuration = 1 days;
-        p.feeConfigs = _feeConfigs();
-        p.antiSniperMode = 0;
-        p.exemptWindow = 0;
-        p.exemptAddrs = new address[](0);
-        p.creatorBuyQuote = 0;
-        // Show the wallet that created the Launcher, not this contract, as the creator on the launch event.
-        (p.extensionID, p.extensionData) = LaunchExtensionHelper.encodeCreator(creator);
-        // No royalty: no commission on launches.
-        p.commissionReceiver = address(0);
-    }
-
-    /// @dev Tax split, bps summing to 10_000: 10% burn, 15% liquidity, 75% BNB dividends to holders. The
-    ///      dividend minimum balance is the lowest the Portal allows (0.001% of supply), so one NFT's share
-    ///      qualifies even in the largest mint.
-    function _feeConfigs() private pure returns (IPortalTypes.FeeConfig[] memory fees) {
-        fees = new IPortalTypes.FeeConfig[](3);
-        fees[0] = IPortalTypes.FeeConfig({feeType: IPortalTypes.FeeSlotType.DEFLATION, bps: 1000, configData: ""});
-        fees[1] = IPortalTypes.FeeConfig({feeType: IPortalTypes.FeeSlotType.LP_BPS, bps: 1500, configData: ""});
-        fees[2] = IPortalTypes.FeeConfig({
-            feeType: IPortalTypes.FeeSlotType.DIVIDEND,
-            bps: 7500,
-            configData: abi.encode(
-                IPortalTypes.FeeConfigDividend({
-                    dividendToken: address(0), // quote token
-                    minimumShareBalance: TOTAL_SUPPLY / 100_000
-                })
-            )
-        });
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
     // ERC721 metadata
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// @notice Collection name: the token name followed by "CallZ Pass".
     function name() public view override returns (string memory) {
         return string.concat(tokenName, " CallZ Pass");
     }
@@ -609,7 +548,7 @@ contract RaidPassLauncher is LauncherBase, Initializable, ERC721, IStrategy {
                         id,
                         '","description":"CallZ pass for ',
                         LibString.escapeJSON(tokenName, false),
-                        '. Claims an equal share of the supply that is not in the pool, once, and stays with its holder.",',
+                        '. Claims an equal share of the tokens bought on the bonding curve at launch and stays with its holder.",',
                         '"attributes":[{"trait_type":"Status","value":"',
                         status,
                         '"}],"image":"data:image/svg+xml;base64,',

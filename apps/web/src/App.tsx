@@ -1,15 +1,15 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { DeployersPage, FactoriesPage, HomePage, LaunchesPage, TokensPage } from "./aggregator";
 import { short } from "./format";
-import { RAIDPASS, SITES, type Site } from "./site";
+import { FLAP_LAUNCH, SITES, type Site } from "./site";
 import { connect, switchChain, useWallet } from "./wallet";
 import { ScopePage } from "./scope";
 import type { PancakeRoute } from "./pancake";
 import type { PoolsRoute } from "./pools";
-import type { Locale, RaidPassRoute } from "./raidpass";
+import type { FlapLaunchRoute, Locale } from "./flap-launch";
 
 // The launchpad needs a chain library and the launch UI package: both load only when one of its pages opens.
-const RaidPassSection = lazy(() => import("./raidpass"));
+const FlapLaunchSection = lazy(() => import("./flap-launch"));
 // A token's page trades through PancakeSwap, which needs the chain library too.
 const TokenPage = lazy(() => import("./token"));
 // A token's pop-out window: chart on top, chat under it. Several can be open at once.
@@ -30,7 +30,7 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
 ];
 
 type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
-type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | PoolsRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "review" } | { name: "missing" };
+type Route = AggregatorRoute | FlapLaunchRoute | PancakeRoute | PoolsRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "review" } | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
@@ -42,7 +42,7 @@ function parseRoute(hash: string): Route {
   // it is reachable by its address and linked from nowhere.
   if (path === "/launch") return { name: "launch" };
   if (path === "/launch/create") return { name: "launch-create" };
-  if (path === "/launch/testnet" || path === "/raidpass") return { name: "raidpass" };
+  if (path === "/launch/testnet") return { name: "flaplaunch" };
   const mint = /^\/mint\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (mint?.[1]) return { name: "mint", address: mint[1].toLowerCase() };
   if (path === "/pools") return { name: "pools" };
@@ -200,7 +200,7 @@ const NAV: ReadonlyArray<{ href: string; label: string; short?: string; wide?: b
   { href: "#/pools", label: "Pools", routes: ["pools", "pool"] },
   { href: "#/factories", label: "Factories", routes: ["factories"] },
   { href: "#/deployers", label: "Deployers", routes: ["deployers"], wide: true },
-  { href: "#/launch", label: "Launch", routes: ["launch", "launch-create", "mint", "raidpass", "create", "launcher"] },
+  { href: "#/launch", label: "Launch", routes: ["launch", "launch-create", "mint", "flaplaunch", "create", "launcher"] },
 ];
 
 /** What a page works with: the index, the unlinked testnet launchpad's own network, or the chain itself. All but that one are on BNB Chain. */
@@ -234,14 +234,14 @@ function Controls({ mode, locale, onLocale }: Omit<ShellProps, "route" | "childr
   if (mode !== "launchpad") return <span className="pill pill-muted">{SITES.bsc.label}</span>;
   return (
     <>
-      <span className="pill pill-muted">{RAIDPASS.short}</span>
+      <span className="pill pill-muted">{FLAP_LAUNCH.short}</span>
       <LocaleSwitch locale={locale} onChange={onLocale} />
     </>
   );
 }
 
 /** The network a page's wallet button checks for. */
-const walletTarget = (mode: Mode): Site => (mode === "launchpad" ? RAIDPASS : SITES.bsc);
+const walletTarget = (mode: Mode): Site => (mode === "launchpad" ? FLAP_LAUNCH : SITES.bsc);
 
 function DesktopShell({ route, children, ...controls }: ShellProps) {
   return (
@@ -275,8 +275,8 @@ function MobileShell({ route, children, ...controls }: ShellProps) {
   );
 }
 
-const isLaunchpad = (route: Route): route is RaidPassRoute =>
-  route.name === "raidpass" || route.name === "create" || route.name === "launcher";
+const isLaunchpad = (route: Route): route is FlapLaunchRoute =>
+  route.name === "flaplaunch" || route.name === "create" || route.name === "launcher";
 
 export function App() {
   const route = useRoute();
@@ -306,7 +306,7 @@ export function App() {
         {route.name === "deployers" && <DeployersPage site={site} mobile={mobile} />}
         {isLaunchpad(route) && (
           <Suspense fallback={<p className="note" role="status">Loading the launchpad…</p>}>
-            <RaidPassSection route={route} locale={locale} mobile={mobile} />
+            <FlapLaunchSection route={route} locale={locale} mobile={mobile} />
           </Suspense>
         )}
         {route.name === "token" && (

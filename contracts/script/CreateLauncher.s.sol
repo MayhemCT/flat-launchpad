@@ -6,13 +6,13 @@ import {ClonesUpgradeable} from "@openzeppelin-contracts-upgradeable/proxy/Clone
 
 import {IPortal} from "src/flap/IPortal.sol";
 import {LaunchVaultAddresses} from "src/flap/LaunchVaultAddresses.sol";
-import {RaidPassLauncherFactory} from "src/raidpass/RaidPassLauncherFactory.sol";
-import {RaidPassLauncher, RaidPassConfig} from "src/raidpass/RaidPassLauncher.sol";
+import {CallZLauncherFactory} from "src/callz/CallZLauncherFactory.sol";
+import {CallZLauncher, CallZConfig} from "src/callz/CallZLauncher.sol";
 
-/// @notice Creates one RaidPass Launcher through the Portal, the same call a launch page makes.
+/// @notice Creates one CallZ Launcher through the Portal, the same call a launch page makes.
 ///
 ///   Environment:
-///     FACTORY        RaidPassLauncherFactory address
+///     FACTORY        CallZLauncherFactory address
 ///     TOKEN_NAME     token name
 ///     TOKEN_SYMBOL   token symbol
 ///     TOKEN_META     metadata CID (may be empty)
@@ -29,10 +29,10 @@ contract CreateLauncher is Script {
     address internal constant TOKEN_IMPL = 0x7777c57ff7dc441c1715b2e36fa581c48B782222;
 
     function run() external returns (address launcher) {
-        RaidPassLauncherFactory factory = RaidPassLauncherFactory(vm.envAddress("FACTORY"));
+        CallZLauncherFactory factory = CallZLauncherFactory(vm.envAddress("FACTORY"));
         IPortal portal = IPortal(LaunchVaultAddresses.hub());
 
-        RaidPassConfig memory c;
+        CallZConfig memory c;
         c.name = vm.envString("TOKEN_NAME");
         c.symbol = vm.envString("TOKEN_SYMBOL");
         c.meta = vm.envOr("TOKEN_META", string(""));
@@ -51,8 +51,8 @@ contract CreateLauncher is Script {
 
         console.log("launcher     ", launcher);
         console.log("token (soon) ", ClonesUpgradeable.predictDeterministicAddress(TOKEN_IMPL, c.salt, address(portal)));
-        console.log("target raise ", RaidPassLauncher(launcher).targetRaise());
-        console.log("sale deadline", RaidPassLauncher(launcher).saleDeadline());
+        console.log("target raise ", CallZLauncher(launcher).targetRaise());
+        console.log("sale deadline", CallZLauncher(launcher).saleDeadline());
     }
 
     /// @dev The Portal only locks a salt whose token address ends in 0x7777: about 65,000 tries.

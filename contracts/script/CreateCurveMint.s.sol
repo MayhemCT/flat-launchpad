@@ -4,13 +4,13 @@ pragma solidity ^0.8.26;
 import {Script, console} from "forge-std/Script.sol";
 import {ClonesUpgradeable} from "@openzeppelin-contracts-upgradeable/proxy/ClonesUpgradeable.sol";
 
-import {RaidPassCurveFactory} from "src/raidpass/RaidPassCurveFactory.sol";
-import {RaidPassCurve, RaidPassCurveConfig, IBondingCurvePortal} from "src/raidpass/RaidPassCurve.sol";
+import {CallZCurveFactory} from "src/callz/CallZCurveFactory.sol";
+import {CallZCurve, CallZCurveConfig, IBondingCurvePortal} from "src/callz/CallZCurve.sol";
 
-/// @notice Creates one RaidPass mint on BNB Chain. Costs the Portal's salt-lock fee (0.01 BNB) plus gas.
+/// @notice Creates one CallZ mint on BNB Chain. Costs the Portal's salt-lock fee (0.01 BNB) plus gas.
 ///
 ///   Environment:
-///     CURVE_FACTORY  RaidPassCurveFactory address
+///     CURVE_FACTORY  CallZCurveFactory address
 ///     TOKEN_NAME     token name
 ///     TOKEN_SYMBOL   token symbol
 ///     TOKEN_META     metadata CID from Flap's upload API (optional)
@@ -20,18 +20,18 @@ import {RaidPassCurve, RaidPassCurveConfig, IBondingCurvePortal} from "src/raidp
 ///     BUY_TAX_BPS    buy tax, bps, 100 to 1000 (default 300)
 ///     SELL_TAX_BPS   sell tax, bps, 100 to 1000 (default 500)
 ///
-///   forge script script/CreateCurveMint.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
+///   forge script script/CreateCurveMint.s.sol --rpc-url https://bsc-rpc.publicnode.com --account callz --broadcast --legacy
 contract CreateCurveMint is Script {
     /// @dev Flap's Tax Token V3 implementation on BNB Chain: the Portal clones it, and the clone's address must
     ///      end in 0x7777.
     address internal constant TAX_TOKEN_V3_IMPL = 0x024f18294970B5c76c0691b87f138A0317156422;
 
     function run() external returns (address mint) {
-        require(block.chainid == 56, "RaidPassCurve runs on BNB Chain");
-        RaidPassCurveFactory factory = RaidPassCurveFactory(vm.envAddress("CURVE_FACTORY"));
+        require(block.chainid == 56, "CallZCurve runs on BNB Chain");
+        CallZCurveFactory factory = CallZCurveFactory(vm.envAddress("CURVE_FACTORY"));
         address portal = factory.portal();
 
-        RaidPassCurveConfig memory c;
+        CallZCurveConfig memory c;
         c.name = vm.envString("TOKEN_NAME");
         c.symbol = vm.envString("TOKEN_SYMBOL");
         c.meta = vm.envOr("TOKEN_META", string(""));
@@ -50,9 +50,9 @@ contract CreateCurveMint is Script {
         console.log("mint (send BNB to mint() here)", mint);
         console.log("token address after launch    ", ClonesUpgradeable.predictDeterministicAddress(TAX_TOKEN_V3_IMPL, c.salt, portal));
         console.log("price per NFT, wei            ", c.nftPrice);
-        console.log("NFTs for sale                 ", RaidPassCurve(payable(mint)).maxNFTs());
+        console.log("NFTs for sale                 ", CallZCurve(payable(mint)).maxNFTs());
         console.log("cap (total to sell out), wei  ", c.cap);
-        console.log("sale deadline, unix           ", RaidPassCurve(payable(mint)).saleDeadline());
+        console.log("sale deadline, unix           ", CallZCurve(payable(mint)).saleDeadline());
     }
 
     /// @dev About 65,000 tries.

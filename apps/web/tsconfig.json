@@ -20,7 +20,7 @@
     ],
     "paths": {
       "@launcher-ui/*": [
-        "../../flap-ui/raidpass-launcher/*"
+        "../../flap-ui/callz-launcher/*"
       ]
     }
   },
@@ -29,6 +29,6 @@
     "tests",
     "vite.config.ts",
     "playwright.config.ts",
-    "../../flap-ui/raidpass-launcher/Component.tsx"
+    "../../flap-ui/callz-launcher/Component.tsx"
   ]
 }

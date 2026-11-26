@@ -17,7 +17,7 @@ const openLauncher = (address: string) => {
   window.location.hash = `#/launcher/${address}`;
 };
 
-export type RaidPassRoute = { name: "raidpass" } | { name: "create" } | { name: "launcher"; address: string };
+export type FlapLaunchRoute = { name: "flaplaunch" } | { name: "create" } | { name: "launcher"; address: string };
 
 interface LaunchRow {
   address: Address;
@@ -190,7 +190,7 @@ function MintList({ mobile }: { mobile: boolean }) {
   );
 }
 
-function RaidPassHome({ mobile }: { mobile: boolean }) {
+function FlapLaunchHome({ mobile }: { mobile: boolean }) {
   return (
     <>
       <section className="hero">
@@ -363,8 +363,8 @@ function LauncherPage({ address, locale }: { address: Address; locale: Locale })
   );
 }
 
-export default function RaidPassSection({ route, locale, mobile }: { route: RaidPassRoute; locale: Locale; mobile: boolean }) {
+export default function FlapLaunchSection({ route, locale, mobile }: { route: FlapLaunchRoute; locale: Locale; mobile: boolean }) {
   if (route.name === "create") return <CreatePage locale={locale} />;
   if (route.name === "launcher") return <LauncherPage address={route.address as Address} locale={locale} />;
-  return <RaidPassHome mobile={mobile} />;
+  return <FlapLaunchHome mobile={mobile} />;
 }

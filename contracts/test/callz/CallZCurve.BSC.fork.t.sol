@@ -5,19 +5,19 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {ClonesUpgradeable} from "@openzeppelin-contracts-upgradeable/proxy/ClonesUpgradeable.sol";
 
-import {RaidPassCurve, RaidPassCurveConfig, RaidPassCurveInfo, IBondingCurvePortal} from "src/raidpass/RaidPassCurve.sol";
-import {RaidPassCurveFactory} from "src/raidpass/RaidPassCurveFactory.sol";
+import {CallZCurve, CallZCurveConfig, CallZCurveInfo, IBondingCurvePortal} from "src/callz/CallZCurve.sol";
+import {CallZCurveFactory} from "src/callz/CallZCurveFactory.sol";
 
-/// @notice RaidPassCurve against Flap's live bonding curve Portal on a fork of BNB Chain. Nothing is pranked on
+/// @notice CallZCurve against Flap's live bonding curve Portal on a fork of BNB Chain. Nothing is pranked on
 ///         the Portal: this is the same permissionless path a real deployment uses. Needs BSC_RPC_URL.
-contract RaidPassCurveBSCForkTest is Test {
+contract CallZCurveBSCForkTest is Test {
     address internal constant PORTAL = 0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0;
     address internal constant TAX_TOKEN_V3_IMPL = 0x024f18294970B5c76c0691b87f138A0317156422;
 
     uint256 internal constant PRICE = 0.01 ether;
     uint256 internal constant NFTS = 10;
 
-    RaidPassCurveFactory internal factory;
+    CallZCurveFactory internal factory;
     address internal creator = address(uint160(0xC0DE0001));
     address internal alice = address(uint160(0xC0DE0002));
     address internal bob = address(uint160(0xC0DE0003));
@@ -34,7 +34,7 @@ contract RaidPassCurveBSCForkTest is Test {
         vm.deal(creator, 1 ether);
         vm.deal(alice, 20 ether);
         vm.deal(bob, 20 ether);
-        factory = new RaidPassCurveFactory(PORTAL);
+        factory = new CallZCurveFactory(PORTAL);
     }
 
     function _mineSalt(bytes32 seed) internal returns (bytes32 salt) {
@@ -47,7 +47,7 @@ contract RaidPassCurveBSCForkTest is Test {
         }
     }
 
-    function _config(bytes32 seed) internal returns (RaidPassCurveConfig memory c) {
+    function _config(bytes32 seed) internal returns (CallZCurveConfig memory c) {
         c.name = "Raid Example";
         c.symbol = "RAIDX";
         c.meta = "bafkreig4y5nwb4izyilbbmiydumvkld446d4k7j4ohg3x3q2lfel3fo4yq";
@@ -59,16 +59,16 @@ contract RaidPassCurveBSCForkTest is Test {
         c.sellTaxBps = 500;
     }
 
-    function _create(RaidPassCurveConfig memory c) internal returns (RaidPassCurve mint) {
+    function _create(CallZCurveConfig memory c) internal returns (CallZCurve mint) {
         uint256 fee = IBondingCurvePortal(PORTAL).SALT_LOCK_FEE();
         vm.prank(creator);
-        mint = RaidPassCurve(payable(factory.create{value: fee}(c)));
+        mint = CallZCurve(payable(factory.create{value: fee}(c)));
     }
 
-    function _expectInvalid(RaidPassCurveConfig memory c) internal {
+    function _expectInvalid(CallZCurveConfig memory c) internal {
         uint256 fee = IBondingCurvePortal(PORTAL).SALT_LOCK_FEE();
         vm.prank(creator);
-        vm.expectRevert(RaidPassCurve.InvalidConfig.selector);
+        vm.expectRevert(CallZCurve.InvalidConfig.selector);
         factory.create{value: fee}(c);
     }
 
@@ -80,9 +80,9 @@ contract RaidPassCurveBSCForkTest is Test {
     }
 
     function test_01_fullJourneyOnTheBondingCurve() public {
-        RaidPassCurveConfig memory c = _config("curve-journey");
+        CallZCurveConfig memory c = _config("curve-journey");
         address predicted = factory.predict(creator, c.salt);
-        RaidPassCurve mint = _create(c);
+        CallZCurve mint = _create(c);
 
         assertEq(address(mint), predicted, "the mint address is known before creation");
         assertEq(mint.creator(), creator);
@@ -99,7 +99,7 @@ contract RaidPassCurveBSCForkTest is Test {
         vm.prank(alice);
         mint.transferFrom(alice, bob, 4);
         vm.prank(alice);
-        vm.expectRevert(RaidPassCurve.NotLaunched.selector);
+        vm.expectRevert(CallZCurve.NotLaunched.selector);
         mint.claim();
 
         // Bob mints the last 6: that mint creates the token and buys on the curve with the whole raise.
@@ -118,7 +118,7 @@ contract RaidPassCurveBSCForkTest is Test {
         assertGe(IERC20(token).balanceOf(address(mint)), share * NFTS, "the mint holds every NFT's share");
         assertLt(address(mint).balance - bnbShare * NFTS, NFTS, "only unspent BNB (and rounding dust) is left");
 
-        RaidPassCurveInfo memory i = mint.info();
+        CallZCurveInfo memory i = mint.info();
         assertTrue(i.launched);
         assertEq(i.token, token);
         assertEq(i.minted, NFTS);
@@ -141,20 +141,20 @@ contract RaidPassCurveBSCForkTest is Test {
 
         // An NFT claims once and stays with its holder.
         vm.prank(alice);
-        vm.expectRevert(RaidPassCurve.NothingToClaim.selector);
+        vm.expectRevert(CallZCurve.NothingToClaim.selector);
         mint.claim();
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(RaidPassCurve.AlreadyClaimed.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(CallZCurve.AlreadyClaimed.selector, 1));
         mint.claimNFTs(_ids(1, 1));
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(RaidPassCurve.NotHolder.selector, 5));
+        vm.expectRevert(abi.encodeWithSelector(CallZCurve.NotHolder.selector, 5));
         mint.claimNFTs(_ids(5, 5));
         assertEq(mint.ownerOf(2), alice);
         assertEq(mint.nftsOf(alice).length, 3);
 
         // The mint is over and nothing can be refunded.
         vm.prank(bob);
-        vm.expectRevert(RaidPassCurve.AlreadyLaunched.selector);
+        vm.expectRevert(CallZCurve.AlreadyLaunched.selector);
         mint.mint{value: PRICE}();
         assertFalse(mint.refundAvailable());
 
@@ -163,7 +163,7 @@ contract RaidPassCurveBSCForkTest is Test {
     }
 
     function test_02_overflowOnTheLastMintIsRefunded() public {
-        RaidPassCurve mint = _create(_config("curve-overflow"));
+        CallZCurve mint = _create(_config("curve-overflow"));
 
         vm.prank(alice);
         mint.mint{value: 8 * PRICE}();
@@ -184,7 +184,7 @@ contract RaidPassCurveBSCForkTest is Test {
     }
 
     function test_03_burnToRefundWhenTheCapIsMissed() public {
-        RaidPassCurve mint = _create(_config("curve-refund"));
+        CallZCurve mint = _create(_config("curve-refund"));
 
         vm.prank(alice);
         mint.mint{value: 4 * PRICE}();
@@ -192,14 +192,14 @@ contract RaidPassCurveBSCForkTest is Test {
         mint.transferFrom(alice, bob, 3);
 
         vm.prank(alice);
-        vm.expectRevert(RaidPassCurve.RefundUnavailable.selector);
+        vm.expectRevert(CallZCurve.RefundUnavailable.selector);
         mint.refund();
 
         vm.warp(mint.saleDeadline());
         assertEq(mint.refundableOf(alice), 3 * PRICE);
 
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(RaidPassCurve.NotHolder.selector, 3));
+        vm.expectRevert(abi.encodeWithSelector(CallZCurve.NotHolder.selector, 3));
         mint.refundNFTs(_ids(3, 3));
         vm.prank(alice);
         mint.refundNFTs(_ids(1, 1));
@@ -215,13 +215,13 @@ contract RaidPassCurveBSCForkTest is Test {
         assertEq(address(mint).balance, 0);
         assertFalse(mint.launched());
         vm.prank(alice);
-        vm.expectRevert(RaidPassCurve.NothingToRefund.selector);
+        vm.expectRevert(CallZCurve.NothingToRefund.selector);
         mint.refund();
     }
 
     function test_04_configRules() public {
         // The cap is at most 10 BNB.
-        RaidPassCurveConfig memory c = _config("curve-config");
+        CallZCurveConfig memory c = _config("curve-config");
         c.nftPrice = 1 ether;
         c.cap = 11 ether;
         _expectInvalid(c);
@@ -245,35 +245,35 @@ contract RaidPassCurveBSCForkTest is Test {
 
         // A 10 BNB cap is accepted.
         c.saleDuration = 1 days;
-        RaidPassCurve mint = _create(c);
+        CallZCurve mint = _create(c);
         assertEq(mint.maxNFTs(), 10);
     }
 
     function test_05_thePortalAcceptsBothEndsOfTheTaxRange() public {
-        RaidPassCurveConfig memory low = _config("curve-tax-low");
+        CallZCurveConfig memory low = _config("curve-tax-low");
         low.buyTaxBps = 100;
         low.sellTaxBps = 100;
-        RaidPassCurve a = _create(low);
+        CallZCurve a = _create(low);
         vm.prank(alice);
         a.mint{value: NFTS * PRICE}();
         assertTrue(a.launched(), "1% taxes launch");
 
-        RaidPassCurveConfig memory high = _config("curve-tax-high");
+        CallZCurveConfig memory high = _config("curve-tax-high");
         high.buyTaxBps = 1000;
         high.sellTaxBps = 1000;
-        RaidPassCurve b = _create(high);
+        CallZCurve b = _create(high);
         vm.prank(bob);
         b.mint{value: NFTS * PRICE}();
         assertTrue(b.launched(), "10% taxes launch");
     }
 
     function test_06_guards() public {
-        RaidPassCurve mint = _create(_config("curve-guards"));
+        CallZCurve mint = _create(_config("curve-guards"));
 
         vm.startPrank(alice);
-        vm.expectRevert(RaidPassCurve.ZeroQuantity.selector);
+        vm.expectRevert(CallZCurve.ZeroQuantity.selector);
         mint.mint();
-        vm.expectRevert(abi.encodeWithSelector(RaidPassCurve.WrongPayment.selector, PRICE + 1, PRICE));
+        vm.expectRevert(abi.encodeWithSelector(CallZCurve.WrongPayment.selector, PRICE + 1, PRICE));
         mint.mint{value: PRICE + 1}();
         vm.stopPrank();
 
@@ -283,30 +283,30 @@ contract RaidPassCurveBSCForkTest is Test {
         assertFalse(ok, "direct payments are rejected");
 
         // The clone and the implementation cannot be initialized again.
-        RaidPassCurveConfig memory c = _config("curve-reinit");
+        CallZCurveConfig memory c = _config("curve-reinit");
         vm.expectRevert();
         mint.initialize(PORTAL, alice, c);
-        RaidPassCurve impl = RaidPassCurve(payable(factory.implementation()));
+        CallZCurve impl = CallZCurve(payable(factory.implementation()));
         vm.expectRevert();
         impl.initialize(PORTAL, alice, c);
 
         vm.warp(mint.saleDeadline());
         vm.prank(alice);
-        vm.expectRevert(RaidPassCurve.SaleClosed.selector);
+        vm.expectRevert(CallZCurve.SaleClosed.selector);
         mint.mint{value: PRICE}();
     }
 
     /// @dev BNB Chain rejects any transaction above 16,777,216 gas. Run with `forge test --isolate`.
     function test_07_theHeaviestTransactionFitsTheGasCap() public {
-        RaidPassCurveConfig memory c = _config("curve-gas");
+        CallZCurveConfig memory c = _config("curve-gas");
         c.cap = 70 * PRICE;
-        RaidPassCurve mint = _create(c);
+        CallZCurve mint = _create(c);
 
         vm.prank(alice);
         mint.mint{value: 10 * PRICE}();
         // 60 are left: more than the per-call maximum is refused.
         vm.prank(bob);
-        vm.expectRevert(RaidPassCurve.MintTooLarge.selector);
+        vm.expectRevert(CallZCurve.MintTooLarge.selector);
         mint.mint{value: 51 * PRICE}();
 
         vm.prank(alice);

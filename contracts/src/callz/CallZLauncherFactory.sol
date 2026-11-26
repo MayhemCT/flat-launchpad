@@ -6,13 +6,13 @@ import {UpgradeableBeacon} from "solady/utils/UpgradeableBeacon.sol";
 
 import {LauncherFactoryBase} from "src/flap/LauncherFactoryBase.sol";
 import {LauncherDataSchema, FieldDescriptor} from "src/flap/IVaultSchemas.sol";
-import {RaidPassLauncher, RaidPassConfig} from "./RaidPassLauncher.sol";
+import {CallZLauncher, CallZConfig} from "./CallZLauncher.sol";
 
-/// @title RaidPassLauncherFactory
-/// @notice Deploys one `RaidPassLauncher` per launch.
+/// @title CallZLauncherFactory
+/// @notice Deploys one `CallZLauncher` per launch.
 ///
 ///         - `newLauncher` is Portal-only (applied by `LauncherFactoryBase`).
-///         - `data` is `abi.encode(RaidPassConfig)`, decoded strictly: any other encoding reverts.
+///         - `data` is `abi.encode(CallZConfig)`, decoded strictly: any other encoding reverts.
 ///         - The salt-lock fee is forwarded to the Launcher, which locks the salt itself.
 ///         - Each Launcher is an ERC1967 beacon proxy at an address fixed by `(beacon, config.salt)`.
 ///         - `upgradeVaultImplementation` is the only privileged function and only the Flap Guardian can call it.
@@ -20,14 +20,14 @@ import {RaidPassLauncher, RaidPassConfig} from "./RaidPassLauncher.sol";
 ///
 ///         The Portal and the Guardian come from the chain registry in `LaunchVaultAddresses`, so the same
 ///         bytecode is correct on BNB Chain and BNB Chain Testnet.
-contract RaidPassLauncherFactory is LauncherFactoryBase {
+contract CallZLauncherFactory is LauncherFactoryBase {
     /// @notice The solady `UpgradeableBeacon` every Launcher proxy points at.
     address public immutable beacon;
 
     /// @notice Every Launcher this factory created, oldest first.
     address[] public launchers;
 
-    event RaidPassLauncherCreated(
+    event CallZLauncherCreated(
         address indexed launcher, address indexed creator, bytes32 launchSalt, uint256 nftPrice, uint256 cap
     );
     event FlapLauncherImplementationUpgraded(address implementation);
@@ -35,7 +35,7 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
     error InvalidData();
 
     constructor() {
-        beacon = address(new UpgradeableBeacon(address(this), address(new RaidPassLauncher())));
+        beacon = address(new UpgradeableBeacon(address(this), address(new CallZLauncher())));
     }
 
     /// @notice The Pool Launch Portal this factory deploys Launchers for.
@@ -64,15 +64,15 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
 
     /// @inheritdoc LauncherFactoryBase
     function _newLauncher(address creator, bytes calldata data) internal override returns (address launcher) {
-        RaidPassConfig memory config = abi.decode(data, (RaidPassConfig));
+        CallZConfig memory config = abi.decode(data, (CallZConfig));
         // Strict: the canonical encoding of the decoded config must be exactly what was sent.
         if (keccak256(abi.encode(config)) != keccak256(data)) revert InvalidData();
 
         launcher = LibClone.deployDeterministicERC1967BeaconProxy(beacon, config.salt);
-        RaidPassLauncher(launcher).initialize{value: msg.value}(_getHub(), creator, config);
+        CallZLauncher(launcher).initialize{value: msg.value}(_getHub(), creator, config);
         launchers.push(launcher);
 
-        emit RaidPassLauncherCreated(launcher, creator, config.salt, config.nftPrice, config.cap);
+        emit CallZLauncherCreated(launcher, creator, config.salt, config.nftPrice, config.cap);
     }
 
     /// @inheritdoc LauncherFactoryBase
