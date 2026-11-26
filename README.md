@@ -13,11 +13,44 @@ On Pool Launch there is no bonding curve: the builder decides how the pool's fir
 
 What makes it different from a contribution round: the allocation is a transferable NFT rather than a ledger entry, so a position in the presale can be sold before the token exists and the refund right travels with it. Nobody can withdraw the raise. It leaves the Launcher only through the launch or through refunds, and the factory takes no fee or commission.
 
+## Two launch paths
+
+| | Where the token launches | Network | Permission |
+| --- | --- | --- | --- |
+| `RaidPassLauncher` | Flap Pool Launch: straight into a DEX pool, LP burned | BNB Chain Testnet today | On BNB Chain, Flap must audit and enable the factory |
+| `RaidPassCurve` | Flap bonding curve: the raise is the launch's first buy | BNB Chain | None. The bonding curve Portal is permissionless |
+
+Both are the same NFT mint: fixed price, sold-out mint launches in the same transaction, one claim per pass, burn-to-refund if the mint fails. They differ only in what the launch does with the raise.
+
+### RaidPassCurve on BNB Chain
+
+The mint that sells the last pass calls `Portal.newTokenV6` on Flap's bonding curve Portal and sends the whole raise as the creator's first buy. The mint contract receives the tokens bought on the curve and each pass claims an equal share. There is no liquidity floor, so a mint can be small.
+
+```
+RaidPassCurveFactory  0x9d23ADB812d708aD63327a3aB6f661Be2D93C5e8   (CREATE2, BNB Chain)
+```
+
+```sh
+cd contracts
+cast wallet import raidpass --interactive
+forge script script/DeployCurve.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
+
+export CURVE_FACTORY=0x9d23ADB812d708aD63327a3aB6f661Be2D93C5e8
+export TOKEN_NAME="RaidPass" TOKEN_SYMBOL=RAID
+export MINT_PRICE=10000000000000000 MAX_PASSES=5 SALE_DURATION=3600
+forge script script/CreateCurveMint.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
+
+cast send <mint> "mint()" --value 0.05ether --rpc-url https://bsc-rpc.publicnode.com --account raidpass --legacy
+cast send <mint> "claim()" --rpc-url https://bsc-rpc.publicnode.com --account raidpass --legacy
+```
+
+Creating a mint costs the Portal's salt-lock fee (0.01 BNB) plus gas. `RaidPassCurveBSCForkTest` runs the flow against a fork of BNB Chain with nothing impersonated, and the commands above were rehearsed end to end on a local fork. The contracts are not audited.
+
 ## What is in this repository
 
 | Path | What it is |
 | --- | --- |
-| `contracts/src/raidpass/` | `RaidPassLauncher` (ERC-721 mint + Launcher) and `RaidPassLauncherFactory`, built on Flap's `LauncherBase` and `LauncherFactoryBase`. |
+| `contracts/src/raidpass/` | `RaidPassLauncher` and `RaidPassLauncherFactory` (Pool Launch, on Flap's `LauncherBase` and `LauncherFactoryBase`), and `RaidPassCurve` and `RaidPassCurveFactory` (bonding curve). |
 | `contracts/test/raidpass/` | Fork tests that run the whole flow against the live Pool Launch Portal. |
 | `contracts/script/` | `Deploy.s.sol` (factory) and `CreateLauncher.s.sol` (one Launcher through the Portal). |
 | `flap-ui/raidpass-launcher/` | The launch UI in Flap's Launcher UI template format: creation form and mint page. |
