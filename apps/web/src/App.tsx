@@ -61,9 +61,12 @@ function Backdrop() {
     let handle: { dispose(): void } | undefined;
     // After first paint, and only then, fetch three.js and start the scene.
     const begin = () => {
-      void import("./scene").then(({ startScene }) => {
-        if (!disposed && canvas.current) handle = startScene(canvas.current);
-      });
+      void import("./scene")
+        .then(({ startScene }) => {
+          if (!disposed && canvas.current) handle = startScene(canvas.current);
+        })
+        // A browser without WebGL shows the page without the background.
+        .catch(() => undefined);
     };
     const idle = window.requestIdleCallback ? window.requestIdleCallback(begin, { timeout: 1200 }) : window.setTimeout(begin, 200);
     return () => {
