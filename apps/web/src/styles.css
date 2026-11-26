@@ -526,14 +526,33 @@ h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
 .shell-mobile .trades th, .shell-mobile .trades td { padding: 8px; }
 .shell-mobile .trades-wide { display: none; }
 
-/* On a phone the page reads in the order a trader uses it: trade, chart, trades, chat, about. */
+/* Under the chart: the tab that picks what gets the wide space, and the talk (chat, then callouts). */
+.token-focus { justify-self: start; }
+.token-focus button { min-height: 44px; padding: 0 20px; font-weight: 700; }
+.token-social { display: grid; gap: 14px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+/* With the wide space to itself the chat is taller, and the callouts sit two to a row. */
+.token-main .token-social .chat-list { max-height: 520px; min-height: 280px; }
+.token-main .token-social .callouts-list { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); align-items: start; }
+/* Beside the swap the trades are a short scrolling list. */
+.token-side .token-trades .trades-wrap { max-height: 420px; overflow-y: auto; }
+.token-side .token-trades .trades-wide { display: none; }
+.token-side .token-trades .trades th, .token-side .token-trades .trades td { padding: 8px; }
+
+/* On a phone the page reads in the order a trader uses it: trade, chart, then the talk, the trades, rewards, about.
+   The tab under the chart puts the trades ahead of the talk instead. */
 .shell-mobile .token-grid { display: flex; flex-direction: column; }
-.shell-mobile .token-main, .shell-mobile .token-side { display: contents; }
+.shell-mobile .token-main, .shell-mobile .token-side, .shell-mobile .token-social { display: contents; }
 .shell-mobile .trade-panel { order: 1; }
 .shell-mobile .token-chart { order: 2; }
-.shell-mobile .token-trades { order: 3; }
+.shell-mobile .token-focus { order: 3; width: 100%; }
 .shell-mobile .chat-panel { order: 4; }
-.shell-mobile .token-about { order: 5; }
+.shell-mobile .callouts-panel { order: 5; }
+.shell-mobile .token-trades { order: 6; }
+.shell-mobile .token-grid[data-focus="trades"] .token-trades { order: 4; }
+.shell-mobile .token-grid[data-focus="trades"] .chat-panel { order: 5; }
+.shell-mobile .token-grid[data-focus="trades"] .callouts-panel { order: 6; }
+.shell-mobile .rewards-panel { order: 7; }
+.shell-mobile .token-about { order: 8; }
 
 /* ── Pop-out window: chart on top, chat under it ────────────────────────── */
 

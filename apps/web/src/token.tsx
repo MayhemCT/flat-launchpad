@@ -388,6 +388,8 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
   const [meta, setMeta] = useState<TokenMeta | null>(null);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef(0);
+  /** What takes the wide space under the chart: the chat and callouts, or the live trades. The other goes beside the swap. */
+  const [focus, setFocus] = useState<"social" | "trades">("social");
 
   // The token's own description and links, from the metadata its creator pinned at launch.
   useEffect(() => {
@@ -424,6 +426,14 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
     });
   };
 
+  const social = (
+    <div className="token-social" data-testid="token-social">
+      <TokenChat chain="bsc" token={token} />
+      <Callouts token={token} marketCap={pair?.marketCap ?? pair?.fdv ?? null} supply={market?.totalSupply ?? null} />
+    </div>
+  );
+  const tradesTable = market ? <TradesTable market={market} dexScreenerUrl={pairPageUrl(pair, chartId ?? token)} /> : null;
+
   return (
     <div className="token-page" data-testid="token-page">
       <header className="token-head">
@@ -458,7 +468,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
         <Stat label="Buy / sell tax">{market ? `${market.buyTaxBps / 100}% / ${market.sellTaxBps / 100}%` : "—"}</Stat>
       </dl>
 
-      <div className="token-grid">
+      <div className="token-grid" data-focus={focus}>
         <div className="token-main">
         <section className="token-chart" aria-label="Price chart">
           <div className="token-chart-head">
@@ -485,13 +495,18 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
             <p className="token-nochart dim">{pairs === null && loading ? "Loading the chart…" : "No pool yet. The chart appears once this token has a PancakeSwap pool."}</p>
           )}
         </section>
-        {market && <TradesTable market={market} dexScreenerUrl={pairPageUrl(pair, chartId ?? token)} />}
+        {/* What sits under the chart. The talk comes first: chat, then callouts, with the trades beside the swap.
+            The other tab swaps them: trades under the chart, chat and callouts beside the swap. */}
+        <div className="seg token-focus" role="group" aria-label="Under the chart" data-testid="token-focus">
+          <button type="button" aria-pressed={focus === "social"} data-testid="focus-social" onClick={() => setFocus("social")}>Chat &amp; callouts</button>
+          <button type="button" aria-pressed={focus === "trades"} data-testid="focus-trades" onClick={() => setFocus("trades")}>Live trades</button>
+        </div>
+        {focus === "social" ? social : tradesTable}
         </div>
 
         <aside className="token-side">
           <TradePanel market={market} error={error} loading={loading} onTraded={reload} />
-          <TokenChat chain="bsc" token={token} />
-          <Callouts token={token} marketCap={pair?.marketCap ?? pair?.fdv ?? null} supply={market?.totalSupply ?? null} />
+          {focus === "social" ? tradesTable : social}
           <RewardsPanel token={token as Address} market={market} />
           {(meta?.description || links.length > 0) && (
             <section className="token-about" aria-label="About this token">
