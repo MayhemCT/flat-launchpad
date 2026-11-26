@@ -8,6 +8,13 @@
   "main": "../worker/src/index.ts",
   "compatibility_date": "2026-11-01",
   "observability": { "enabled": true },
+  // callz.fun and www.callz.fun are served by this Worker: Cloudflare creates their DNS records and
+  // certificates. The workers.dev address stays on as well.
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "callz.fun", "custom_domain": true },
+    { "pattern": "www.callz.fun", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
