@@ -4,8 +4,9 @@
 // Nobody logs in: the wallet signs each message with personal_sign, over plain EIP-1193, so this panel
 // loads no chain library.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { AuthorName, useDisplayName } from "./display-name";
 import { ago, short } from "./format";
-import { connect, useWallet } from "./wallet";
+import { connect, useWallet, utf8Hex } from "./wallet";
 import "./chat.css";
 
 type ChatChain = "bsc" | "bscTestnet";
@@ -16,6 +17,8 @@ interface ChatMessage {
   id: number;
   /** Lowercase address of the wallet that signed the message. */
   author: string;
+  /** The display name that wallet has now. Null, or absent, for a wallet without one. */
+  authorName?: string | null;
   body: string;
   /** Unix seconds, by the server's clock. */
   createdAt: number;
@@ -58,17 +61,13 @@ function chatSigningText({ chain, token, body, issuedAt, room }: { chain: ChatCh
   return `${title}\n\nToken: ${token.toLowerCase()}\nNetwork: ${chain}\nTime: ${issuedAt}\n\n${body}`;
 }
 
-/** Text as the 0x hex of its UTF-8 bytes, the form personal_sign takes a message in. */
-function utf8Hex(text: string): string {
-  let hex = "0x";
-  for (const byte of new TextEncoder().encode(text)) hex += byte.toString(16).padStart(2, "0");
-  return hex;
-}
-
 function isMessage(value: unknown): value is ChatMessage {
   if (typeof value !== "object" || value === null) return false;
-  const { id, author, body, createdAt } = value as Record<string, unknown>;
-  return Number.isSafeInteger(id) && typeof author === "string" && typeof body === "string" && Number.isSafeInteger(createdAt);
+  const { id, author, authorName, body, createdAt } = value as Record<string, unknown>;
+  return (
+    Number.isSafeInteger(id) && typeof author === "string" && typeof body === "string" && Number.isSafeInteger(createdAt) &&
+    (authorName === undefined || authorName === null || typeof authorName === "string")
+  );
 }
 
 /**
@@ -266,6 +265,11 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
   };
 
   const me = wallet.account?.toLowerCase();
+  // The connected wallet's own name, as it is this moment: a name it has just set or removed shows on the
+  // messages it already posted, without waiting for them to be read again.
+  const own = useDisplayName(wallet.account);
+  const nameOf = (message: ChatMessage) => (message.author === me && own.state === "ready" ? own.name : message.authorName);
+  const postingAs = wallet.account ? (own.name ? `${own.name} (${short(wallet.account)})` : short(wallet.account)) : "";
 
   return (
     <section className="chat-panel" data-testid="token-chat" aria-labelledby={titleId}>
@@ -288,7 +292,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
             {messages.map((message) => (
               <li key={message.id} className="chat-message" data-own={message.author === me}>
                 <span className="chat-meta">
-                  <span className="chat-author" title={message.author}>{short(message.author)}</span>
+                  <AuthorName className="chat-author" address={message.author} name={nameOf(message)} />
                   <time className="chat-time" dateTime={new Date(message.createdAt * 1000).toISOString()}>{ago(message.createdAt, now)}</time>
                 </span>
                 <span className="chat-body">{message.body}</span>
@@ -314,7 +318,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
               name="message"
               value={draft}
               maxLength={MAX_LENGTH}
-              placeholder={room === "holders" ? `Message holders as ${short(wallet.account)}` : `Message as ${short(wallet.account)}`}
+              placeholder={room === "holders" ? `Message holders as ${postingAs}` : `Message as ${postingAs}`}
               autoComplete="off"
               enterKeyHint="send"
               readOnly={step !== "idle"}

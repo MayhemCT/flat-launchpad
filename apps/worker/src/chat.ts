@@ -4,6 +4,8 @@
  *
  *   GET  ?room=<room>&after=<id>&limit=<n>         messages, oldest first. Without `after` the newest `limit`;
  *                                                  with it, only messages with a larger id, for polling.
+ *                                                  Each carries its author's display name, null for a
+ *                                                  wallet without one.
  *   POST ?room=<room>                              stores one message: { author, body, issuedAt, signature }.
  *
  * `room` is `public` (the default) or `holders`. Each room has its own signing text, so a signature made for
@@ -215,7 +217,21 @@ const failure = (status: number, message: string, headers?: Record<string, strin
 
 type Row = Record<string, string | number | null>
 
-const toMessage = (row: Row) => ({ id: row.id, author: row.author, body: row.body, createdAt: row.created_at })
+/**
+ * A message with its author's display name beside it (apps/worker/src/names.ts): the name the wallet has now,
+ * not the one it had when it posted, and null for a wallet without one. Read with the messages, so the page
+ * asks once.
+ */
+const MESSAGES =
+  'SELECT m.id, m.author, m.body, m.created_at, n.name AS author_name FROM chat_messages m LEFT JOIN wallet_names n ON n.wallet = m.author'
+
+const toMessage = (row: Row) => ({
+  id: row.id,
+  author: row.author,
+  authorName: typeof row.author_name === 'string' ? row.author_name : null,
+  body: row.body,
+  createdAt: row.created_at,
+})
 
 async function list(db: D1Database, chain: ChainKey, token: string, room: ChatRoom, url: URL): Promise<Response> {
   const requested = Number(url.searchParams.get('limit') ?? DEFAULT_LIMIT)
@@ -224,21 +240,21 @@ async function list(db: D1Database, chain: ChainKey, token: string, room: ChatRo
 
   if (after === null) {
     const newest = await db
-      .prepare('SELECT id, author, body, created_at FROM chat_messages WHERE chain = ? AND token = ? AND room = ? ORDER BY id DESC LIMIT ?')
+      .prepare(`${MESSAGES} WHERE m.chain = ? AND m.token = ? AND m.room = ? ORDER BY m.id DESC LIMIT ?`)
       .bind(chain, token, room, limit)
       .all<Row>()
     return json({ messages: newest.results.reverse().map(toMessage) })
   }
   if (!/^\d{1,15}$/.test(after)) return failure(400, 'after must be the id of a message.')
   const later = await db
-    .prepare('SELECT id, author, body, created_at FROM chat_messages WHERE chain = ? AND token = ? AND room = ? AND id > ? ORDER BY id LIMIT ?')
+    .prepare(`${MESSAGES} WHERE m.chain = ? AND m.token = ? AND m.room = ? AND m.id > ? ORDER BY m.id LIMIT ?`)
     .bind(chain, token, room, Number(after), limit)
     .all<Row>()
   return json({ messages: later.results.map(toMessage) })
 }
 
 /** Reads a request body up to `maxBytes`. Null when it is larger: nothing oversized is buffered. */
-async function readCapped(request: Request, maxBytes: number): Promise<Uint8Array | null> {
+export async function readCapped(request: Request, maxBytes: number): Promise<Uint8Array | null> {
   if (Number(request.headers.get('content-length') ?? 0) > maxBytes) {
     await request.body?.cancel()
     return null

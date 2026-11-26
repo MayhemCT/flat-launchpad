@@ -1,9 +1,11 @@
 // The wallet's positions: tokens from the board it holds on BNB Chain, each with what selling all of it would
 // return right now, and a button that sells it. Opens from the wallet button; loaded on first use, because it
 // reads balances and trades through the chain library.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 import type { Address, Hex } from "viem";
+import { loadDisplayName, saveDisplayName, useDisplayName } from "./display-name";
 import { amount, short } from "./format";
+import { displayNameError } from "./names";
 import { claimMany, loadWalletRewards, type WalletRewards } from "./rewards";
 import { TokenImage } from "./scope";
 import { SITES } from "./site";
@@ -62,6 +64,108 @@ async function loadPositions(account: Address): Promise<Position[]> {
         return { token, symbol: row?.symbol || short(token), image: row?.image ?? null, balance, decimals: 18, market: null, worth: null };
       }
     }),
+  );
+}
+
+const NAME_STEP_TEXT = { signing: "Sign in wallet…", saving: "Saving…" } as const;
+const NAME_RULES = "3 to 20 letters, digits or underscores, starting with a letter. Shown beside your address in chat and on callouts.";
+
+/**
+ * The wallet's display name: what it is now, and a small form that sets, changes or removes it. The wallet
+ * signs each change and the Worker decides (apps/worker/src/names.ts); the rules are said here first, while
+ * the name is typed, and whatever the Worker answers to a refused change is shown as it is.
+ */
+function DisplayNameRow({ account }: { account: Address }) {
+  const own = useDisplayName(account);
+  const hintId = useId();
+  const [draft, setDraft] = useState("");
+  const [working, setWorking] = useState<{ action: "save" | "remove"; step: keyof typeof NAME_STEP_TEXT } | null>(null);
+  const [outcome, setOutcome] = useState<{ kind: "done" | "error"; text: string } | null>(null);
+
+  // Read again each time the menu opens: the name may have been changed from another device.
+  useEffect(() => {
+    void loadDisplayName(account);
+  }, [account]);
+  // What was typed, and what came of it, belong to the wallet they were for.
+  useEffect(() => {
+    setDraft("");
+    setOutcome(null);
+  }, [account]);
+
+  const typed = draft.trim();
+  const problem = typed === "" ? null : displayNameError(typed);
+  const unchanged = own.name !== null && typed === own.name;
+
+  const change = async (action: "save" | "remove", name: string | null) => {
+    if (working) return;
+    setOutcome(null);
+    try {
+      await saveDisplayName(account, name, (step) => setWorking({ action, step }));
+      setDraft("");
+      setOutcome({ kind: "done", text: name === null ? "Removed. Your address is shown on its own again." : "Saved. You can change it again in 10 minutes." });
+    } catch (cause) {
+      setOutcome({ kind: "error", text: cause instanceof Error && cause.message ? cause.message : "The name could not be saved. Try again." });
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (typed === "" || problem !== null || unchanged) return;
+    void change("save", typed);
+  };
+
+  return (
+    <section className="positions-name" data-testid="display-name" aria-label="Display name">
+      <p className="positions-head">
+        <strong>Display name</strong>
+        {own.name !== null ? (
+          <span className="positions-name-current" data-testid="display-name-current">
+            <span className="author-name">{own.name}</span>{" "}
+            <span className="author-address">{short(account)}</span>
+          </span>
+        ) : (
+          <span className="dim" data-testid="display-name-current">{own.state === "loading" ? "…" : own.state === "error" ? "Could not be read" : "Not set"}</span>
+        )}
+      </p>
+      <form className="positions-name-form" onSubmit={submit} noValidate>
+        <label className="positions-name-input">
+          <span className="visually-hidden">{own.name !== null ? "New display name" : "Display name"}</span>
+          <input
+            type="text"
+            name="display-name"
+            data-testid="display-name-input"
+            value={draft}
+            maxLength={64}
+            placeholder={own.name !== null ? "New name" : "Choose a name"}
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="done"
+            readOnly={working !== null}
+            aria-invalid={problem !== null}
+            aria-describedby={hintId}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </label>
+        <button type="submit" className="button positions-name-save" data-testid="display-name-save" disabled={working !== null || typed === "" || problem !== null || unchanged}>
+          {working?.action === "save" ? NAME_STEP_TEXT[working.step] : "Save"}
+        </button>
+        {own.name !== null && (
+          <button type="button" className="positions-sell positions-name-remove" data-testid="display-name-remove" disabled={working !== null} onClick={() => void change("remove", null)}>
+            {working?.action === "remove" ? NAME_STEP_TEXT[working.step] : "Remove"}
+          </button>
+        )}
+      </form>
+      <p id={hintId} className="positions-name-hint" data-invalid={problem !== null} aria-live="polite">
+        {problem ?? (unchanged ? "That is your name already." : NAME_RULES)}
+      </p>
+      {outcome && (
+        <p className={`positions-outcome trade-${outcome.kind}`} data-testid="display-name-outcome" role={outcome.kind === "error" ? "alert" : "status"}>{outcome.text}</p>
+      )}
+    </section>
   );
 }
 
@@ -130,6 +234,7 @@ export default function Positions({ account, chainId, onNavigate }: { account: A
         <strong>Positions</strong>
         <span className="dim num">{short(account)}</span>
       </p>
+      <DisplayNameRow account={account} />
       {!onChain && (
         <p className="positions-note">
           Positions and selling are on BNB Chain.{" "}

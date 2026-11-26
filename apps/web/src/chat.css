@@ -23,7 +23,8 @@
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
 .chat-message:last-child { border-bottom: 0; }
-.chat-meta { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+/* A name, the address beside it and the time take more than a narrow room has: the row wraps rather than widening it. */
+.chat-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; font-size: 12px; }
 .chat-author { font-family: var(--mono); color: var(--gold); white-space: nowrap; }
 .chat-message[data-own="true"] .chat-author { color: var(--good); }
 .chat-time { color: var(--dim); white-space: nowrap; }

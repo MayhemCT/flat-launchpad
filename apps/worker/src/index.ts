@@ -3,6 +3,7 @@ import { handleApi } from './api.js'
 import { handleCallouts, refreshPositions, relayApproved } from './callouts.js'
 import { handleChat } from './chat.js'
 import { handleImage, handleMeta } from './image.js'
+import { handleNames } from './names.js'
 import { Budget, syncChain } from './sync.js'
 
 export interface Env {
@@ -90,6 +91,7 @@ export default {
     if (url.pathname.startsWith('/api/meta/')) return handleMeta(request, ctx)
     if (url.pathname.startsWith('/api/chat/')) return handleChat(request, env)
     if (url.pathname.startsWith('/api/callouts/')) return handleCallouts(request, env, ctx)
+    if (url.pathname === '/api/names' || url.pathname.startsWith('/api/names/')) return handleNames(request, env)
     if (url.pathname.startsWith('/api/')) return handleApi(request, env.DB)
     return env.ASSETS.fetch(request)
   },

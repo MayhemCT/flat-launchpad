@@ -14,11 +14,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { createWalletClient, custom, keccak256, parseAbi, toBytes, type Address, type Hex } from "viem";
 import { bsc } from "viem/chains";
+import { AuthorName, useDisplayName } from "./display-name";
 import { ago, amount, short, usd } from "./format";
 import { VAULT, currentEpoch, epochEnd, recordCallout, recordedLinks, submissionTypedData, type Submission } from "./rewards";
 import { SITES } from "./site";
 import { TradeError, client } from "./trade";
-import { connect, switchChain, useWallet } from "./wallet";
+import { connect, personalSign, switchChain, useWallet } from "./wallet";
 import "./callouts.css";
 
 const API = "/api/callouts/bsc";
@@ -189,19 +190,14 @@ function reviewRejectText(id: number, issuedAt: number): string {
   return `CallZ review\n\nReject callout ${id}\nTime: ${issuedAt}`;
 }
 
-/** Text as the 0x hex of its UTF-8 bytes, the form personal_sign takes a message in. */
-function utf8Hex(text: string): string {
-  let hex = "0x";
-  for (const byte of new TextEncoder().encode(text)) hex += byte.toString(16).padStart(2, "0");
-  return hex;
-}
-
 // ── What the API returns ─────────────────────────────────────────────────
 
 interface Callout {
   id: number;
   /** Lowercase address of the wallet that signed the callout. */
   author: string;
+  /** The display name that wallet has now. Null, or absent, for a wallet without one. */
+  authorName?: string | null;
   kind: number;
   /** The canonical link. Shown as a link only after `checkedLink` has rebuilt the same one. */
   url: string;
@@ -241,10 +237,11 @@ const isUnits = (value: unknown): value is string => typeof value === "string" &
 
 function isCallout(value: unknown): value is Callout {
   if (typeof value !== "object" || value === null) return false;
-  const { id, author, kind, url, note, status, createdAt, epoch, deadline, attestation, callMcap, callBalance, heldBalance, position, closedAt, closedMcap, reviewedAt, recordTx } =
+  const { id, author, authorName, kind, url, note, status, createdAt, epoch, deadline, attestation, callMcap, callBalance, heldBalance, position, closedAt, closedMcap, reviewedAt, recordTx } =
     value as Record<string, unknown>;
   return (
     isCount(id) && typeof author === "string" && ADDRESS.test(author) && isCount(kind) && typeof url === "string" && typeof note === "string" &&
+    (authorName === undefined || authorName === null || typeof authorName === "string") &&
     (status === "pending" || status === "approved") && isCount(createdAt) &&
     (epoch === null || isCount(epoch)) && (deadline === null || isCount(deadline)) &&
     (attestation === null || (typeof attestation === "string" && ATTESTATION.test(attestation))) &&
@@ -305,19 +302,6 @@ function clockAheadOf(response: Response): number {
 async function errorOf(response: Response, fallback: string): Promise<string> {
   const failure = (await response.json().catch(() => null)) as { error?: unknown } | null;
   return typeof failure?.error === "string" ? failure.error : fallback;
-}
-
-/** Asks the wallet for a personal_sign signature over `text`. Throws the message to show when it does not give one. */
-async function personalSign(text: string, account: string): Promise<unknown> {
-  const provider = window.ethereum;
-  if (!provider) throw new Error("No browser wallet was found.");
-  try {
-    return await provider.request({ method: "personal_sign", params: [utf8Hex(text), account] });
-  } catch (cause) {
-    // 4001: the visitor closed the wallet's prompt.
-    const rejected = (cause as { code?: number } | null)?.code === 4001;
-    throw new Error(rejected ? "The signature request was rejected in the wallet." : "The wallet could not sign the message.");
-  }
 }
 
 function SiteBadge({ kind }: { kind: number }) {
@@ -545,6 +529,9 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
   }, [feed]);
 
   const me = wallet.account?.toLowerCase();
+  // The connected wallet's own name, as it is this moment: a name it has just set or removed shows on its own
+  // callouts at once, ahead of the next poll.
+  const own = useDisplayName(wallet.account);
   const cards = useMemo(() => callouts.map((callout) => ({ callout, link: checkedLink(callout, token) })), [callouts, token]);
 
   // What each author in the feed holds right now, read from the token itself in one request: the Worker's
@@ -767,7 +754,7 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
               <li key={callout.id} className="callout-card" data-own={callout.author === me}>
                 <div className="callout-meta">
                   <SiteBadge kind={callout.kind} />
-                  <span className="callout-author" title={callout.author}>{short(callout.author)}</span>
+                  <AuthorName className="callout-author" address={callout.author} name={callout.author === me && own.state === "ready" ? own.name : callout.authorName} />
                   <time className="callout-time" dateTime={new Date(callout.createdAt * 1000).toISOString()}>{ago(callout.createdAt, now)}</time>
                   {counted === true ? (
                     <span className="callout-status" data-status="counted">Counted on-chain</span>
@@ -1043,7 +1030,7 @@ export function ReviewPage() {
               <li key={callout.id} className="callout-card">
                 <div className="callout-meta">
                   <SiteBadge kind={callout.kind} />
-                  <span className="callout-author" title={callout.author}>{short(callout.author)}</span>
+                  <AuthorName className="callout-author" address={callout.author} name={callout.authorName} />
                   <time className="callout-time" dateTime={new Date(callout.createdAt * 1000).toISOString()}>{ago(callout.createdAt, now)}</time>
                   <span className="callout-status" data-status={callout.status === "approved" ? "expired" : "pending"}>
                     {callout.status === "approved" ? "Approval expired" : "Awaiting review"}

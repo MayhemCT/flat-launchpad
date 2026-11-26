@@ -66,6 +66,26 @@ export function connect(): void {
   void refresh("eth_requestAccounts").catch(() => undefined);
 }
 
+/** Text as the 0x hex of its UTF-8 bytes, the form personal_sign takes a message in. */
+export function utf8Hex(text: string): string {
+  let hex = "0x";
+  for (const byte of new TextEncoder().encode(text)) hex += byte.toString(16).padStart(2, "0");
+  return hex;
+}
+
+/** Asks the wallet for a personal_sign signature over `text`. Throws the message to show when it does not give one. */
+export async function personalSign(text: string, account: string): Promise<unknown> {
+  const provider = window.ethereum;
+  if (!provider) throw new Error("No browser wallet was found.");
+  try {
+    return await provider.request({ method: "personal_sign", params: [utf8Hex(text), account] });
+  } catch (cause) {
+    // 4001: the visitor closed the wallet's prompt.
+    const rejected = (cause as { code?: number } | null)?.code === 4001;
+    throw new Error(rejected ? "The signature request was rejected in the wallet." : "The wallet could not sign the message.");
+  }
+}
+
 /** Asks the wallet to switch to `target` (the launchpad's network by default), adding it first if the wallet does not know it. */
 export async function switchChain(target: Site = FLAP_LAUNCH): Promise<void> {
   const provider = window.ethereum;

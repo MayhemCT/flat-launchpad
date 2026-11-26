@@ -597,3 +597,32 @@ h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
 .positions-rewards-list li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
 .positions-rewards-list a { color: var(--ink); overflow-wrap: anywhere; }
 .positions-claim { width: 100%; }
+
+/* ── Display names ──────────────────────────────────────────────────────── */
+
+/* An author with a name: the name, then the short address in a quieter style, always the two together. On a
+   narrow card the pair may break between the two, never inside either. An author without a name is untouched. */
+.author-named { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; white-space: normal; }
+.author-name { font-weight: 700; white-space: nowrap; }
+.author-address { font-family: var(--mono); font-size: 0.92em; font-weight: 400; color: var(--dim); white-space: nowrap; }
+
+/* The wallet's own name in the wallet menu, and the form that sets it. */
+.positions-name { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding-bottom: 12px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.positions-name-current {
+  display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: 0 6px; min-width: 0;
+  color: var(--gold); font-family: var(--mono); font-size: 13px;
+}
+.positions-name-form { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.positions-name-input { flex: 1 1 130px; min-width: 0; }
+/* 16px: a smaller input makes iOS zoom the page in when it takes focus. */
+.positions-name-input input {
+  width: 100%; min-width: 0; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  color: var(--ink); font: inherit; font-size: 16px;
+}
+.positions-name-input input::placeholder { color: var(--dim); }
+.positions-name-input input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.positions-name-input input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--warn) 70%, var(--line)); }
+.positions-name-form .positions-name-save { flex: none; padding: 0 14px; font-size: 14px; }
+.positions-name-remove { flex: none; }
+.positions-name-hint { margin: 0; color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+.positions-name-hint[data-invalid="true"] { color: var(--warn); }

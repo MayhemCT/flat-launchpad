@@ -1,7 +1,8 @@
 /**
  * `/api/callouts/bsc/...`: links to social posts that call a token out, and their review.
  *
- *   GET  /api/callouts/bsc/<token>?limit=<n>                         a token's callouts, newest first.
+ *   GET  /api/callouts/bsc/<token>?limit=<n>                         a token's callouts, newest first, each with its
+ *                                                                    author's display name (null for a wallet without one).
  *   POST /api/callouts/bsc/<token>  { author, url, note, issuedAt, signature }
  *                                                                    stores one callout, signed by its author.
  *   GET  /api/callouts/bsc/review                                    the review queue, with the reviewer and vault addresses.
@@ -418,6 +419,14 @@ type Row = Record<string, string | number | null>
 const COLUMNS =
   'id, token, author, kind, url, link_hash, profile, note, status, created_at, reviewed_at, epoch, deadline, attestation, call_mcap, call_balance, held_balance, position, closed_at, closed_mcap, record_tx'
 
+/**
+ * A listed callout `c` with its author's display name beside it (apps/worker/src/names.ts): the name the
+ * wallet has now, and null for a wallet without one. Read with the callouts, so the page asks once.
+ */
+const LISTED = `SELECT ${COLUMNS.split(', ').map((column) => `c.${column}`).join(', ')}, n.name AS author_name FROM callouts c LEFT JOIN wallet_names n ON n.wallet = c.author`
+
+const toListed = (row: Row) => ({ ...toCallout(row), authorName: typeof row.author_name === 'string' ? row.author_name : null })
+
 function toCallout(row: Row) {
   const approved = row.status === 'approved'
   return {
@@ -492,10 +501,10 @@ async function list(env: CalloutEnv, token: string, url: URL): Promise<Response>
   const requested = Number(url.searchParams.get('limit') ?? DEFAULT_LIMIT)
   const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, MAX_LIMIT) : DEFAULT_LIMIT
   const rows = await db
-    .prepare(`SELECT ${COLUMNS} FROM callouts WHERE chain = ? AND token = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT ?`)
+    .prepare(`${LISTED} WHERE c.chain = ? AND c.token = ? AND c.status IN ('pending', 'approved') ORDER BY c.id DESC LIMIT ?`)
     .bind(CALLOUT_CHAIN, token, limit)
     .all<Row>()
-  return json({ autoRecord: autoRecordOn(env), callouts: rows.results.map(toCallout) })
+  return json({ autoRecord: autoRecordOn(env), callouts: rows.results.map(toListed) })
 }
 
 async function post(request: Request, env: CalloutEnv, token: string): Promise<Response> {
@@ -594,10 +603,10 @@ RETURNING id`,
 
 async function reviewQueue(env: CalloutEnv, attester: string, vault: string): Promise<Response> {
   const rows = await env.DB
-    .prepare(`SELECT ${COLUMNS} FROM callouts WHERE chain = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT ?`)
+    .prepare(`${LISTED} WHERE c.chain = ? AND c.status IN ('pending', 'approved') ORDER BY c.id DESC LIMIT ?`)
     .bind(CALLOUT_CHAIN, REVIEW_LIMIT)
     .all<Row>()
-  return json({ attester, vault, autoRecord: autoRecordOn(env), callouts: rows.results.map((row) => ({ ...toCallout(row), token: row.token })) })
+  return json({ attester, vault, autoRecord: autoRecordOn(env), callouts: rows.results.map((row) => ({ ...toListed(row), token: row.token })) })
 }
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
