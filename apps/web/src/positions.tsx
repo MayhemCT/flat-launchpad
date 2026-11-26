@@ -6,7 +6,7 @@ import type { Address, Hex } from "viem";
 import { amount, short } from "./format";
 import { TokenImage } from "./scope";
 import { SITES } from "./site";
-import { TradeError, heldTokens, loadMarket, quoteSell, rememberedTokens, sell, type Market, type TradeStep } from "./trade";
+import { TradeError, callzTokens, heldTokens, loadMarket, quoteSell, rememberedTokens, sell, type Market, type TradeStep } from "./trade";
 import { switchChain } from "./wallet";
 
 const SITE = SITES.bsc;
@@ -39,12 +39,16 @@ interface Position {
 type Note = { kind: "working" | "done" | "error"; symbol: string; text: string; hash?: Hex };
 
 async function loadPositions(account: Address): Promise<Position[]> {
-  // The board's launched tokens, plus any token this browser bought through the site.
-  const indexed = await fetch("/api/bsc/tokens?limit=200")
-    .then((response) => (response.ok ? (response.json() as Promise<{ items: Indexed[] }>) : { items: [] }))
-    .catch(() => ({ items: [] as Indexed[] }));
+  // The board's launched tokens, the tokens launched through CallZ's own launchpad (which a holder gets by
+  // claiming, not buying), and any token this browser bought through the site.
+  const [indexed, launched] = await Promise.all([
+    fetch("/api/bsc/tokens?limit=200")
+      .then((response) => (response.ok ? (response.json() as Promise<{ items: Indexed[] }>) : { items: [] }))
+      .catch(() => ({ items: [] as Indexed[] })),
+    callzTokens().catch(() => [] as Address[]),
+  ]);
   const known = new Map(indexed.items.map((token) => [token.address.toLowerCase(), token]));
-  const candidates = [...new Set([...known.keys(), ...rememberedTokens()])] as Address[];
+  const candidates = [...new Set([...known.keys(), ...launched, ...rememberedTokens()])] as Address[];
   const held = await heldTokens(account, candidates);
   return Promise.all(
     held.map(async ({ token, balance }): Promise<Position> => {
@@ -147,7 +151,7 @@ export default function Positions({ account, chainId, onNavigate }: { account: A
           })}
         </ul>
       )}
-      <p className="positions-foot dim">Tokens from the board, and ones bought here, that this wallet holds on BNB Chain. "Sell all" goes through PancakeSwap with 5% slippage; your wallet asks you to confirm.</p>
+      <p className="positions-foot dim">Tokens from the board, tokens launched on CallZ, and ones bought here, that this wallet holds on BNB Chain. "Sell all" goes through PancakeSwap with 5% slippage; your wallet asks you to confirm.</p>
     </div>
   );
 }

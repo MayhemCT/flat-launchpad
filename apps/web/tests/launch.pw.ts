@@ -80,6 +80,12 @@ test("deploy the factory, create a mint, mint to the cap, launch, claim and trad
   await panel.getByRole("button", { name: "Claim tokens" }).click();
   await expect(panel.getByRole("button", { name: "Claim tokens" })).toHaveCount(0, { timeout: 120_000 });
 
+  // The claimed tokens show under the wallet's positions, where they can be sold or opened.
+  await page.getByTestId("wallet").click();
+  const positions = page.getByTestId("positions");
+  await expect(positions.locator("li").filter({ hasText: "FORK" })).toBeVisible({ timeout: 60_000 });
+  await page.keyboard.press("Escape");
+
   // The new token has a PancakeSwap pool, so its page can trade it straight away.
   await panel.getByRole("link", { name: "Chart and trading" }).click();
   const trade = page.getByTestId("trade-panel");

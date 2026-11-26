@@ -32,6 +32,7 @@ import {
   type Hex,
 } from "viem";
 import { bsc } from "viem/chains";
+import { address as callzFactory } from "./pancake-deployment.json";
 import { SITES } from "./site";
 
 export const PANCAKE_ROUTER: Address = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
@@ -301,6 +302,30 @@ function rememberBought(token: Address) {
   } catch {
     // storage blocked: nothing to remember it in
   }
+}
+
+const callzFactoryAbi = parseAbi(["function mintCount() view returns (uint256)", "function mints(uint256 index) view returns (address)"]);
+const callzMintAbi = parseAbi(["function token() view returns (address)"]);
+
+/**
+ * The tokens launched through CallZ's own launchpad on BNB Chain, newest first: read from its factory's list of
+ * mints, so a token shows up the moment its mint launches. Empty while the factory is not deployed.
+ */
+export async function callzTokens(): Promise<Address[]> {
+  const factory = callzFactory as Address;
+  const count = await client.readContract({ address: factory, abi: callzFactoryAbi, functionName: "mintCount" }).catch(() => 0n);
+  if (count === 0n) return [];
+  const newest = Array.from({ length: Number(count > 100n ? 100n : count) }, (_, index) => count - 1n - BigInt(index));
+  const mints = await client.multicall({
+    allowFailure: true,
+    contracts: newest.map((index) => ({ address: factory, abi: callzFactoryAbi, functionName: "mints" as const, args: [index] as const })),
+  });
+  const tokens = await client.multicall({
+    allowFailure: true,
+    contracts: mints.flatMap((mint) => (mint.status === "success" ? [{ address: mint.result as Address, abi: callzMintAbi, functionName: "token" as const }] : [])),
+  });
+  // A mint that has not launched yet has no token: its `token()` is the zero address.
+  return tokens.flatMap((token) => (token.status === "success" && lower(token.result as string) !== ZERO ? [lower(token.result as string) as Address] : []));
 }
 
 /** Which of `tokens` the account holds, with each balance. One request for all of them. */
