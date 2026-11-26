@@ -1,6 +1,8 @@
 {
   // The RaidPass site and its indexer, as one Worker.
-  //   - Static files for the pages. Visitors sign with their own wallets; the Worker holds no keys and no secrets.
+  //   - Static files for the pages. Visitors sign with their own wallets. The Worker holds no key that can move
+  //     funds or approve anything. Its one optional secret, RELAYER_PRIVATE_KEY (set in the Cloudflare dashboard,
+  //     never in this file), only pays the gas of relaying approved callouts to the vault.
   //   - /api/*: read-only JSON over the Pool Launch index.
   //   - A cron tick that reads new Pool Launch Portal events from public RPC endpoints into D1.
   "$schema": "../../node_modules/wrangler/config-schema.json",
@@ -38,6 +40,6 @@
     "CALLOUT_ATTESTER": "0x2fcb91295c790d15d5f21ed9d95c6a89e0683c58",
     // The CallZ rewards vault that approvals are signed for. Written by scripts/callz-deployment.mjs: a public
     // contract address.
-    "CALLZ_VAULT": "0x3FC5c830fa4d3fd90dab4FC00Cc54206d5462cD5"
+    "CALLZ_VAULT": "0x68459955E16EDd44319218101f60aD2b379401b6"
   }
 }

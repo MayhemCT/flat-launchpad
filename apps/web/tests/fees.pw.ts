@@ -15,7 +15,8 @@ import deployment from "../src/callz-deployment.json" with { type: "json" };
  *
  *   anvil --fork-url https://bsc-rpc.publicnode.com --port 8548
  *   npx wrangler d1 migrations apply raidpass-index --local
- *   npx wrangler dev --port 8788 --var CALLOUT_ATTESTER:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 --var BSC_RPC_URL:http://127.0.0.1:8548
+ *   npx wrangler dev --port 8788 --var CALLOUT_ATTESTER:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 --var BSC_RPC_URL:http://127.0.0.1:8548 --var RELAYER_PRIVATE_KEY:<anvil's second development key>
+ *   (the relayer key only pays gas: anvil's published second key does that on the fork)
  *   (the API reads the poster's holdings from the chain, so it has to read the fork too)
  *   VITE_BSC_RPC_URL=http://127.0.0.1:8548 TRADE_RPC_URL=http://127.0.0.1:8548 API_ORIGIN=http://localhost:8788 npx playwright test tests/fees.pw.ts --workers=1
  */
@@ -170,8 +171,7 @@ test("a callout for another contract is refused; a real one is posted, approved,
   // Back on the token page the post is verified, and its author records it in the vault.
   await page.goto(`/#/token/${GRADUATED}`);
   const verified = page.getByTestId("token-callouts").locator(".callout-card").filter({ hasText: "fork test callout" }).first();
-  await expect(verified).toContainText("Verified", { timeout: 30_000 });
-  await verified.getByRole("button", { name: "Record on-chain" }).click();
+  // Nobody records it by hand: the API relayed the approval to the vault, which took the snapshot.
   await expect(verified).toContainText("Counted on-chain", { timeout: 120_000 });
   // It counts toward this round, and the vault has taken this wallet's snapshot. The tokens never left the wallet.
   // (One on a fresh fork; a fork this test already ran on today has counted the earlier ones too.)
@@ -196,10 +196,15 @@ test("after the round ends, one claim pays the callout rewards", async ({ page }
     const rewards = page.getByTestId("rewards-panel");
     // The round the callout was recorded in has ended: its rewards are claimable for 24 hours.
     await expect(rewards.getByTestId("rewards-finished")).toContainText("claim within", { timeout: 60_000 });
+    // The wallet menu lists the reward too, and claims it in one transaction.
     const before = await balanceOf(VAULT);
-    await rewards.getByTestId("rewards-claim").click();
-    await expect(rewards.getByText("Claimed.")).toBeVisible({ timeout: 120_000 });
+    await page.getByTestId("wallet").click();
+    const menu = page.getByTestId("wallet-rewards");
+    await expect(menu).toContainText("Callout rewards", { timeout: 60_000 });
+    await page.getByTestId("wallet-rewards-claim").click();
+    await expect(menu).toContainText("Claimed.", { timeout: 120_000 });
     expect(await balanceOf(VAULT)).toBeLessThan(before);
+    await page.keyboard.press("Escape");
     await expect(rewards.getByTestId("rewards-finished")).toHaveCount(0, { timeout: 60_000 });
   } finally {
     await rpc("evm_revert", [snapshot]);

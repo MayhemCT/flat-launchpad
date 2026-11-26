@@ -37,7 +37,7 @@ export function epochEnd(epoch: number): number {
 }
 
 export const vaultAbi = parseAbi([
-  "struct Submission { address holder; address token; uint256 epoch; uint8 kind; bytes32 linkHash; bytes32 profileHash; uint256 mcap; uint256 nonce; uint256 deadline; }",
+  "struct Submission { address holder; address token; uint256 epoch; uint8 kind; bytes32 linkHash; bytes32 profileHash; uint256 mcap; uint256 held; uint256 nonce; uint256 deadline; }",
   "function attester() view returns (address)",
   "function teamWallet() view returns (address)",
   "function holdersBps() view returns (uint16)",
@@ -51,6 +51,7 @@ export const vaultAbi = parseAbi([
   "function roundOf(address token, uint256 epoch) view returns (uint256 holderShare, uint256 calloutPool, uint256 claimedHolderShare, uint256 claimedCalloutPool, uint256 totalWeight, uint256 links, uint256 deadline, bool swept)",
   "function progress(address token, uint256 epoch, address holder) view returns (uint256 links, bool inHolderShare, uint256 snapshot, bool claimedHolder, bool claimedCallout, uint256 holderPayout, uint256 calloutPayout)",
   "function claim(address token, uint256[] epochs) returns (uint256 total)",
+  "function claimMany(address[] tokens, uint256[] epochs) returns (uint256 total)",
   "function submitAttested(Submission s, string link, bytes signature)",
   "error WrongEpoch()",
   "error Expired()",
@@ -133,6 +134,8 @@ export interface Submission {
   profileHash: Hex;
   /** The token's market cap in whole US dollars when the callout was posted. */
   mcap: bigint;
+  /** What the holder's wallet held of the token when the callout was posted, in the token's base units. */
+  held: bigint;
   nonce: bigint;
   deadline: bigint;
 }
@@ -150,6 +153,7 @@ export function submissionTypedData(message: Submission) {
         { name: "linkHash", type: "bytes32" },
         { name: "profileHash", type: "bytes32" },
         { name: "mcap", type: "uint256" },
+        { name: "held", type: "uint256" },
         { name: "nonce", type: "uint256" },
         { name: "deadline", type: "uint256" },
       ],
@@ -262,4 +266,61 @@ export async function loadRewards(token: Address, account: Address | null): Prom
 /** Collects everything `token` owes the wallet for the listed finished rounds, in one transaction. */
 export function claim(account: Address, token: Address, epochs: number[], onStep?: (step: RewardStep, hash?: Hex) => void): Promise<Hex> {
   return send(account, { address: VAULT, abi: vaultAbi, functionName: "claim", args: [token, epochs.map(BigInt)] }, onStep);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A wallet's rewards across tokens: the wallet menu
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface WalletReward {
+  token: Address;
+  symbol: string;
+  /** BNB this token owes the wallet for the round that just ended. */
+  amount: bigint;
+}
+
+export interface WalletRewards {
+  /** The round the amounts are for, and when its claim closes (unix seconds). */
+  epoch: number;
+  deadline: number;
+  rewards: WalletReward[];
+  total: bigint;
+}
+
+const symbolAbi = parseAbi(["function symbol() view returns (string)"]);
+
+/**
+ * What the vault owes `account` right now, across the tokens it has verified callouts on (the API knows which).
+ * Only the round that just ended can be claimed. Empty while the vault is not deployed.
+ */
+export async function loadWalletRewards(account: Address): Promise<WalletRewards> {
+  const [code, block, listed] = await Promise.all([
+    client.getCode({ address: VAULT }),
+    client.getBlock({ blockTag: "latest" }),
+    fetch(`/api/callouts/bsc/author/${account.toLowerCase()}`)
+      .then((response) => (response.ok ? (response.json() as Promise<{ tokens?: unknown }>) : { tokens: [] }))
+      .catch(() => ({ tokens: [] })),
+  ]);
+  const epoch = currentEpoch(Number(block.timestamp)) - 1;
+  const empty: WalletRewards = { epoch, deadline: epochEnd(epoch) + CLAIM_WINDOW_SECONDS, rewards: [], total: 0n };
+  const tokens = (Array.isArray(listed.tokens) ? listed.tokens : []).filter((token): token is Address => typeof token === "string" && /^0x[0-9a-fA-F]{40}$/.test(token)).slice(0, 50);
+  if (!code || code === "0x" || tokens.length === 0) return empty;
+
+  const [progress, symbols] = await Promise.all([
+    client.multicall({ allowFailure: true, contracts: tokens.map((token) => ({ address: VAULT, abi: vaultAbi, functionName: "progress" as const, args: [token, BigInt(epoch), account] as const })) }),
+    client.multicall({ allowFailure: true, contracts: tokens.map((token) => ({ address: token, abi: symbolAbi, functionName: "symbol" as const })) }),
+  ]);
+  const rewards = tokens.flatMap((token, index): WalletReward[] => {
+    const result = progress[index];
+    if (result?.status !== "success") return [];
+    const owed = result.result[5] + result.result[6];
+    const symbol = symbols[index]?.status === "success" ? String(symbols[index]!.result) : `${token.slice(0, 6)}…`;
+    return owed > 0n ? [{ token, symbol, amount: owed }] : [];
+  });
+  return { ...empty, rewards, total: rewards.reduce((sum, reward) => sum + reward.amount, 0n) };
+}
+
+/** Collects the rewards of the round that just ended on every listed token, in one transaction. */
+export function claimMany(account: Address, tokens: Address[], epoch: number, onStep?: (step: RewardStep, hash?: Hex) => void): Promise<Hex> {
+  return send(account, { address: VAULT, abi: vaultAbi, functionName: "claimMany", args: [tokens, [BigInt(epoch)]] }, onStep);
 }

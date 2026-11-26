@@ -1,6 +1,6 @@
 import { CHAINS, type ChainKey } from '@flat/protocol'
 import { handleApi } from './api.js'
-import { handleCallouts, refreshPositions } from './callouts.js'
+import { handleCallouts, refreshPositions, relayApproved } from './callouts.js'
 import { handleChat } from './chat.js'
 import { handleImage, handleMeta } from './image.js'
 import { Budget, syncChain } from './sync.js'
@@ -21,6 +21,11 @@ export interface Env {
   CALLOUT_ATTESTER?: string
   /** The rewards vault the callout attestations are for. A public address. */
   CALLZ_VAULT?: string
+  /**
+   * A Worker secret (`wrangler secret put RELAYER_PRIVATE_KEY`), never a var: the key of a wallet that only
+   * pays gas, used to bring approved callouts to the vault. Unset: authors record their own.
+   */
+  RELAYER_PRIVATE_KEY?: string
 }
 
 const DEFAULT_BUDGET = 44
@@ -69,6 +74,13 @@ async function positions(env: Env): Promise<void> {
   } catch (error) {
     console.error(JSON.stringify({ positionsFailed: String(error).slice(0, 500) }))
   }
+  // Then the approved callouts that still have to reach the vault. Its own failures are its own too.
+  try {
+    const relayed = await relayApproved(env)
+    if (relayed.sent + relayed.already + relayed.failed > 0) console.log(JSON.stringify({ relayed }))
+  } catch (error) {
+    console.error(JSON.stringify({ relayFailed: error instanceof Error ? error.name : 'error' }))
+  }
 }
 
 export default {
@@ -76,8 +88,8 @@ export default {
     const url = new URL(request.url)
     if (url.pathname.startsWith('/api/image/')) return handleImage(request, ctx)
     if (url.pathname.startsWith('/api/meta/')) return handleMeta(request, ctx)
-    if (url.pathname.startsWith('/api/chat/')) return handleChat(request, env.DB)
-    if (url.pathname.startsWith('/api/callouts/')) return handleCallouts(request, env)
+    if (url.pathname.startsWith('/api/chat/')) return handleChat(request, env)
+    if (url.pathname.startsWith('/api/callouts/')) return handleCallouts(request, env, ctx)
     if (url.pathname.startsWith('/api/')) return handleApi(request, env.DB)
     return env.ASSETS.fetch(request)
   },

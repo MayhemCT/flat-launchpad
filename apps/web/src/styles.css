@@ -590,3 +590,10 @@ h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
 .rewards-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .rewards-head h2 { margin: 0; font-size: 16px; }
 .rewards-head span { font-size: 12.5px; }
+
+/* Callout rewards in the wallet menu */
+.positions-rewards { display: grid; gap: 8px; padding-bottom: 12px; margin-bottom: 4px; border-bottom: 1px solid var(--line); grid-template-columns: minmax(0, 1fr); }
+.positions-rewards-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.positions-rewards-list li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.positions-rewards-list a { color: var(--ink); overflow-wrap: anywhere; }
+.positions-claim { width: 100%; }

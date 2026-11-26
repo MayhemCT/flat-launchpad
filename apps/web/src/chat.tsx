@@ -1,4 +1,6 @@
-// A public chat room per token, kept by this site's Worker under /api/chat (apps/worker/src/chat.ts).
+// Two chat rooms per token, kept by this site's Worker under /api/chat (apps/worker/src/chat.ts): the public
+// one, and a holder room that anyone can read but only wallets holding the token can post in. The Worker
+// checks the holding; this panel only says so.
 // Nobody logs in: the wallet signs each message with personal_sign, over plain EIP-1193, so this panel
 // loads no chain library.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
@@ -7,6 +9,8 @@ import { connect, useWallet } from "./wallet";
 import "./chat.css";
 
 type ChatChain = "bsc" | "bscTestnet";
+/** A token's rooms: the one anyone can post in, and the one only its holders can. */
+type ChatRoom = "public" | "holders";
 
 interface ChatMessage {
   id: number;
@@ -46,10 +50,12 @@ function cleanBody(raw: string): string {
 
 /**
  * The exact text the wallet signs for one message. `body` is the cleaned body, `issuedAt` unix seconds.
+ * Its first line names the room, so what was signed for one room verifies in no other.
  * Keep in sync with `chatSigningText` in apps/worker/src/chat.ts: one character of difference and no signature verifies.
  */
-function chatSigningText({ chain, token, body, issuedAt }: { chain: ChatChain; token: string; body: string; issuedAt: number }): string {
-  return `CallZ chat\n\nToken: ${token.toLowerCase()}\nNetwork: ${chain}\nTime: ${issuedAt}\n\n${body}`;
+function chatSigningText({ chain, token, body, issuedAt, room }: { chain: ChatChain; token: string; body: string; issuedAt: number; room: ChatRoom }): string {
+  const title = room === "holders" ? "CallZ holder room" : "CallZ chat";
+  return `${title}\n\nToken: ${token.toLowerCase()}\nNetwork: ${chain}\nTime: ${issuedAt}\n\n${body}`;
 }
 
 /** Text as the 0x hex of its UTF-8 bytes, the form personal_sign takes a message in. */
@@ -93,7 +99,10 @@ function containsLink(body: string): boolean {
 
 export function TokenChat({ chain, token }: { chain: ChatChain; token: string }) {
   const wallet = useWallet();
-  const room = `/api/chat/${chain}/${token.toLowerCase()}`;
+  const [room, setRoom] = useState<ChatRoom>("public");
+  const base = `/api/chat/${chain}/${token.toLowerCase()}`;
+  // The public room keeps the address it always had; the holder room is named in the query.
+  const address = (query: string) => `${base}?${room === "holders" ? "room=holders&" : ""}${query}`;
   const titleId = useId();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -120,6 +129,8 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
     setMessages([]);
     setState("loading");
     setError(null);
+    // A draft belongs to the room it was typed in: it does not follow the visitor into the other one.
+    setDraft("");
     following.current = true;
 
     const load = async (): Promise<void> => {
@@ -130,7 +141,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
       busy = true;
       const after = lastId;
       try {
-        const response = await fetch(after === null ? `${room}?limit=${FIRST_PAGE}` : `${room}?after=${after}&limit=${POLL_PAGE}`);
+        const response = await fetch(address(after === null ? `limit=${FIRST_PAGE}` : `after=${after}&limit=${POLL_PAGE}`));
         if (!response.ok) throw new Error(String(response.status));
         const page = ((await response.json()) as { messages?: unknown }).messages;
         if (!Array.isArray(page) || !page.every(isMessage)) throw new Error("unexpected response");
@@ -181,7 +192,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", tick);
     };
-  }, [room]);
+  }, [base, room]);
 
   // Before the browser paints new messages, move to the newest, unless the reader has scrolled up.
   useLayoutEffect(() => {
@@ -219,7 +230,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
     setStep("signing");
     try {
       const issuedAt = Math.floor((Date.now() + clockAhead.current) / 1000);
-      const text = chatSigningText({ chain, token, body, issuedAt });
+      const text = chatSigningText({ chain, token, body, issuedAt, room });
       let signature: unknown;
       try {
         signature = await provider.request({ method: "personal_sign", params: [utf8Hex(text), account] });
@@ -231,7 +242,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
       }
 
       setStep("sending");
-      const response = await fetch(room, {
+      const response = await fetch(room === "holders" ? `${base}?room=holders` : base, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ author: account.toLowerCase(), body, issuedAt, signature }),
@@ -260,7 +271,15 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
     <section className="chat-panel" data-testid="token-chat" aria-labelledby={titleId}>
       <header className="chat-head">
         <h2 id={titleId}>Chat</h2>
+        {/* Holdings are read on BNB Chain, so that is where a token has a holder room. */}
+        {chain === "bsc" && (
+          <div className="seg seg-small chat-rooms" role="group" aria-label="Chat room">
+            <button type="button" data-testid="chat-room-public" aria-pressed={room === "public"} onClick={() => setRoom("public")}>Chat</button>
+            <button type="button" data-testid="chat-room-holders" aria-pressed={room === "holders"} onClick={() => setRoom("holders")}>Holders</button>
+          </div>
+        )}
       </header>
+      {room === "holders" && <p className="chat-room-note">Only wallets that hold this token can post here. Anyone can read.</p>}
 
       {/* Only new messages are announced: the times tick over without a word. */}
       <div className="chat-list" ref={list} onScroll={onScroll} role="log" aria-label="Messages" aria-relevant="additions" tabIndex={0}>
@@ -295,7 +314,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
               name="message"
               value={draft}
               maxLength={MAX_LENGTH}
-              placeholder={`Message as ${short(wallet.account)}`}
+              placeholder={room === "holders" ? `Message holders as ${short(wallet.account)}` : `Message as ${short(wallet.account)}`}
               autoComplete="off"
               enterKeyHint="send"
               readOnly={step !== "idle"}

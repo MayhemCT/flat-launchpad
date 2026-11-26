@@ -8,22 +8,47 @@
  *   POST /api/callouts/bsc/review   { id, decision: 'approve', epoch, deadline, signature }
  *                                   { id, decision: 'reject', issuedAt, signature }
  *                                                                    the reviewer wallet's decision on one callout.
+ *   GET  /api/callouts/bsc/card/<id>                                 the picture pump.fun or fomo.family shares for that callout.
+ *   GET  /api/callouts/bsc/author/<address>                          the tokens that wallet has a counted-or-countable callout on.
  *
  * A callout is for a holder. When one is posted, the author's balance of the token and the token's market cap
  * are read (apps/worker/src/market.ts) and stored with it; the market cap goes into the attestation, and the
  * cron keeps reading the balance to say whether the author still holds: see `refreshPositions`.
  *
- * Nobody logs in, and this Worker holds no key. A callout is accepted when its author's wallet signed its exact
- * text (EIP-191 `personal_sign`). An approval is accepted when it is the reviewer wallet's EIP-712 signature
- * over the very attestation the rewards vault checks: this Worker only stores it, the author's own wallet
- * takes it to the vault.
+ * Nobody logs in. A callout is accepted when its author's wallet signed its exact text (EIP-191
+ * `personal_sign`). An approval is accepted when it is the reviewer wallet's EIP-712 signature over the very
+ * attestation the rewards vault checks. The Worker cannot make an attestation: it holds no key that can.
+ *
+ * The vault takes an attestation from anyone who brings it, so the Worker brings it itself, and the author
+ * never has to confirm a transaction: see `relaySubmission`. That is what the one key the Worker may hold is
+ * for (`RELAYER_PRIVATE_KEY`, a Worker secret). It pays gas and nothing else: it cannot approve a callout,
+ * move anyone's rewards or change what an attestation says. It is never logged and never part of a response.
+ * Without it, authors record their own approved callouts from the page, as before.
  *
  * A link is never stored as it was typed. It is taken apart by fixed rules for the three sites that are
  * accepted and rebuilt in one canonical spelling, so the address the page links to is always one this file
  * wrote out itself. Every value reaches the database as a bound parameter of a prepared statement.
  */
-import { keccak256, toBytes, verifyMessage, verifyTypedData, type Address, type Hex } from 'viem'
+import { CHAINS } from '@flat/protocol'
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  createWalletClient,
+  http,
+  keccak256,
+  nonceManager,
+  parseAbi,
+  toBytes,
+  verifyMessage,
+  verifyTypedData,
+  type Address,
+  type Hex,
+} from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { bsc } from 'viem/chains'
 import { canonicalSignature, cleanBody, containsLink, issuedAtInWindow } from './chat.js'
+import { readCapped as readResponseCapped } from './ipfs.js'
 import { balanceOf, balancesOf, bscRpc, marketCapUsd, positionClosed } from './market.js'
 
 /** The part of the Worker's environment callouts use. */
@@ -35,6 +60,11 @@ export interface CalloutEnv {
   CALLZ_VAULT?: string
   /** Optional private BNB Chain endpoint. Public ones are used when unset. */
   BSC_RPC_URL?: string
+  /**
+   * A Worker secret: the key of a wallet that only pays gas, used to bring approved callouts to the vault.
+   * Never logged, never returned. Unset: authors record their own.
+   */
+  RELAYER_PRIVATE_KEY?: string
 }
 
 export const CALLOUT_CHAIN = 'bsc'
@@ -67,6 +97,19 @@ const MAX_PER_HOUR = 10
 const POSITIONS_PER_RUN = 40
 /** Tokens one cron run asks DexScreener about, to put a market cap on positions that closed. */
 const CLOSURE_TOKENS_PER_RUN = 10
+/** Approved callouts one cron run brings to the vault. */
+const RELAYS_PER_RUN = 5
+/** The cron leaves an approval alone this long, in seconds: the request that stored it is bringing it to the vault itself. */
+const RELAY_GRACE_SECONDS = 60
+/** Tokens the author endpoint lists at most. */
+const AUTHOR_TOKENS = 50
+const CARD_MAX_BYTES = 2_097_152
+const CARD_TIMEOUT_MS = 8000
+/** Raster formats only: an SVG can carry script. */
+const CARD_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const CARD_USER_AGENT = 'Mozilla/5.0 (compatible; link-preview)'
+const ROW_ID = /^[1-9][0-9]{0,14}$/
+const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/
 const ZERO_HASH: Hex = `0x${'00'.repeat(32)}`
@@ -284,6 +327,7 @@ export const SUBMISSION_TYPES = {
     { name: 'linkHash', type: 'bytes32' },
     { name: 'profileHash', type: 'bytes32' },
     { name: 'mcap', type: 'uint256' },
+    { name: 'held', type: 'uint256' },
     { name: 'nonce', type: 'uint256' },
     { name: 'deadline', type: 'uint256' },
   ],
@@ -302,6 +346,8 @@ export interface Submission {
   profileHash: Hex
   /** The token's market cap when the callout was posted, in whole US dollars. */
   mcap: number
+  /** What the author's wallet held of the token when the callout was posted, in base units, as a decimal string. */
+  held: string
   /** The callout's id. */
   nonce: number
   deadline: number
@@ -323,6 +369,7 @@ export async function verifyAttestation(attester: string, vault: string, submiss
         linkHash: submission.linkHash,
         profileHash: submission.profileHash,
         mcap: BigInt(submission.mcap),
+        held: BigInt(submission.held),
         nonce: BigInt(submission.nonce),
         deadline: BigInt(submission.deadline),
       },
@@ -369,7 +416,7 @@ const failure = (status: number, message: string, headers?: Record<string, strin
 type Row = Record<string, string | number | null>
 
 const COLUMNS =
-  'id, token, author, kind, url, link_hash, profile, note, status, created_at, epoch, deadline, attestation, call_mcap, call_balance, held_balance, position, closed_at, closed_mcap'
+  'id, token, author, kind, url, link_hash, profile, note, status, created_at, reviewed_at, epoch, deadline, attestation, call_mcap, call_balance, held_balance, position, closed_at, closed_mcap, record_tx'
 
 function toCallout(row: Row) {
   const approved = row.status === 'approved'
@@ -386,6 +433,9 @@ function toCallout(row: Row) {
     epoch: approved ? row.epoch : null,
     deadline: approved ? row.deadline : null,
     attestation: approved ? row.attestation : null,
+    /** When the reviewer decided (unix seconds), and the transaction that took the approval to the vault, if the Worker sent one. */
+    reviewedAt: approved ? (row.reviewed_at ?? null) : null,
+    recordTx: approved ? (row.record_tx ?? null) : null,
     callMcap: row.call_mcap ?? null,
     callBalance: row.call_balance ?? null,
     heldBalance: row.held_balance ?? null,
@@ -437,14 +487,15 @@ async function readJson(request: Request): Promise<{ input: unknown } | { respon
   }
 }
 
-async function list(db: D1Database, token: string, url: URL): Promise<Response> {
+async function list(env: CalloutEnv, token: string, url: URL): Promise<Response> {
+  const db = env.DB
   const requested = Number(url.searchParams.get('limit') ?? DEFAULT_LIMIT)
   const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, MAX_LIMIT) : DEFAULT_LIMIT
   const rows = await db
     .prepare(`SELECT ${COLUMNS} FROM callouts WHERE chain = ? AND token = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT ?`)
     .bind(CALLOUT_CHAIN, token, limit)
     .all<Row>()
-  return json({ callouts: rows.results.map(toCallout) })
+  return json({ autoRecord: autoRecordOn(env), callouts: rows.results.map(toCallout) })
 }
 
 async function post(request: Request, env: CalloutEnv, token: string): Promise<Response> {
@@ -470,7 +521,7 @@ async function post(request: Request, env: CalloutEnv, token: string): Promise<R
       console.error(JSON.stringify({ calloutBalanceFailed: String(error).slice(0, 300) }))
       return null
     }),
-    marketCapUsd(token),
+    marketCapUsd(token, fetch, bscRpc(env)),
   ])
   if (callBalance === null) return failure(503, 'This wallet’s holdings could not be read right now. Try again in a moment.')
   if (callBalance === 0n) return failure(403, 'Callouts are for holders: this wallet holds none of this token.')
@@ -516,7 +567,7 @@ RETURNING id`,
       {
         callout: {
           id, author, kind, url, note, status: 'pending', createdAt: now, linkHash, profileHash: profileHashOf(profile),
-          epoch: null, deadline: null, attestation: null,
+          epoch: null, deadline: null, attestation: null, reviewedAt: null, recordTx: null,
           callMcap, callBalance: held, heldBalance: held, position: 'open', closedAt: null, closedMcap: null,
         },
       },
@@ -541,17 +592,18 @@ RETURNING id`,
   return failure(503, 'The callout could not be stored. Try again.')
 }
 
-async function reviewQueue(db: D1Database, attester: string, vault: string): Promise<Response> {
-  const rows = await db
+async function reviewQueue(env: CalloutEnv, attester: string, vault: string): Promise<Response> {
+  const rows = await env.DB
     .prepare(`SELECT ${COLUMNS} FROM callouts WHERE chain = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT ?`)
     .bind(CALLOUT_CHAIN, REVIEW_LIMIT)
     .all<Row>()
-  return json({ attester, vault, callouts: rows.results.map((row) => ({ ...toCallout(row), token: row.token })) })
+  return json({ attester, vault, autoRecord: autoRecordOn(env), callouts: rows.results.map((row) => ({ ...toCallout(row), token: row.token })) })
 }
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 
-async function review(request: Request, db: D1Database, attester: string, vault: string): Promise<Response> {
+async function review(request: Request, env: CalloutEnv, attester: string, vault: string, fetcher: typeof fetch): Promise<Response> {
+  const db = env.DB
   const body = await readJson(request)
   if ('response' in body) return body.response
   const input = body.input
@@ -594,6 +646,12 @@ async function review(request: Request, db: D1Database, attester: string, vault:
     return failure(409, 'This callout was posted before market caps were recorded. Ask the author to post it again.')
   }
 
+  // It also carries what the wallet held at the call: the vault never counts more than that.
+  const held = typeof row.call_balance === 'string' && /^[1-9]\d{0,77}$/.test(row.call_balance) ? row.call_balance : null
+  if (held === null) {
+    return failure(409, 'This callout has no recorded holdings. Ask the author to post it again.')
+  }
+
   const submission: Submission = {
     holder: String(row.author),
     token: String(row.token),
@@ -602,6 +660,7 @@ async function review(request: Request, db: D1Database, attester: string, vault:
     linkHash: String(row.link_hash) as Hex,
     profileHash: profileHashOf(String(row.profile ?? '')),
     mcap,
+    held,
     nonce: id,
     deadline,
   }
@@ -609,17 +668,285 @@ async function review(request: Request, db: D1Database, attester: string, vault:
     return failure(403, 'The signature is not the reviewer wallet’s attestation for this callout, round and deadline.')
   }
 
-  // Approving again overwrites: that is how an approval whose round has passed is renewed.
+  // Approving again overwrites: that is how an approval whose round has passed is renewed. A new attestation
+  // has not been to the vault yet, whatever became of the last one.
   const approved = await db
     .prepare(
-      `UPDATE callouts SET status = 'approved', reviewed_at = ?, reviewer = ?, epoch = ?, deadline = ?, attestation = ?
+      `UPDATE callouts SET status = 'approved', reviewed_at = ?, reviewer = ?, epoch = ?, deadline = ?, attestation = ?, record_tx = NULL
 WHERE id = ? AND chain = ? AND status IN ('pending', 'approved')
 RETURNING ${COLUMNS}`,
     )
     .bind(now, attester, epoch, deadline, canonical, id, CALLOUT_CHAIN)
     .first<Row>()
   if (!approved) return failure(409, 'This callout was rejected and cannot be approved.')
-  return json({ callout: { ...toCallout(approved), token: approved.token } })
+
+  // The approval stands from here on. Bringing it to the vault is tried once now, for the round in progress;
+  // if that fails the cron tries again, and the author can still record it from the page.
+  const relayer = relayerOf(env)
+  let recordError: string | undefined
+  if (relayer && epoch === currentEpoch(now)) {
+    try {
+      const hash = await relaySubmission(relayer, env, submission, String(approved.url), canonical, fetcher)
+      await db.prepare(`UPDATE callouts SET record_tx = ? WHERE id = ? AND attestation = ? AND record_tx IS NULL`).bind(hash, id, canonical).run()
+      approved.record_tx = hash
+    } catch (error) {
+      recordError = relayFailure(error, relayer)
+    }
+  }
+  return json({ callout: { ...toCallout(approved), token: approved.token, ...(recordError === undefined ? {} : { recordError }) } })
+}
+
+// ── The share card ───────────────────────────────────────────────────────
+
+/**
+ * Where the picture a site shares for a callout is kept: pump.fun's card of the callout, fomo.family's card
+ * of the trade. Null for a post on X, which has none, and for a stored link that does not come back from
+ * `parseCalloutLink` exactly as it is. The address is built from that canonical link alone, so its host is
+ * always one of the two written here and its path holds nothing but an address and an id in hex.
+ */
+export function shareCardUrl(kind: number, url: string, token: string): string | null {
+  const link = parseCalloutLink(url, token)
+  if (!link.ok || link.url !== url || link.kind !== kind) return null
+  if (link.kind === KIND_PUMP) return `${link.url}/opengraph-image`
+  if (link.kind === KIND_FOMO) return `https://image-renderer.fomo.cloud/og/thesis/${link.url.slice(link.url.lastIndexOf('&tradeId=') + '&tradeId='.length)}/card.png`
+  return null
+}
+
+const badGateway = () => new Response(null, { status: 502, headers: { 'cache-control': 'no-store' } })
+
+/**
+ * `GET /api/callouts/bsc/card/<id>`: that callout's share card, from this site's own origin, so the page's
+ * content policy stays `img-src 'self'` and no visitor's browser talks to pump.fun or fomo.family. Nothing in
+ * the request chooses what is fetched: the id names a stored callout, and the address comes from its link.
+ * Only a PNG, JPEG or WebP of at most 2 MB is passed on.
+ */
+async function shareCard(request: Request, env: CalloutEnv, id: string, ctx: Pick<ExecutionContext, 'waitUntil'> | undefined, fetcher: typeof fetch): Promise<Response> {
+  if (!ROW_ID.test(id)) return failure(404, 'Not found.')
+  const row = await env.DB
+    .prepare(`SELECT kind, url, token FROM callouts WHERE id = ? AND chain = ? AND status IN ('pending', 'approved')`)
+    .bind(Number(id), CALLOUT_CHAIN)
+    .first<Row>()
+  const upstream = row ? shareCardUrl(Number(row.kind), String(row.url), String(row.token)) : null
+  if (upstream === null) return failure(404, 'Not found.')
+
+  // The Workers cache, where there is one: outside the Workers runtime every request goes upstream.
+  const cache = (globalThis as { caches?: CacheStorage }).caches?.default ?? null
+  const cacheKey = new Request(`${new URL(request.url).origin}/api/callouts/${CALLOUT_CHAIN}/card/${id}`)
+  const cached = await cache?.match(cacheKey)
+  if (cached) return cached
+
+  let answer: Response
+  try {
+    answer = await fetcher(upstream, {
+      headers: { 'user-agent': CARD_USER_AGENT, accept: 'image/png, image/jpeg, image/webp' },
+      // A redirect would be an address this file did not write.
+      redirect: 'manual',
+      signal: AbortSignal.timeout(CARD_TIMEOUT_MS),
+    })
+  } catch {
+    return badGateway()
+  }
+  const type = (answer.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase()
+  if (answer.status !== 200 || !CARD_TYPES.has(type)) {
+    await answer.body?.cancel()
+    return badGateway()
+  }
+  const bytes = await readResponseCapped(answer, CARD_MAX_BYTES).catch(() => null)
+  if (!bytes || bytes.byteLength === 0) return badGateway()
+
+  const response = new Response(bytes, {
+    headers: {
+      'content-type': type,
+      'content-length': String(bytes.byteLength),
+      'cache-control': 'public, max-age=3600',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      'cross-origin-resource-policy': 'same-origin',
+    },
+  })
+  if (cache) ctx?.waitUntil(cache.put(cacheKey, response.clone()))
+  return response
+}
+
+// ── An author's tokens ────────────────────────────────────────────────────
+
+/**
+ * `GET /api/callouts/bsc/author/<address>`: the tokens that wallet has an approved callout on from this round
+ * or the last, the token of its newest callout first. These are the tokens it may have rewards waiting on.
+ */
+async function authorTokens(db: D1Database, author: string, now: number): Promise<Response> {
+  const rows = await db
+    .prepare(
+      `SELECT token FROM callouts WHERE chain = ? AND author = ? AND status = 'approved' AND epoch >= ?
+GROUP BY token ORDER BY MAX(id) DESC LIMIT ?`,
+    )
+    .bind(CALLOUT_CHAIN, author, currentEpoch(now) - 1, AUTHOR_TOKENS)
+    .all<Row>()
+  return json({ tokens: rows.results.map((row) => row.token) })
+}
+
+// ── Bringing approvals to the vault ───────────────────────────────────────
+
+/** The two functions of the vault the Worker calls, and the reasons the vault gives for refusing a submission. */
+const vaultAbi = parseAbi([
+  'struct Submission { address holder; address token; uint256 epoch; uint8 kind; bytes32 linkHash; bytes32 profileHash; uint256 mcap; uint256 held; uint256 nonce; uint256 deadline; }',
+  'function submitAttested(Submission s, string link, bytes signature)',
+  'function usedLink(bytes32 linkHash) view returns (bool)',
+  'error WrongEpoch()',
+  'error Expired()',
+  'error InvalidKind()',
+  'error ZeroMarketCap()',
+  'error LinkTooLong()',
+  'error LinkMismatch()',
+  'error LinkUsed()',
+  'error BadSignature()',
+  'error TooManyLinks()',
+  'error BelowMinHold()',
+])
+
+/** Why the vault refuses a submission, in words for the reviewer. */
+const REFUSALS: Record<string, string> = {
+  WrongEpoch: 'The approval is for a round that is not the running one.',
+  Expired: 'The approval has passed its deadline.',
+  LinkUsed: 'This link has already been counted.',
+  LinkMismatch: 'The link is not the one that was approved.',
+  BadSignature: 'The vault does not take this wallet\u2019s approvals: its reviewer is another wallet.',
+  TooManyLinks: 'This holder has already counted the most callouts one holder can in a round.',
+  BelowMinHold: 'This wallet holds less than the minimum of the token, so the callout cannot be counted yet.',
+  ZeroMarketCap: 'The callout has no market cap recorded.',
+}
+
+interface Relayer {
+  /** The gas wallet's key. It goes to the signer and nowhere else. */
+  key: Hex
+  vault: Address
+}
+
+/** The gas wallet and the vault it sends to, when both are configured. */
+function relayerOf(env: CalloutEnv): Relayer | null {
+  const key = env.RELAYER_PRIVATE_KEY?.trim()
+  const vault = env.CALLZ_VAULT
+  return key && vault && PRIVATE_KEY.test(key) && ADDRESS.test(vault) ? { key: key as Hex, vault: vault.toLowerCase() as Address } : null
+}
+
+/** True when the Worker brings approved callouts to the vault itself, so authors need not. */
+export const autoRecordOn = (env: CalloutEnv): boolean => relayerOf(env) !== null
+
+const chainTransport = (env: CalloutEnv, fetcher: typeof fetch) =>
+  http(env.BSC_RPC_URL ?? CHAINS.bsc.rpcUrls[0], { fetchFn: (input, init) => fetcher(input, init), timeout: 10_000, retryCount: 1 })
+
+/**
+ * Sends `submitAttested` to the vault from the gas wallet and returns the transaction's hash. The vault takes
+ * a submission from anyone and credits the holder named in it, so who pays the gas changes nothing about who
+ * is rewarded. The call is simulated first: one the vault would refuse is never sent, and costs nothing.
+ * Gas is the estimate, half as much again, and a fixed margin; what is not used is not paid for.
+ */
+async function relaySubmission(relayer: Relayer, env: CalloutEnv, submission: Submission, link: string, attestation: Hex, fetcher: typeof fetch): Promise<Hex> {
+  // The nonce manager counts what this isolate has sent, so two sends in one run do not reuse a nonce.
+  const account = privateKeyToAccount(relayer.key, { nonceManager })
+  const transport = chainTransport(env, fetcher)
+  const call = {
+    account,
+    address: relayer.vault,
+    abi: vaultAbi,
+    functionName: 'submitAttested',
+    args: [
+      {
+        holder: submission.holder.toLowerCase() as Address,
+        token: submission.token.toLowerCase() as Address,
+        epoch: BigInt(submission.epoch),
+        kind: submission.kind,
+        linkHash: submission.linkHash,
+        profileHash: submission.profileHash,
+        mcap: BigInt(submission.mcap),
+        held: BigInt(submission.held),
+        nonce: BigInt(submission.nonce),
+        deadline: BigInt(submission.deadline),
+      },
+      link,
+      attestation,
+    ],
+  } as const
+  const reader = createPublicClient({ chain: bsc, transport })
+  await reader.simulateContract(call)
+  const estimate = await reader.estimateContractGas(call)
+  return createWalletClient({ account, chain: bsc, transport }).writeContract({ ...call, gas: (estimate * 3n) / 2n + 60_000n })
+}
+
+/**
+ * Why a relay failed, as one short sentence, and a line in the log. The sentence is one of the fixed ones
+ * here, never the error's own text; the log line has the key cut out of it should it ever appear there.
+ */
+function relayFailure(error: unknown, relayer: Relayer): string {
+  const reverted = error instanceof BaseError ? error.walk((cause) => cause instanceof ContractFunctionRevertedError) : null
+  const name = reverted instanceof ContractFunctionRevertedError ? reverted.data?.errorName : undefined
+  const logged = String(error instanceof BaseError ? error.shortMessage : error).split(relayer.key).join('[key]').split(relayer.key.slice(2)).join('[key]')
+  console.error(JSON.stringify({ calloutRelayFailed: name ?? logged.slice(0, 300) }))
+  if (name) return REFUSALS[name] ?? 'The vault refused the callout.'
+  return 'The transaction could not be sent. It is tried again automatically.'
+}
+
+export interface RelayResult {
+  /** Callouts sent to the vault this run. */
+  sent: number
+  /** Callouts the vault had already counted, sent by someone else. */
+  already: number
+  /** Callouts that could not be sent: they are tried again on a later run. */
+  failed: number
+}
+
+/**
+ * Brings approved callouts of the running round to the vault: the ones the approval itself could not, and the
+ * ones approved while no gas wallet was configured. A link the vault has already counted is marked as such.
+ * A few are taken at random each run, so one the vault keeps refusing cannot hold up the others.
+ */
+export async function relayApproved(env: CalloutEnv, fetcher: typeof fetch = fetch): Promise<RelayResult> {
+  const result: RelayResult = { sent: 0, already: 0, failed: 0 }
+  const relayer = relayerOf(env)
+  if (!relayer) return result
+  const db = env.DB
+  const now = Math.floor(Date.now() / 1000)
+  const waiting = await db
+    .prepare(
+      `SELECT ${COLUMNS} FROM callouts
+WHERE chain = ? AND status = 'approved' AND epoch = ? AND record_tx IS NULL AND attestation IS NOT NULL AND deadline > ? AND reviewed_at <= ?
+ORDER BY RANDOM() LIMIT ?`,
+    )
+    .bind(CALLOUT_CHAIN, currentEpoch(now), now, now - RELAY_GRACE_SECONDS, RELAYS_PER_RUN)
+    .all<Row>()
+  if (waiting.results.length === 0) return result
+
+  const reader = createPublicClient({ chain: bsc, transport: chainTransport(env, fetcher) })
+  for (const row of waiting.results) {
+    const mark = (value: string) =>
+      db.prepare(`UPDATE callouts SET record_tx = ? WHERE id = ? AND attestation = ? AND record_tx IS NULL`).bind(value, row.id, row.attestation).run()
+    try {
+      const linkHash = String(row.link_hash) as Hex
+      if (await reader.readContract({ address: relayer.vault, abi: vaultAbi, functionName: 'usedLink', args: [linkHash] })) {
+        await mark('recorded')
+        result.already++
+        continue
+      }
+      const submission: Submission = {
+        holder: String(row.author),
+        token: String(row.token),
+        epoch: Number(row.epoch),
+        kind: Number(row.kind),
+        linkHash,
+        profileHash: profileHashOf(String(row.profile ?? '')),
+        mcap: Number(row.call_mcap),
+        held: String(row.call_balance),
+        nonce: Number(row.id),
+        deadline: Number(row.deadline),
+      }
+      await mark(await relaySubmission(relayer, env, submission, String(row.url), String(row.attestation) as Hex, fetcher))
+      result.sent++
+    } catch (error) {
+      relayFailure(error, relayer)
+      result.failed++
+    }
+  }
+  return result
 }
 
 // ── Positions ────────────────────────────────────────────────────────────
@@ -666,7 +993,7 @@ ORDER BY checked_at, id LIMIT ?`,
 
   // One market cap per token with a closure.
   const closingTokens = [...new Set(readings.filter((reading) => reading.closing).map((reading) => reading.token))].slice(0, CLOSURE_TOKENS_PER_RUN)
-  const caps = new Map(await Promise.all(closingTokens.map(async (token) => [token, await marketCapUsd(token, fetcher)] as const)))
+  const caps = new Map(await Promise.all(closingTokens.map(async (token) => [token, await marketCapUsd(token, fetcher, bscRpc(env, fetcher))] as const)))
 
   const statements = readings.map(({ id, token, held, closing }) => {
     if (held === null) {
@@ -691,19 +1018,35 @@ ORDER BY checked_at, id LIMIT ?`,
   return result
 }
 
-/** Routes `/api/callouts/bsc/<token>` and `/api/callouts/bsc/review`. */
-export async function handleCallouts(request: Request, env: CalloutEnv): Promise<Response> {
+/**
+ * Routes `/api/callouts/bsc/...`. `ctx` lets a share card be put in the cache after it has been answered;
+ * `fetcher` is how the chain and the two card hosts are reached.
+ */
+export async function handleCallouts(
+  request: Request,
+  env: CalloutEnv,
+  ctx?: Pick<ExecutionContext, 'waitUntil'>,
+  fetcher: typeof fetch = fetch,
+): Promise<Response> {
   const reading = request.method === 'GET' || request.method === 'HEAD'
   if (!reading && request.method !== 'POST') return failure(405, 'Method not allowed.', { allow: 'GET, HEAD, POST' })
 
   const url = new URL(request.url)
-  const [, api, callouts, chain, target, extra] = url.pathname.split('/')
-  if (api !== 'api' || callouts !== 'callouts' || chain === undefined || target === undefined || extra !== undefined) {
+  const [, api, callouts, chain, target, extra, more] = url.pathname.split('/')
+  // Only a card and an author take one more part after their name.
+  const nested = target === 'card' || target === 'author'
+  if (api !== 'api' || callouts !== 'callouts' || chain === undefined || target === undefined || more !== undefined || (extra === undefined) === nested) {
     return failure(404, 'Not found.')
   }
   if (chain !== CALLOUT_CHAIN) return failure(404, 'Unknown network. Callouts are on bsc only.')
 
   try {
+    if (nested) {
+      if (!reading) return failure(405, 'Method not allowed.', { allow: 'GET, HEAD' })
+      if (target === 'card') return await shareCard(request, env, extra!, ctx, fetcher)
+      if (!ADDRESS.test(extra!)) return failure(400, 'The author must be a 0x address.')
+      return await authorTokens(env.DB, extra!.toLowerCase(), Math.floor(Date.now() / 1000))
+    }
     if (target === 'review') {
       const attester = env.CALLOUT_ATTESTER
       const vault = env.CALLZ_VAULT
@@ -711,12 +1054,12 @@ export async function handleCallouts(request: Request, env: CalloutEnv): Promise
         return failure(503, 'Callout review is not configured yet.')
       }
       return reading
-        ? await reviewQueue(env.DB, attester.toLowerCase(), vault.toLowerCase())
-        : await review(request, env.DB, attester.toLowerCase(), vault.toLowerCase())
+        ? await reviewQueue(env, attester.toLowerCase(), vault.toLowerCase())
+        : await review(request, env, attester.toLowerCase(), vault.toLowerCase(), fetcher)
     }
     if (!ADDRESS.test(target)) return failure(400, 'The token must be a 0x address.')
     const token = target.toLowerCase()
-    return reading ? await list(env.DB, token, url) : await post(request, env, token)
+    return reading ? await list(env, token, url) : await post(request, env, token)
   } catch (error) {
     console.error(JSON.stringify({ calloutsFailed: String(error).slice(0, 500) }))
     return failure(500, 'Callouts are unavailable right now. Try again in a moment.')

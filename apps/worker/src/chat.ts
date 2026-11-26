@@ -1,9 +1,14 @@
 /**
- * `/api/chat/<chain>/<token>`: a public chat room per token.
+ * `/api/chat/<chain>/<token>`: two chat rooms per token. Anyone can read both. Anyone can post in the public
+ * one; in the holder room only a wallet that holds the token at that moment can.
  *
- *   GET  ?after=<id>&limit=<n>                     messages, oldest first. Without `after` the newest `limit`;
+ *   GET  ?room=<room>&after=<id>&limit=<n>         messages, oldest first. Without `after` the newest `limit`;
  *                                                  with it, only messages with a larger id, for polling.
- *   POST { author, body, issuedAt, signature }     stores one message.
+ *   POST ?room=<room>                              stores one message: { author, body, issuedAt, signature }.
+ *
+ * `room` is `public` (the default) or `holders`. Each room has its own signing text, so a signature made for
+ * one is never a signature for the other. The holder room reads the author's balance from the token itself,
+ * after the signature has verified, and never takes a balance it could not read for one of zero.
  *
  * Nobody logs in. A message is accepted when its author's wallet signed its exact text (EIP-191
  * `personal_sign`) within the last few minutes, and that signature has not been used before. The page calls
@@ -16,6 +21,21 @@
  */
 import { CHAINS, isChainKey, type ChainKey } from '@flat/protocol'
 import { verifyMessage, type Address, type Hex } from 'viem'
+import { balanceOf, bscRpc, type MarketEnv } from './market.js'
+
+/** The part of the Worker's environment chat uses. */
+export interface ChatEnv extends MarketEnv {
+  DB: D1Database
+}
+
+/** A token's rooms: the one anyone can post in, and the one only its holders can. */
+export type ChatRoom = 'public' | 'holders'
+
+/** The room a request's `room` parameter names: the public one when there is none, null for anything else. */
+export function chatRoomOf(value: string | null): ChatRoom | null {
+  if (value === null || value === 'public') return 'public'
+  return value === 'holders' ? 'holders' : null
+}
 
 /** Longest message, in characters (Unicode code points) after cleaning. */
 export const MAX_BODY_LENGTH = 280
@@ -84,14 +104,18 @@ export interface ChatSigningFields {
   body: string
   /** Unix seconds. */
   issuedAt: number
+  /** The room the message is for. The public one when left out. */
+  room?: ChatRoom
 }
 
 /**
- * The exact text an author's wallet signs for one message.
+ * The exact text an author's wallet signs for one message. Its first line names the room, so what was signed
+ * for one room verifies in no other.
  * Keep in sync with `chatSigningText` in apps/web/src/chat.tsx: one character of difference and no signature verifies.
  */
-export function chatSigningText({ chain, token, body, issuedAt }: ChatSigningFields): string {
-  return `CallZ chat\n\nToken: ${token.toLowerCase()}\nNetwork: ${chain}\nTime: ${issuedAt}\n\n${body}`
+export function chatSigningText({ chain, token, body, issuedAt, room = 'public' }: ChatSigningFields): string {
+  const title = room === 'holders' ? 'CallZ holder room' : 'CallZ chat'
+  return `${title}\n\nToken: ${token.toLowerCase()}\nNetwork: ${chain}\nTime: ${issuedAt}\n\n${body}`
 }
 
 /** True when `issuedAt` (unix seconds) is within the allowed window of `now`, early or late. */
@@ -193,22 +217,22 @@ type Row = Record<string, string | number | null>
 
 const toMessage = (row: Row) => ({ id: row.id, author: row.author, body: row.body, createdAt: row.created_at })
 
-async function list(db: D1Database, chain: ChainKey, token: string, url: URL): Promise<Response> {
+async function list(db: D1Database, chain: ChainKey, token: string, room: ChatRoom, url: URL): Promise<Response> {
   const requested = Number(url.searchParams.get('limit') ?? DEFAULT_LIMIT)
   const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, MAX_LIMIT) : DEFAULT_LIMIT
   const after = url.searchParams.get('after')
 
   if (after === null) {
     const newest = await db
-      .prepare('SELECT id, author, body, created_at FROM chat_messages WHERE chain = ? AND token = ? ORDER BY id DESC LIMIT ?')
-      .bind(chain, token, limit)
+      .prepare('SELECT id, author, body, created_at FROM chat_messages WHERE chain = ? AND token = ? AND room = ? ORDER BY id DESC LIMIT ?')
+      .bind(chain, token, room, limit)
       .all<Row>()
     return json({ messages: newest.results.reverse().map(toMessage) })
   }
   if (!/^\d{1,15}$/.test(after)) return failure(400, 'after must be the id of a message.')
   const later = await db
-    .prepare('SELECT id, author, body, created_at FROM chat_messages WHERE chain = ? AND token = ? AND id > ? ORDER BY id LIMIT ?')
-    .bind(chain, token, Number(after), limit)
+    .prepare('SELECT id, author, body, created_at FROM chat_messages WHERE chain = ? AND token = ? AND room = ? AND id > ? ORDER BY id LIMIT ?')
+    .bind(chain, token, room, Number(after), limit)
     .all<Row>()
   return json({ messages: later.results.map(toMessage) })
 }
@@ -242,7 +266,9 @@ async function readCapped(request: Request, maxBytes: number): Promise<Uint8Arra
   return bytes
 }
 
-async function post(request: Request, db: D1Database, chain: ChainKey, token: string): Promise<Response> {
+async function post(request: Request, env: ChatEnv, chain: ChainKey, token: string, room: ChatRoom, fetcher: typeof fetch): Promise<Response> {
+  // Holdings are read on BNB Chain mainnet, so that is the only network with a holder room to post in.
+  if (room === 'holders' && chain !== 'bsc') return failure(403, 'The holder room is for tokens on BNB Chain.')
   const type = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase()
   if (type !== 'application/json') return failure(400, 'Send the message as application/json.')
   const bytes = await readCapped(request, MAX_REQUEST_BYTES)
@@ -261,12 +287,26 @@ async function post(request: Request, db: D1Database, chain: ChainKey, token: st
   if (!issuedAtInWindow(issuedAt, now)) {
     return failure(400, 'The message time is more than 5 minutes from the server clock. Check the clock on your device and try again.')
   }
-  if (!(await verifyChatSignature({ chain, token, author, body, issuedAt, signature }))) {
+  if (!(await verifyChatSignature({ chain, token, author, body, issuedAt, signature, room }))) {
     return failure(403, 'The signature does not match this wallet and message.')
   }
 
+  // Only now, for a wallet that has proved it is the author: does it hold the token at this moment?
+  if (room === 'holders') {
+    let balance: bigint
+    try {
+      balance = await balanceOf(bscRpc(env, fetcher), token, author)
+    } catch (error) {
+      console.error(JSON.stringify({ chatBalanceFailed: String(error).slice(0, 300) }))
+      return failure(503, "This wallet's holdings could not be read right now. Try again in a moment.")
+    }
+    if (balance === 0n) return failure(403, 'The holder room is for wallets that hold this token.')
+  }
+  const db = env.DB
+
   // One transaction. The insert enforces the limits itself, so two requests racing each other cannot both get
-  // past them; the first statement reads why a message was turned away.
+  // past them; the first statement reads why a message was turned away. The limits are per author across
+  // every room, and a signature can be used once in all of them.
   const [status, inserted] = await db.batch<Row>([
     db
       .prepare(
@@ -279,14 +319,14 @@ async function post(request: Request, db: D1Database, chain: ChainKey, token: st
       .bind(signature, author, now - HOUR_SECONDS),
     db
       .prepare(
-        `INSERT INTO chat_messages (chain, token, author, body, created_at, signature)
-SELECT ?1, ?2, ?3, ?4, ?5, ?6
+        `INSERT INTO chat_messages (chain, token, author, body, created_at, signature, room)
+SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?10
 WHERE NOT EXISTS (SELECT 1 FROM chat_messages WHERE author = ?3 AND created_at > ?7)
   AND (SELECT COUNT(*) FROM chat_messages WHERE author = ?3 AND created_at > ?8) < ?9
 ON CONFLICT (signature) DO NOTHING
 RETURNING id`,
       )
-      .bind(chain, token, author, body, now, signature, now - MIN_GAP_SECONDS, now - HOUR_SECONDS, MAX_PER_HOUR),
+      .bind(chain, token, author, body, now, signature, now - MIN_GAP_SECONDS, now - HOUR_SECONDS, MAX_PER_HOUR, room),
   ])
 
   const id = inserted?.results[0]?.id
@@ -309,8 +349,8 @@ RETURNING id`,
   return failure(503, 'The message could not be stored. Try again.')
 }
 
-/** Routes `/api/chat/<chain>/<token>`. */
-export async function handleChat(request: Request, db: D1Database): Promise<Response> {
+/** Routes `/api/chat/<chain>/<token>`. `fetcher` is how the chain is reached for the holder room. */
+export async function handleChat(request: Request, env: ChatEnv, fetcher: typeof fetch = fetch): Promise<Response> {
   const reading = request.method === 'GET' || request.method === 'HEAD'
   if (!reading && request.method !== 'POST') return failure(405, 'Method not allowed.', { allow: 'GET, HEAD, POST' })
 
@@ -322,9 +362,11 @@ export async function handleChat(request: Request, db: D1Database): Promise<Resp
   if (!isChainKey(chain)) return failure(404, `Unknown network. Use one of: ${Object.keys(CHAINS).join(', ')}.`)
   if (!ADDRESS.test(rawToken)) return failure(400, 'The token must be a 0x address.')
   const token = rawToken.toLowerCase()
+  const room = chatRoomOf(url.searchParams.get('room'))
+  if (!room) return failure(400, 'room must be public or holders.')
 
   try {
-    return reading ? await list(db, chain, token, url) : await post(request, db, chain, token)
+    return reading ? await list(env.DB, chain, token, room, url) : await post(request, env, chain, token, room, fetcher)
   } catch (error) {
     console.error(JSON.stringify({ chatFailed: String(error).slice(0, 500) }))
     return failure(500, 'Chat is unavailable right now. Try again in a moment.')

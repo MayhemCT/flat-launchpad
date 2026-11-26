@@ -1,6 +1,18 @@
-import { encodeFunctionResult, keccak256, numberToHex, parseAbi, stringToHex, toBytes } from 'viem'
+import {
+  decodeFunctionData,
+  encodeFunctionResult,
+  keccak256,
+  numberToHex,
+  parseAbi,
+  parseTransaction,
+  recoverTransactionAddress,
+  stringToHex,
+  toBytes,
+  toFunctionSelector,
+  type Hex,
+} from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   EPOCH_SECONDS,
   MAX_NOTE_LENGTH,
@@ -14,7 +26,9 @@ import {
   parseCalloutPost,
   profileHashOf,
   refreshPositions,
+  relayApproved,
   reviewRejectText,
+  shareCardUrl,
   samePostPattern,
   submissionDomain,
   verifyAttestation,
@@ -409,6 +423,7 @@ const attest = (attester: ReturnType<typeof newAccount>, s: Submission, vault = 
       linkHash: s.linkHash,
       profileHash: s.profileHash,
       mcap: BigInt(s.mcap),
+      held: BigInt(s.held),
       nonce: BigInt(s.nonce),
       deadline: BigInt(s.deadline),
     },
@@ -424,6 +439,7 @@ describe('the reviewer’s attestation', () => {
     linkHash: linkHashOf(url),
     profileHash: profileHashOf('x:someuser'),
     mcap: 48_200,
+    held: '5000000000000000000000',
     nonce: 7,
     deadline: (currentEpoch(NOW) + 1) * EPOCH_SECONDS,
     ...overrides,
@@ -433,7 +449,7 @@ describe('the reviewer’s attestation', () => {
   it('has the domain and struct the vault checks', () => {
     expect(submissionDomain(VAULT)).toEqual({ name: 'CallZ Vault', version: '1', chainId: 56, verifyingContract: VAULT.toLowerCase() })
     expect(SUBMISSION_TYPES.Submission.map(({ name, type }) => `${type} ${name}`).join(',')).toBe(
-      'address holder,address token,uint256 epoch,uint8 kind,bytes32 linkHash,bytes32 profileHash,uint256 mcap,uint256 nonce,uint256 deadline',
+      'address holder,address token,uint256 epoch,uint8 kind,bytes32 linkHash,bytes32 profileHash,uint256 mcap,uint256 held,uint256 nonce,uint256 deadline',
     )
   })
 
@@ -800,7 +816,7 @@ describe('approving a callout', () => {
     const deadline = (epoch + 1) * EPOCH_SECONDS
     const submission: Submission = {
       holder: author, token: TOKEN.toLowerCase(), epoch, kind: 0, linkHash: linkHashOf(url), profileHash: profileHashOf('x:someuser'),
-      mcap: signedMcap, nonce: 7, deadline,
+      mcap: signedMcap, held: '5000000000000000000000', nonce: 7, deadline,
     }
     const signature = await attest(attester, submission)
     const { db, writes } = databaseWith(row)
@@ -971,5 +987,483 @@ describe('refreshPositions', () => {
       { [TOKEN_A]: 9 },
     )
     for (const { sql } of writes) expect(sql).toMatch(/ AND position = 'open'$/)
+  })
+})
+
+const PUMP_CANONICAL = 'https://pump.fun/callouts/0xfe189e97832da1573e4e4ff034f4ffc3a15c7777/7f179b33-b00a-4c2e-a119-153b48b7f9d6'
+const FOMO_CANONICAL = 'https://fomo.family/tokens/bnb/0xfe189e97832da1573e4e4ff034f4ffc3a15c7777?r=FreeRoundHare&tradeId=d962f6f2-0177-4699-bde6-ff1b14d579b3'
+const PUMP_CARD = `${PUMP_CANONICAL}/opengraph-image`
+const FOMO_CARD = 'https://image-renderer.fomo.cloud/og/thesis/d962f6f2-0177-4699-bde6-ff1b14d579b3/card.png'
+
+interface Statement {
+  sql: string
+  values: unknown[]
+}
+
+/**
+ * A database that records every statement it is given. `answer` says what a statement returns: a row (or null)
+ * for `first`, rows for `all`.
+ */
+const recordingDb = (answer: (statement: Statement) => unknown = () => null) => {
+  const statements: Statement[] = []
+  const db = {
+    prepare: (sql: string) => ({
+      bind: (...values: unknown[]) => {
+        const statement = { sql, values }
+        statements.push(statement)
+        return {
+          first: async () => answer(statement) ?? null,
+          all: async () => ({ results: (answer(statement) as unknown[] | null) ?? [] }),
+          run: async () => ({ success: true }),
+        }
+      },
+    }),
+  } as unknown as CalloutDb
+  return { db, statements }
+}
+
+describe('shareCardUrl', () => {
+  it('is pump.fun’s picture of the callout', () => {
+    expect(shareCardUrl(1, PUMP_CANONICAL, TOKEN)).toBe(PUMP_CARD)
+    expect(shareCardUrl(1, PUMP_CANONICAL, TOKEN.toLowerCase())).toBe(PUMP_CARD)
+  })
+
+  it('is fomo.family’s picture of the trade, named by the trade alone', () => {
+    expect(shareCardUrl(2, FOMO_CANONICAL, TOKEN)).toBe(FOMO_CARD)
+    // The name in the link is no part of it.
+    expect(shareCardUrl(2, FOMO_CANONICAL.replace('FreeRoundHare', 'a.b-c_d'), TOKEN)).toBe(FOMO_CARD)
+  })
+
+  it('is nothing for a post on X', () => {
+    expect(shareCardUrl(0, 'https://x.com/someuser/status/1', TOKEN)).toBeNull()
+  })
+
+  it('is nothing for a stored link that is not exactly the canonical one', () => {
+    for (const [kind, url] of [
+      [1, PUMP],
+      [1, PUMP_CANONICAL.toUpperCase()],
+      [1, `${PUMP_CANONICAL}/../../admin`],
+      [1, `${PUMP_CANONICAL}#@evil.example`],
+      [1, PUMP_CANONICAL.replace('pump.fun', 'pump.fun.evil.example')],
+      [1, 'https://evil.example/callouts/0xfe189e97832da1573e4e4ff034f4ffc3a15c7777/7f179b33-b00a-4c2e-a119-153b48b7f9d6'],
+      [2, `${FOMO_CANONICAL}&next=https://evil.example`],
+      [2, FOMO_CANONICAL.replace('d962f6f2', 'D962F6F2')],
+      [2, FOMO_CANONICAL.replace('d962f6f2-0177-4699-bde6-ff1b14d579b3', '../../../etc/passwd')],
+      [2, 'https://image-renderer.fomo.cloud/og/thesis/d962f6f2-0177-4699-bde6-ff1b14d579b3/card.png'],
+      // The site stored with the link has to be the link's own.
+      [2, PUMP_CANONICAL],
+      [1, FOMO_CANONICAL],
+      [0, PUMP_CANONICAL],
+      [3, PUMP_CANONICAL],
+    ] as const) {
+      expect(shareCardUrl(kind, url, TOKEN), url).toBeNull()
+    }
+    // And the contract in it has to be the token the callout is under.
+    expect(shareCardUrl(1, PUMP_CANONICAL, OTHER)).toBeNull()
+    expect(shareCardUrl(2, FOMO_CANONICAL, OTHER)).toBeNull()
+  })
+
+  it('only ever names one of the two hosts, with nothing in the path but hex and dashes', () => {
+    for (const card of [shareCardUrl(1, PUMP_CANONICAL, TOKEN), shareCardUrl(2, FOMO_CANONICAL, TOKEN)]) {
+      expect(card).toMatch(/^https:\/\/(pump\.fun\/callouts\/0x[0-9a-f]{40}\/[0-9a-f-]{36}\/opengraph-image|image-renderer\.fomo\.cloud\/og\/thesis\/[0-9a-f-]{36}\/card\.png)$/)
+    }
+  })
+})
+
+describe('the share card endpoint', () => {
+  const CARD = 'https://callz.test/api/callouts/bsc/card/7'
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+  const pumpRow = { kind: 1, url: PUMP_CANONICAL, token: TOKEN.toLowerCase() }
+  /** Asks for a card. `upstream` answers the one request the Worker may make for it. */
+  const get = async (url: string, row: unknown, upstream: (target: string, init?: RequestInit) => Response | Promise<Response>, init?: RequestInit) => {
+    const { db, statements } = recordingDb(() => row)
+    const fetched: Array<{ target: string; init: RequestInit | undefined }> = []
+    const fetcher = (async (input: RequestInfo | URL, options?: RequestInit) => {
+      fetched.push({ target: String(input), init: options })
+      return upstream(String(input), options)
+    }) as typeof fetch
+    const waited: Promise<unknown>[] = []
+    const response = await handleCallouts(new Request(url, init), { DB: db }, { waitUntil: (promise: Promise<unknown>) => void waited.push(promise) }, fetcher)
+    return { response, statements, fetched }
+  }
+  const png = () => new Response(PNG, { headers: { 'content-type': 'image/png' } })
+
+  it('answers with the picture, fetched from the address built from the stored link', async () => {
+    const { response, statements, fetched } = await get(CARD, pumpRow, png)
+    expect(response.status).toBe(200)
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG)
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(response.headers.get('cache-control')).toBe('public, max-age=3600')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(fetched.map(({ target }) => target)).toEqual([PUMP_CARD])
+    expect(fetched[0]?.init?.redirect).toBe('manual')
+    expect(new Headers(fetched[0]?.init?.headers).get('user-agent')).toBe('Mozilla/5.0 (compatible; link-preview)')
+    // The row is looked up by its id, bound as a parameter, and a rejected one is never found.
+    expect(statements).toHaveLength(1)
+    expect(statements[0]?.values).toEqual([7, 'bsc'])
+    expect(statements[0]?.sql).toMatch(/WHERE id = \? AND chain = \? AND status IN \('pending', 'approved'\)$/)
+  })
+
+  it('fetches fomo.family’s picture for a trade, and passes on JPEG and WebP as what they are', async () => {
+    const fomoRow = { kind: 2, url: FOMO_CANONICAL, token: TOKEN.toLowerCase() }
+    for (const type of ['image/jpeg', 'image/webp', 'IMAGE/PNG; charset=binary']) {
+      const { response, fetched } = await get(CARD, fomoRow, () => new Response(PNG, { headers: { 'content-type': type } }))
+      expect(response.status, type).toBe(200)
+      expect(response.headers.get('content-type')).toBe(type.split(';')[0]!.toLowerCase())
+      expect(fetched.map(({ target }) => target)).toEqual([FOMO_CARD])
+    }
+  })
+
+  it('lets nothing in the request choose what is fetched', async () => {
+    for (const url of [
+      `${CARD}?url=https://evil.example/x.png`,
+      `${CARD}?src=//evil.example&redirect=https://evil.example`,
+      `${CARD}#https://evil.example`,
+    ]) {
+      const { fetched } = await get(url, pumpRow, png, { headers: { 'x-forwarded-host': 'evil.example', referer: 'https://evil.example/' } })
+      expect(fetched.map(({ target }) => target), url).toEqual([PUMP_CARD])
+    }
+    // Anything but an id is no card at all: the database is not asked and nothing is fetched.
+    for (const path of ['abc', '0', '-1', '7.5', '7%2F..%2F8', 'https:%2F%2Fevil.example', '', '99999999999999999999', '7/extra']) {
+      const { response, statements, fetched } = await get(`https://callz.test/api/callouts/bsc/card/${path}`, pumpRow, png)
+      expect(response.status, path).toBe(404)
+      expect(statements, path).toEqual([])
+      expect(fetched, path).toEqual([])
+    }
+  })
+
+  it('answers 404 for a callout that is missing or rejected, for a post on X, and for a link that no longer checks out', async () => {
+    for (const row of [
+      null,
+      { kind: 0, url: 'https://x.com/someuser/status/1', token: TOKEN.toLowerCase() },
+      { kind: 1, url: `${PUMP_CANONICAL}?next=https://evil.example`, token: TOKEN.toLowerCase() },
+      { kind: 1, url: 'https://evil.example/card.png', token: TOKEN.toLowerCase() },
+      { kind: 1, url: PUMP_CANONICAL, token: OTHER.toLowerCase() },
+    ]) {
+      const { response, fetched } = await get(CARD, row, png)
+      expect(response.status).toBe(404)
+      expect(fetched).toEqual([])
+    }
+  })
+
+  it('answers 502 with no body to anything but a small raster image', async () => {
+    const large = new Uint8Array(2_097_153)
+    const answers: Array<() => Response | Promise<Response>> = [
+      () => new Response('not found', { status: 404, headers: { 'content-type': 'image/png' } }),
+      () => new Response(null, { status: 302, headers: { location: 'https://evil.example/x.png' } }),
+      () => new Response(PNG, { status: 206, headers: { 'content-type': 'image/png' } }),
+      () => new Response('<html>', { headers: { 'content-type': 'text/html' } }),
+      () => new Response('<svg onload="alert(1)"/>', { headers: { 'content-type': 'image/svg+xml' } }),
+      () => new Response(PNG, { headers: { 'content-type': 'image/gif' } }),
+      () => new Response(PNG),
+      () => new Response(large, { headers: { 'content-type': 'image/png' } }),
+      // Too large, and saying it is small.
+      () => new Response(large, { headers: { 'content-type': 'image/png', 'content-length': '10' } }),
+      () => new Response(new Uint8Array(0), { headers: { 'content-type': 'image/png' } }),
+      () => Promise.reject(new Error('connection reset')),
+    ]
+    for (const [index, answer] of answers.entries()) {
+      const { response } = await get(CARD, pumpRow, answer)
+      expect(response.status, String(index)).toBe(502)
+      expect(await response.text(), String(index)).toBe('')
+      expect(response.headers.get('cache-control')).toBe('no-store')
+    }
+  })
+
+  it('is read only', async () => {
+    const { response, statements, fetched } = await get(CARD, pumpRow, png, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    expect(response.status).toBe(405)
+    expect(statements).toEqual([])
+    expect(fetched).toEqual([])
+  })
+})
+
+describe('the author endpoint', () => {
+  const author = newAccount().address
+
+  it('lists the tokens that wallet has an approved callout on from this round or the last', async () => {
+    const { db, statements } = recordingDb(() => [{ token: TOKEN.toLowerCase() }, { token: OTHER.toLowerCase() }])
+    const before = currentEpoch(Math.floor(Date.now() / 1000))
+    const response = await handleCallouts(new Request(`https://callz.test/api/callouts/bsc/author/${author}`), { DB: db })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ tokens: [TOKEN.toLowerCase(), OTHER.toLowerCase()] })
+    expect(statements).toHaveLength(1)
+    expect(statements[0]?.sql.replace(/\s+/g, ' ')).toBe(
+      "SELECT token FROM callouts WHERE chain = ? AND author = ? AND status = 'approved' AND epoch >= ? GROUP BY token ORDER BY MAX(id) DESC LIMIT ?",
+    )
+    // The address is bound in lowercase, as it is stored; nothing of the request is part of the SQL.
+    expect(statements[0]?.values.slice(0, 2)).toEqual(['bsc', author.toLowerCase()])
+    expect(statements[0]?.values[2]).toBeGreaterThanOrEqual(before - 1)
+    expect(statements[0]?.values[2]).toBeLessThanOrEqual(before)
+    expect(statements[0]?.values[3]).toBe(50)
+    expect(statements[0]?.sql).not.toContain(author.toLowerCase().slice(2))
+  })
+
+  it('answers 400 to anything that is not an address, without asking the database', async () => {
+    for (const bad of ['0x1234', author.slice(2), `${author}00`, 'review', "0x' OR 1=1 --"]) {
+      const { db, statements } = recordingDb()
+      const response = await handleCallouts(new Request(`https://callz.test/api/callouts/bsc/author/${encodeURIComponent(bad)}`), { DB: db })
+      expect(response.status, bad).toBe(400)
+      expect(statements).toEqual([])
+    }
+    const { db } = recordingDb()
+    expect((await handleCallouts(new Request('https://callz.test/api/callouts/bsc/author'), { DB: db })).status).toBe(404)
+    expect((await handleCallouts(new Request(`https://callz.test/api/callouts/bsc/author/${author}/extra`), { DB: db })).status).toBe(404)
+    expect((await handleCallouts(new Request(`https://callz.test/api/callouts/bsc/author/${author}`, { method: 'POST' }), { DB: db })).status).toBe(405)
+  })
+})
+
+describe('bringing approvals to the vault', () => {
+  const REVIEW = 'https://callz.test/api/callouts/bsc/review'
+  const url = 'https://x.com/someuser/status/1'
+  const HELD = '5000000000000000000000'
+  const vaultAbi = parseAbi([
+    'struct Submission { address holder; address token; uint256 epoch; uint8 kind; bytes32 linkHash; bytes32 profileHash; uint256 mcap; uint256 held; uint256 nonce; uint256 deadline; }',
+    'function submitAttested(Submission s, string link, bytes signature)',
+    'function usedLink(bytes32 linkHash) view returns (bool)',
+  ])
+  const attester = newAccount()
+  const author = newAccount().address.toLowerCase()
+  const relayerKey = generatePrivateKey()
+  const relayer = privateKeyToAccount(relayerKey)
+  /** The Worker's settings. `key` is the gas wallet's; null leaves it unset. */
+  const env = (db: CalloutDb, key: string | null = relayerKey) => ({
+    DB: db,
+    CALLOUT_ATTESTER: attester.address,
+    CALLZ_VAULT: VAULT,
+    BSC_RPC_URL: 'https://rpc.test/',
+    ...(key === null ? {} : { RELAYER_PRIVATE_KEY: key }),
+  })
+  const row = (extra: Record<string, unknown> = {}) => ({
+    id: 7, token: TOKEN.toLowerCase(), author, kind: 0, url, link_hash: linkHashOf(url), profile: 'x:someuser', note: '', status: 'pending',
+    created_at: NOW, reviewed_at: null, epoch: null, deadline: null, attestation: null,
+    call_mcap: 48_200, call_balance: HELD, held_balance: HELD, position: 'open', closed_at: null, closed_mcap: null, record_tx: null,
+    ...extra,
+  })
+
+  /**
+   * BNB Chain as the Worker sees it. `call` answers an `eth_call`: hex for a result, an error name for a
+   * revert, null for an endpoint that is down. Everything asked and everything sent is kept.
+   */
+  const chain = (call: (data: Hex) => Hex | { revert: string } | null) => {
+    const methods: string[] = []
+    const sent: Hex[] = []
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const text = typeof init?.body === 'string' ? init.body : await (input as Request).text()
+      const request = JSON.parse(text) as { id: number; method: string; params: unknown[] }
+      methods.push(request.method)
+      const answer = (result: unknown) => Response.json({ jsonrpc: '2.0', id: request.id, result })
+      const refuse = (code: number, message: string, data?: Hex) => Response.json({ jsonrpc: '2.0', id: request.id, error: { code, message, ...(data ? { data } : {}) } })
+      switch (request.method) {
+        case 'eth_chainId':
+          return answer('0x38')
+        case 'eth_call':
+        case 'eth_estimateGas': {
+          const result = call((request.params[0] as { data: Hex }).data)
+          if (result === null) return new Response('down', { status: 502 })
+          if (typeof result === 'object') return refuse(3, 'execution reverted', toFunctionSelector(`${result.revert}()`))
+          return answer(request.method === 'eth_call' ? result : '0x30d40')
+        }
+        case 'eth_getTransactionCount':
+          return answer('0x5')
+        case 'eth_gasPrice':
+        case 'eth_maxPriorityFeePerGas':
+          return answer('0x3b9aca00')
+        case 'eth_getBlockByNumber':
+          return answer({ number: '0x10', hash: `0x${'11'.repeat(32)}`, parentHash: `0x${'22'.repeat(32)}`, timestamp: numberToHex(NOW), baseFeePerGas: '0x3b9aca00', gasLimit: '0x8583b00', gasUsed: '0x0', transactions: [] })
+        case 'eth_sendRawTransaction':
+          sent.push(request.params[0] as Hex)
+          return answer(keccak256(request.params[0] as Hex))
+        default:
+          return refuse(-32601, 'the method does not exist')
+      }
+    }) as typeof fetch
+    return { fetcher, methods, sent }
+  }
+  const noResult = '0x' as Hex
+  const yes = numberToHex(1, { size: 32 })
+  const no = numberToHex(0, { size: 32 })
+
+  const approve = async (key: string | null, call: Parameters<typeof chain>[0]) => {
+    const epoch = currentEpoch(Math.floor(Date.now() / 1000))
+    const deadline = (epoch + 1) * EPOCH_SECONDS
+    const submission: Submission = {
+      holder: author, token: TOKEN.toLowerCase(), epoch, kind: 0, linkHash: linkHashOf(url), profileHash: profileHashOf('x:someuser'),
+      mcap: 48_200, held: HELD, nonce: 7, deadline,
+    }
+    const signature = await attest(attester, submission)
+    const { db, statements } = recordingDb(({ sql, values }) =>
+      sql.startsWith('SELECT') ? row() : row({ status: 'approved', reviewed_at: values[0], epoch: values[2], deadline: values[3], attestation: values[4] }),
+    )
+    const { fetcher, methods, sent } = chain(call)
+    const response = await handleCallouts(
+      new Request(REVIEW, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 7, decision: 'approve', epoch, deadline, signature }) }),
+      env(db, key),
+      undefined,
+      fetcher,
+    )
+    const text = await response.text()
+    return { response, text, body: JSON.parse(text) as { callout: Record<string, unknown> }, statements, methods, sent, submission, signature }
+  }
+  const recordWrites = (statements: Statement[]) => statements.filter(({ sql }) => sql.startsWith('UPDATE callouts SET record_tx'))
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('says whether the Worker brings approvals to the vault, and never says the key', async () => {
+    const feed = `https://callz.test/api/callouts/bsc/${TOKEN}`
+    for (const [key, vault, expected] of [
+      [relayerKey, VAULT, true],
+      [` ${relayerKey}\n`, VAULT, true],
+      [undefined, VAULT, false],
+      ['', VAULT, false],
+      [relayerKey.slice(0, -2), VAULT, false],
+      [relayerKey.slice(2), VAULT, false],
+      [relayerKey, undefined, false],
+    ] as const) {
+      const { db } = recordingDb(() => [row({ status: 'approved', epoch: 1, deadline: 2, attestation: `0x${'1'.repeat(128)}1b`, reviewed_at: 5, record_tx: `0x${'ab'.repeat(32)}` })])
+      const settings = { DB: db, CALLOUT_ATTESTER: attester.address, ...(vault ? { CALLZ_VAULT: vault } : {}), ...(key === undefined ? {} : { RELAYER_PRIVATE_KEY: key }) }
+      for (const target of [feed, REVIEW]) {
+        const response = await handleCallouts(new Request(target), settings)
+        const text = await response.text()
+        if (response.status === 200) {
+          const body = JSON.parse(text) as { autoRecord: boolean; callouts: Array<Record<string, unknown>> }
+          expect(body.autoRecord, `${String(key)} ${target}`).toBe(expected)
+          expect(body.callouts[0]).toMatchObject({ reviewedAt: 5, recordTx: `0x${'ab'.repeat(32)}` })
+        } else {
+          // Review answers 503 until the vault is set.
+          expect(vault).toBeUndefined()
+        }
+        expect(text).not.toContain(relayerKey.slice(2))
+        expect([...response.headers].join(' ')).not.toContain(relayerKey.slice(2))
+      }
+    }
+  })
+
+  it('sends the approval to the vault from the gas wallet, and stores the transaction', async () => {
+    const { response, text, body, statements, methods, sent, submission, signature } = await approve(relayerKey, () => noResult)
+    expect(response.status).toBe(200)
+    expect(sent).toHaveLength(1)
+    const transaction = parseTransaction(sent[0]!)
+    expect(await recoverTransactionAddress({ serializedTransaction: sent[0] as Parameters<typeof recoverTransactionAddress>[0]['serializedTransaction'] })).toBe(relayer.address)
+    expect(transaction.to?.toLowerCase()).toBe(VAULT.toLowerCase())
+    expect(transaction.chainId).toBe(56)
+    expect(transaction.nonce).toBe(5)
+    expect(transaction.value ?? 0n).toBe(0n)
+    // The estimate of 200,000, half as much again, and 60,000.
+    expect(transaction.gas).toBe(360_000n)
+    const decoded = decodeFunctionData({ abi: vaultAbi, data: transaction.data! })
+    expect(decoded.functionName).toBe('submitAttested')
+    expect(decoded.args).toEqual([
+      {
+        holder: expect.stringMatching(new RegExp(`^${author}$`, 'i')), token: expect.stringMatching(new RegExp(`^${TOKEN}$`, 'i')),
+        epoch: BigInt(submission.epoch), kind: 0, linkHash: submission.linkHash, profileHash: submission.profileHash,
+        mcap: 48_200n, held: BigInt(HELD), nonce: 7n, deadline: BigInt(submission.deadline),
+      },
+      url,
+      signature,
+    ])
+    // Simulated before it was sent.
+    expect(methods.indexOf('eth_call')).toBeGreaterThanOrEqual(0)
+    expect(methods.indexOf('eth_call')).toBeLessThan(methods.indexOf('eth_sendRawTransaction'))
+    const hash = keccak256(sent[0]!)
+    expect(recordWrites(statements).map(({ values }) => values)).toEqual([[hash, 7, signature]])
+    expect(body.callout).toMatchObject({ id: 7, status: 'approved', recordTx: hash })
+    expect(body.callout).not.toHaveProperty('recordError')
+    expect(text).not.toContain(relayerKey.slice(2))
+  })
+
+  it('keeps the approval when the chain cannot be reached, says so in a fixed sentence, and leaks no key', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { response, text, body, statements, sent } = await approve(relayerKey, () => null)
+    expect(response.status).toBe(200)
+    expect(body.callout).toMatchObject({ id: 7, status: 'approved', recordTx: null, recordError: 'The transaction could not be sent. It is tried again automatically.' })
+    expect(sent).toEqual([])
+    expect(recordWrites(statements)).toEqual([])
+    // The approval itself was stored, with any earlier transaction cleared.
+    expect(statements.some(({ sql }) => sql.includes("SET status = 'approved'") && sql.includes('record_tx = NULL'))).toBe(true)
+    expect(text).not.toContain(relayerKey.slice(2))
+    expect(JSON.stringify(logged.mock.calls)).not.toContain(relayerKey.slice(2))
+    expect(logged).toHaveBeenCalled()
+  })
+
+  it('sends nothing the vault would refuse, and says why', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    for (const [revert, reason] of [
+      ['LinkUsed', 'This link has already been counted.'],
+      ['BelowMinHold', 'This wallet holds less than the minimum of the token, so the callout cannot be counted yet.'],
+      ['TooManyLinks', 'This holder has already counted the most callouts one holder can in a round.'],
+    ] as const) {
+      const { response, body, statements, sent } = await approve(relayerKey, () => ({ revert }))
+      expect(response.status, revert).toBe(200)
+      expect(body.callout.recordError, revert).toBe(reason)
+      expect(sent).toEqual([])
+      expect(recordWrites(statements)).toEqual([])
+    }
+  })
+
+  it('asks nothing of the chain when no gas wallet is configured', async () => {
+    for (const key of [null, 'not a key']) {
+      const { response, body, methods, statements } = await approve(key, () => noResult)
+      expect(response.status).toBe(200)
+      expect(methods).toEqual([])
+      expect(body.callout).toMatchObject({ status: 'approved', recordTx: null })
+      expect(body.callout).not.toHaveProperty('recordError')
+      expect(recordWrites(statements)).toEqual([])
+    }
+  })
+
+  describe('from the cron', () => {
+    const signature = `0x${'1'.repeat(128)}1b`
+    const approved = (id: number, link: string) =>
+      row({ id, url: link, link_hash: linkHashOf(link), status: 'approved', epoch: currentEpoch(Math.floor(Date.now() / 1000)), deadline: Math.floor(Date.now() / 1000) + 600, attestation: signature, reviewed_at: 1 })
+    const usedLinkOf = (data: Hex) => (data.startsWith(toFunctionSelector('function usedLink(bytes32)')) ? (`0x${data.slice(10)}` as Hex) : null)
+
+    it('does nothing, and reads nothing, without a gas wallet', async () => {
+      const { db, statements } = recordingDb()
+      const { fetcher, methods } = chain(() => noResult)
+      expect(await relayApproved(env(db, null), fetcher)).toEqual({ sent: 0, already: 0, failed: 0 })
+      expect(statements).toEqual([])
+      expect(methods).toEqual([])
+    })
+
+    it('takes a few approvals of the running round that have not been to the vault', async () => {
+      const { db, statements } = recordingDb(() => [])
+      const { fetcher, methods } = chain(() => noResult)
+      const now = Math.floor(Date.now() / 1000)
+      expect(await relayApproved(env(db), fetcher)).toEqual({ sent: 0, already: 0, failed: 0 })
+      expect(methods).toEqual([])
+      expect(statements).toHaveLength(1)
+      expect(statements[0]?.sql.replace(/\s+/g, ' ')).toMatch(
+        /WHERE chain = \? AND status = 'approved' AND epoch = \? AND record_tx IS NULL AND attestation IS NOT NULL AND deadline > \? AND reviewed_at <= \? ORDER BY RANDOM\(\) LIMIT \?$/,
+      )
+      expect(statements[0]?.values[0]).toBe('bsc')
+      expect(statements[0]?.values[1]).toBe(currentEpoch(now))
+      // An approval stored within the last minute is still being sent by the request that stored it.
+      expect(Number(statements[0]?.values[2]) - Number(statements[0]?.values[3])).toBe(60)
+      expect(statements[0]?.values[4]).toBe(5)
+    })
+
+    it('marks a link the vault already counted, sends the others, and carries on past one that fails', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      const counted = approved(1, 'https://x.com/someuser/status/1')
+      const waiting = approved(2, 'https://x.com/someuser/status/2')
+      const refused = approved(3, 'https://x.com/someuser/status/3')
+      const { db, statements } = recordingDb(({ sql }) => (sql.startsWith('SELECT') ? [counted, refused, waiting] : null))
+      const { fetcher, sent } = chain((data) => {
+        const asked = usedLinkOf(data)
+        if (asked !== null) return asked === counted.link_hash ? yes : no
+        // A submission: the vault refuses the one for callout 3.
+        const [submission] = decodeFunctionData({ abi: vaultAbi, data }).args as [{ nonce: bigint }]
+        return submission.nonce === 3n ? { revert: 'BelowMinHold' } : noResult
+      })
+      expect(await relayApproved(env(db), fetcher)).toEqual({ sent: 1, already: 1, failed: 1 })
+      expect(sent).toHaveLength(1)
+      const [submission, link] = decodeFunctionData({ abi: vaultAbi, data: parseTransaction(sent[0]!).data! }).args as [{ nonce: bigint; held: bigint; mcap: bigint }, string]
+      expect(submission).toMatchObject({ nonce: 2n, held: BigInt(HELD), mcap: 48_200n })
+      expect(link).toBe('https://x.com/someuser/status/2')
+      expect(recordWrites(statements).map(({ values }) => values)).toEqual([['recorded', 1, signature], [keccak256(sent[0]!), 2, signature]])
+    })
   })
 })

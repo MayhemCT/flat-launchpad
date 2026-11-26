@@ -111,6 +111,8 @@ contract CallZFeesBSCForkTest is Test {
 
     /// @dev The market cap callouts are attested at unless a test says otherwise, in US dollars.
     uint256 internal mcap = 100_000;
+    /// @dev What the attestation says the holder held when they posted. The default is what they hold right now.
+    uint256 internal heldAtPost = type(uint256).max;
 
     function _attest(address holder, address token, uint8 kind, string memory link, uint256 key)
         internal
@@ -124,6 +126,7 @@ contract CallZFeesBSCForkTest is Test {
             linkHash: keccak256(bytes(link)),
             profileHash: bytes32(0),
             mcap: mcap,
+            held: heldAtPost == type(uint256).max ? IERC20(token).balanceOf(holder) : heldAtPost,
             nonce: ++nonce,
             deadline: (vault.currentEpoch() + 1) * DAY
         });
@@ -337,7 +340,7 @@ contract CallZFeesBSCForkTest is Test {
     // ─────────────────────────────────────────────────────────────────────────
 
     function testFuzz_06_everyWeiOfADepositIsBooked(uint96 value) public {
-        vm.assume(value > 0);
+        vm.assume(value >= 1e12);
         address token = address(0xBEEF);
         vm.deal(bob, value);
         uint256 teamBefore = team.balance;
@@ -711,6 +714,78 @@ contract CallZFeesBSCForkTest is Test {
         assertEq(vault.claim(token, _epochs(epoch)), bobHolder + bobCallout);
         (uint256 received, uint256 paid) = vault.ledgerOf(token);
         assertLe(paid, received);
+    }
+
+    /// @dev Tokens moved into a wallet only for the moment its callout is recorded add nothing: the snapshot is never
+    ///      more than the wallet held when the callout was posted. And dust deposits open no round.
+    function test_15_tokensPassingThroughDoNotInflateTheSnapshot() public {
+        (, address token) = _launch();
+        IERC20 erc = IERC20(token);
+        vm.prank(alice);
+        erc.transfer(bob, 1_000_000e18); // bob really holds 1M
+        uint256 epoch = vault.currentEpoch();
+
+        // Bob posted his callout holding 1M: that is what the reviewer attests.
+        heldAtPost = 1_000_000e18;
+        (Submission memory s, bytes memory signature) = _attest(bob, token, 0, "https://x.com/bob/status/15", ATTESTER_KEY);
+        // 400M more is moved into his wallet just for the transaction that records it, and moved out afterwards.
+        vm.prank(alice);
+        erc.transfer(bob, 400_000_000e18);
+        vault.submitAttested(s, "https://x.com/bob/status/15", signature);
+        vm.prank(bob);
+        erc.transfer(alice, 400_000_000e18);
+        (,, uint256 snapshot,,,,) = vault.progress(token, epoch, bob);
+        assertEq(snapshot, 1_000_000e18, "the snapshot is what he held when he posted, not what passed through his wallet");
+
+        // The other way round: a wallet that sold between posting and recording is taken at what it holds now.
+        heldAtPost = 100_000_000e18;
+        (s, signature) = _attest(alice, token, 0, "https://x.com/alice/status/15", ATTESTER_KEY);
+        uint256 sold = erc.balanceOf(alice) - 10_000_000e18;
+        vm.prank(alice);
+        erc.transfer(address(0xdead), sold);
+        vault.submitAttested(s, "https://x.com/alice/status/15", signature);
+        (,, snapshot,,,,) = vault.progress(token, epoch, alice);
+        assertEq(snapshot, 10_000_000e18);
+        heldAtPost = type(uint256).max;
+
+        // A dust deposit opens no round: it goes to the team wallet and nothing joins the sweep queue.
+        uint256 rounds = vault.roundCount();
+        uint256 before = team.balance;
+        vm.prank(carol);
+        vault.deposit{value: 1e12 - 1}(address(0xD057));
+        assertEq(vault.roundCount(), rounds);
+        assertEq(team.balance - before, 1e12 - 1);
+    }
+
+    /// @dev One transaction collects a wallet's rewards across tokens, each booked against its own token's ledger.
+    function test_16_oneClaimCollectsAcrossTokens() public {
+        (, address a) = _launch();
+        (, address b) = _launch();
+        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
+        uint256 epoch = vault.currentEpoch();
+        _submit(alice, a, 0, "https://x.com/alice/status/16a");
+        _submit(alice, b, 0, "https://x.com/alice/status/16b");
+        vm.startPrank(carol);
+        vault.deposit{value: 1 ether}(a);
+        vault.deposit{value: 2 ether}(b);
+        vm.stopPrank();
+
+        address[] memory tokens = new address[](3);
+        tokens[0] = a;
+        tokens[1] = b;
+        tokens[2] = address(0xBEEF); // owes nothing: skipped
+        vm.warp((epoch + 1) * DAY + 1);
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        assertEq(vault.claimMany(tokens, _epochs(epoch)), 0.75 ether + 1.5 ether);
+        assertEq(alice.balance - before, 2.25 ether);
+        (, uint256 paidA) = vault.ledgerOf(a);
+        (, uint256 paidB) = vault.ledgerOf(b);
+        assertEq(paidA, 0.75 ether);
+        assertEq(paidB, 1.5 ether);
+        vm.expectRevert(CallZVault.NothingToClaim.selector);
+        vm.prank(alice);
+        vault.claimMany(tokens, _epochs(epoch));
     }
 
     /// @dev Wallets can carry delegated code (EIP-7702). The attester's plain signature still counts then, and a

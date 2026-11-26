@@ -1,7 +1,8 @@
 // Callouts: links to posts on X, pump.fun or fomo.family that call a token out, kept by this site's Worker
 // under /api/callouts (apps/worker/src/callouts.ts). Nobody logs in: the wallet signs each callout with
-// personal_sign. A reviewer wallet approves a callout by signing the attestation the rewards vault checks,
-// and the author's own wallet then takes that attestation to the vault.
+// personal_sign. A reviewer wallet approves a callout by signing the attestation the rewards vault checks.
+// Where the Worker has a gas wallet it takes that attestation to the vault itself, and the author confirms
+// nothing; where it has none, or has not managed to within a few minutes, the author's own wallet can.
 //
 // A callout is a holder's. The Worker records what the wallet held and the token's market cap when it was
 // posted, and keeps reading the balance: each card says whether the wallet still holds, has sold part, or
@@ -222,6 +223,9 @@ interface Callout {
   /** When the position was found closed (unix seconds), and the token's market cap then. */
   closedAt: number | null;
   closedMcap: number | null;
+  /** When the reviewer approved it (unix seconds), and the transaction with which the Worker took it to the vault, if it did. */
+  reviewedAt?: number | null;
+  recordTx?: string | null;
 }
 
 interface ReviewCallout extends Callout {
@@ -237,7 +241,7 @@ const isUnits = (value: unknown): value is string => typeof value === "string" &
 
 function isCallout(value: unknown): value is Callout {
   if (typeof value !== "object" || value === null) return false;
-  const { id, author, kind, url, note, status, createdAt, epoch, deadline, attestation, callMcap, callBalance, heldBalance, position, closedAt, closedMcap } =
+  const { id, author, kind, url, note, status, createdAt, epoch, deadline, attestation, callMcap, callBalance, heldBalance, position, closedAt, closedMcap, reviewedAt, recordTx } =
     value as Record<string, unknown>;
   return (
     isCount(id) && typeof author === "string" && ADDRESS.test(author) && isCount(kind) && typeof url === "string" && typeof note === "string" &&
@@ -245,7 +249,8 @@ function isCallout(value: unknown): value is Callout {
     (epoch === null || isCount(epoch)) && (deadline === null || isCount(deadline)) &&
     (attestation === null || (typeof attestation === "string" && ATTESTATION.test(attestation))) &&
     (callMcap === null || isCount(callMcap)) && (callBalance === null || isUnits(callBalance)) && (heldBalance === null || isUnits(heldBalance)) &&
-    (position === "open" || position === "closed") && (closedAt === null || isCount(closedAt)) && (closedMcap === null || isCount(closedMcap))
+    (position === "open" || position === "closed") && (closedAt === null || isCount(closedAt)) && (closedMcap === null || isCount(closedMcap)) &&
+    (reviewedAt === undefined || reviewedAt === null || isCount(reviewedAt)) && (recordTx === undefined || recordTx === null || typeof recordTx === "string")
   );
 }
 
@@ -272,7 +277,7 @@ const linkHashOf = (link: CalloutLink): Hex => keccak256(toBytes(link.url));
  * What the reviewer attests and the vault checks, built from the checked link rather than from hashes handed
  * over. `mcap` is the market cap recorded when the callout was posted: a callout without one cannot be attested.
  */
-function submissionOf(callout: Pick<Callout, "id" | "author">, token: string, link: CalloutLink, mcap: number, epoch: number, deadline: number): Submission {
+function submissionOf(callout: Pick<Callout, "id" | "author" | "callBalance">, token: string, link: CalloutLink, mcap: number, epoch: number, deadline: number): Submission {
   return {
     holder: callout.author as Address,
     token: token.toLowerCase() as Address,
@@ -281,6 +286,8 @@ function submissionOf(callout: Pick<Callout, "id" | "author">, token: string, li
     linkHash: linkHashOf(link),
     profileHash: link.profile === "" ? ZERO_HASH : keccak256(toBytes(link.profile)),
     mcap: BigInt(mcap),
+    // What the wallet held when the callout was posted: the vault never counts more than this.
+    held: BigInt(callout.callBalance ?? "0"),
     nonce: BigInt(callout.id),
     deadline: BigInt(deadline),
   };
@@ -431,6 +438,29 @@ function PositionStats({ stats }: { stats: PositionStat[] }) {
 
 // ── The feed on a token's page ───────────────────────────────────────────
 
+/**
+ * How long, in seconds, an approved callout is left to the Worker to bring to the vault before its author is
+ * offered the button to do it themselves.
+ */
+const AUTO_RECORD_WAIT_SECONDS = 180;
+
+const SHARE_CARD_ALT: Partial<Record<number, string>> = {
+  [KIND_PUMP]: "The callout as shared on pump.fun",
+  [KIND_FOMO]: "The thesis as shared on fomo.family",
+};
+
+/**
+ * The picture pump.fun or fomo.family shares for a callout, served by this site's Worker from its own origin
+ * (/api/callouts/bsc/card/<id>): the Worker fetches it from an address it builds from the stored link. A post
+ * on X has none. A picture that does not load leaves the card without one.
+ */
+function ShareCard({ id, kind }: { id: number; kind: number }) {
+  const [failed, setFailed] = useState(false);
+  const alt = SHARE_CARD_ALT[kind];
+  if (failed || alt === undefined) return null;
+  return <img className="callout-share-card" loading="lazy" decoding="async" width={1200} height={630} src={`${API}/card/${id}`} alt={alt} onError={() => setFailed(true)} />;
+}
+
 const RECORD_STEPS = { checking: "Checking…", confirm: "Confirm in wallet…", pending: "Recording…" } as const;
 
 /**
@@ -447,6 +477,8 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
   const [now, setNow] = useState(() => Date.now());
   /** Counts the feed's successful loads: what was read from the vault is read again with each. */
   const [loads, setLoads] = useState(0);
+  /** True when the Worker brings approved callouts to the vault itself, so their authors confirm nothing. */
+  const [autoRecord, setAutoRecord] = useState(false);
   /** Author to the balance of the token read from the chain just now. An author is absent until that read succeeds. */
   const [heldNow, setHeldNow] = useState<Record<string, bigint>>({});
   const [link, setLink] = useState("");
@@ -476,11 +508,13 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
       try {
         const response = await fetch(`${feed}?limit=${FEED_PAGE}`);
         if (!response.ok) throw new Error(String(response.status));
-        const page = ((await response.json()) as { callouts?: unknown }).callouts;
+        const body = (await response.json()) as { callouts?: unknown; autoRecord?: unknown };
+        const page = body.callouts;
         if (!Array.isArray(page) || !page.every(isCallout)) throw new Error("unexpected response");
         if (!current) return;
         clockAhead.current = clockAheadOf(response);
         setNow(Date.now() + clockAhead.current);
+        setAutoRecord(body.autoRecord === true);
         setCallouts(page);
         setLoads((count) => count + 1);
         setState("ready");
@@ -663,8 +697,9 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
       <header className="callouts-head">
         <h2 id={titleId}>Callouts</h2>
         <p className="callouts-help">
-          Post your X, pump.fun or fomo.family callout for this token. Your holdings and the market cap are recorded when you post. Verified callouts earn
-          from the token's trading fees: the earlier the call and the longer you hold, the more.
+          Post your X, pump.fun or fomo.family callout for this token. Your holdings and the market cap are noted when you post.{" "}
+          {autoRecord ? "Verified callouts are counted automatically. They earn" : "Verified callouts earn"} from the token's trading fees: the earlier
+          the call and the longer you hold, the more.
         </p>
       </header>
 
@@ -720,6 +755,9 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
             const recordable =
               callout.epoch === currentEpoch() && callout.deadline !== null && callout.deadline > nowSeconds && callout.attestation !== null && callout.callMcap !== null;
             const busy = recording?.id === callout.id ? recording.step : null;
+            // For its first minutes an approval is the Worker's to bring to the vault. After that, or where the
+            // Worker does not do this, the author can.
+            const beingCounted = autoRecord && callout.reviewedAt != null && nowSeconds - callout.reviewedAt <= AUTO_RECORD_WAIT_SECONDS;
             const live = heldNow[callout.author];
             const held = live ?? (callout.heldBalance !== null ? BigInt(callout.heldBalance) : null);
             // Closed the moment the chain shows under a tenth of the call balance, ahead of the Worker noticing.
@@ -738,11 +776,15 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
                   )}
                 </div>
                 {callout.note && <p className="callout-note">{callout.note}</p>}
+                <ShareCard id={callout.id} kind={callout.kind} />
                 {stats && <PositionStats stats={stats} />}
                 <div className="callout-actions">
                   <OpenLink link={checked} />
                   {cap !== null && <span className="callout-cap num" title="The token's market cap now">◎ {usd(cap)} MC</span>}
-                  {mine && checked && counted === false && recordable && (
+                  {mine && checked && counted === false && recordable && beingCounted && (
+                    <span className="callout-counting" role="status">Counting on-chain…</span>
+                  )}
+                  {mine && checked && counted === false && recordable && !beingCounted && (
                     <button type="button" className="button callout-record" disabled={recording !== null} onClick={() => void record(callout, checked)}>
                       {busy ? RECORD_STEPS[busy] : "Record on-chain"}
                     </button>
@@ -796,6 +838,8 @@ export function ReviewPage() {
   /** Link hash to whether the vault has counted it, for approvals whose round has passed. */
   const [recorded, setRecorded] = useState<Record<string, boolean> | null>(null);
   const [vaultUnread, setVaultUnread] = useState(false);
+  /** Why the last approval is not on-chain yet, when it is not. */
+  const [notice, setNotice] = useState<string | null>(null);
   /** Token address to its decimals, for the tokens whose contract answered. */
   const [decimals, setDecimals] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState<{ id: number; decision: "approve" | "reject" } | null>(null);
@@ -899,14 +943,17 @@ export function ReviewPage() {
   const sameVault = !!queue && queue.vault === VAULT.toLowerCase();
   const onChain = wallet.chainId === SITES.bsc.id;
 
-  const send = async (id: number, decision: "approve" | "reject", body: Record<string, unknown>): Promise<void> => {
+  /** Stores a decision and takes the callout off the page. Resolves with why the approval is not on-chain yet, when the Worker says so. */
+  const send = async (id: number, decision: "approve" | "reject", body: Record<string, unknown>): Promise<string | null> => {
     const response = await fetch(`${API}/review`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id, decision, ...body }),
     });
     if (!response.ok) throw new Error(await errorOf(response, "The decision could not be stored. Try again."));
+    const stored = (await response.json().catch(() => null)) as { callout?: { recordError?: unknown } } | null;
     setQueue((previous) => previous && { ...previous, callouts: previous.callouts.filter((callout) => callout.id !== id) });
+    return typeof stored?.callout?.recordError === "string" ? stored.callout.recordError : null;
   };
 
   const approve = async (callout: ReviewCallout, link: CalloutLink) => {
@@ -930,7 +977,9 @@ export function ReviewPage() {
         const rejected = failure?.code === 4001 || failure?.cause?.code === 4001;
         throw new Error(rejected ? "The signature request was rejected in the wallet." : "The wallet could not sign the approval.");
       }
-      await send(callout.id, "approve", { epoch: round, deadline, signature });
+      const recordError = await send(callout.id, "approve", { epoch: round, deadline, signature });
+      // The approval is stored either way. Where it could not be counted on-chain at once, the reviewer is told why.
+      setNotice(recordError === null ? null : `Callout ${callout.id} is approved, and not counted on-chain yet. ${recordError}`);
     } catch (cause) {
       setError({ id: callout.id, text: cause instanceof Error && cause.message ? cause.message : "The approval could not be stored. Try again." });
     } finally {
@@ -979,6 +1028,7 @@ export function ReviewPage() {
           <button type="button" className="button review-switch" onClick={() => void switchChain(SITES.bsc).catch(() => undefined)}>Switch to {SITES.bsc.short}</button>
         </p>
       )}
+      {notice && <p className="note" role="status">{notice}</p>}
       {queue && vaultUnread && (
         <p className="note" role="status">The vault could not be read, so approvals from past rounds are listed whether or not they were already counted.</p>
       )}

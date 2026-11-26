@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Address, Hex } from "viem";
 import { amount, short } from "./format";
+import { claimMany, loadWalletRewards, type WalletRewards } from "./rewards";
 import { TokenImage } from "./scope";
 import { SITES } from "./site";
 import { TradeError, callzTokens, heldTokens, loadMarket, quoteSell, rememberedTokens, sell, type Market, type TradeStep } from "./trade";
@@ -69,6 +70,28 @@ export default function Positions({ account, chainId, onNavigate }: { account: A
   const [failed, setFailed] = useState(false);
   const [notes, setNotes] = useState<Record<string, Note>>({});
   const onChain = chainId === SITE.id;
+  // Callout rewards the vault owes this wallet, across tokens, and the one claim that collects them.
+  const [rewards, setRewards] = useState<WalletRewards | null>(null);
+  const [claiming, setClaiming] = useState<{ kind: "working" | "done" | "error"; text: string; hash?: Hex } | null>(null);
+  const loadRewards = useCallback(() => {
+    loadWalletRewards(account).then(setRewards, () => setRewards(null));
+  }, [account]);
+  useEffect(loadRewards, [loadRewards]);
+
+  const claimRewards = async () => {
+    if (!rewards || rewards.rewards.length === 0) return;
+    setClaiming({ kind: "working", text: "Starting…" });
+    try {
+      const hash = await claimMany(account, rewards.rewards.map((reward) => reward.token), rewards.epoch, (step, hash) =>
+        setClaiming({ kind: "working", text: step === "confirm" ? "Confirm in your wallet…" : step === "pending" ? "Confirming…" : "Checking…", hash }),
+      );
+      setClaiming({ kind: "done", text: "Claimed.", hash });
+    } catch (cause) {
+      const failure = cause instanceof TradeError ? cause : new TradeError("NETWORK", "Not claimed", "The claim could not be completed. Check your wallet's activity before trying again.");
+      setClaiming({ kind: "error", text: `${failure.title}. ${failure.message}`, hash: failure.hash });
+    }
+    loadRewards();
+  };
 
   const reload = useCallback(() => {
     loadPositions(account).then(
@@ -112,6 +135,31 @@ export default function Positions({ account, chainId, onNavigate }: { account: A
           Positions and selling are on BNB Chain.{" "}
           <button type="button" className="button button-warn" onClick={() => void switchChain(SITE).catch(() => undefined)}>Switch to BNB Chain</button>
         </p>
+      )}
+      {rewards && (rewards.rewards.length > 0 || claiming) && (
+        <section className="positions-rewards" data-testid="wallet-rewards" aria-label="Callout rewards">
+          <p className="positions-head">
+            <strong>Callout rewards</strong>
+            <span className="dim num">{amount(rewards.total, 6)} BNB</span>
+          </p>
+          <ul className="positions-rewards-list">
+            {rewards.rewards.map((reward) => (
+              <li key={reward.token}>
+                <a href={`#/token/${reward.token.toLowerCase()}`} onClick={onNavigate}>{reward.symbol}</a>
+                <span className="num">{amount(reward.amount, 6)} BNB</span>
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="button positions-claim" data-testid="wallet-rewards-claim" disabled={!onChain || rewards.total === 0n || claiming?.kind === "working"} onClick={() => void claimRewards()}>
+            Claim {amount(rewards.total, 5)} BNB
+          </button>
+          {claiming && (
+            <p className={`positions-outcome trade-${claiming.kind}`} role={claiming.kind === "error" ? "alert" : "status"}>
+              {claiming.text} {claiming.hash && <a href={`${SITE.explorer}/tx/${claiming.hash}`} target="_blank" rel="noreferrer">View ↗</a>}
+            </p>
+          )}
+          <p className="positions-foot dim">From the round that just ended. Claim within 24 hours of it ending; after that it goes to the team wallet.</p>
+        </section>
       )}
       {positions === null && !failed && <p className="positions-note" role="status">Reading your balances…</p>}
       {failed && positions === null && <p className="positions-note" role="alert">BNB Chain could not be reached. Close and open this to try again.</p>}

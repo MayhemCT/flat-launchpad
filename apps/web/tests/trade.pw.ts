@@ -107,6 +107,31 @@ test("post a signed message in a token's chat", async ({ page }) => {
   await expect(chat.locator(".chat-message").filter({ hasText: text })).toBeVisible({ timeout: 30_000 });
 });
 
+test("the holder room takes posts from holders only", async ({ page }) => {
+  await useForkWallet(page);
+  // A token this wallet holds none of (CAKE): the holder room turns the post away.
+  await page.goto("/#/token/0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82");
+  let chat = page.getByTestId("token-chat");
+  await expect(chat).toBeVisible({ timeout: 30_000 });
+  await chat.getByTestId("chat-room-holders").click();
+  await chat.locator("input").fill("not a holder");
+  await chat.getByRole("button", { name: "Send" }).click();
+  await expect(chat.getByText("The holder room is for wallets that hold this token.")).toBeVisible({ timeout: 30_000 });
+
+  // After buying the token, the same wallet can post in its holder room, and the public room does not show it.
+  await buy(page, BNB_POOLED, "0.05");
+  chat = page.getByTestId("token-chat");
+  await chat.getByTestId("chat-room-holders").click();
+  // Chat allows one message every five seconds per wallet, across rooms: the test before this one just posted.
+  await page.waitForTimeout(6000);
+  const text = `holders only ${Date.now()}`;
+  await chat.locator("input").fill(text);
+  await chat.getByRole("button", { name: "Send" }).click();
+  await expect(chat.locator(".chat-message").filter({ hasText: text })).toBeVisible({ timeout: 30_000 });
+  await chat.getByTestId("chat-room-public").click();
+  await expect(chat.locator(".chat-message").filter({ hasText: text })).toHaveCount(0);
+});
+
 test("the wallet menu lists a bought token and sells all of it", async ({ page }) => {
   await useForkWallet(page);
   await buy(page, BNB_POOLED, "0.05");

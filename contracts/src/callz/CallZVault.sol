@@ -16,6 +16,7 @@ import {SignatureCheckerLib} from "solady/utils/SignatureCheckerLib.sol";
 /// @param linkHash     keccak256 of the link's canonical text. A link counts once, for one holder, ever.
 /// @param profileHash  keccak256 of the poster's profile on that site, or zero when the site has none.
 /// @param mcap         The token's market cap in whole US dollars when the callout was posted.
+/// @param held         What the holder's wallet held of the token when the callout was posted.
 /// @param nonce        The review record's id. Signed so two approvals never share a digest.
 /// @param deadline     Last second the approval can be recorded.
 struct Submission {
@@ -26,6 +27,7 @@ struct Submission {
     bytes32 linkHash;
     bytes32 profileHash;
     uint256 mcap;
+    uint256 held;
     uint256 nonce;
     uint256 deadline;
 }
@@ -59,7 +61,7 @@ struct Submission {
 ///         is not claimed by then goes to the team wallet.
 ///
 ///         Nobody signs for the team's money: the platform share is forwarded on every deposit, and every
-///         deposit also sweeps one finished round, if there is one, so rounds are settled by the fees that keep
+///         deposit also sweeps up to two finished rounds, so rounds are settled by the fees that keep
 ///         arriving. A holder collects everything owed for a token with one `claim`.
 ///
 ///         Solvency: every token has a ledger of what its fees brought in for its callers and what has been paid
@@ -83,6 +85,9 @@ contract CallZVault is EIP712, ReentrancyGuard {
     /// @notice Gas given to the team wallet when money is forwarded to it inside a deposit. A wallet that needs
     ///         more is not paid then: the amount waits in `platformAccrued` for `collect`.
     uint256 public constant TEAM_SEND_GAS = 30_000;
+    /// @notice A deposit smaller than this opens no round: it goes to the team wallet. Keeps dust from filling the
+    ///         queue of rounds waiting to be swept.
+    uint256 public constant MIN_ROUND_FEE = 1e12;
     /// @notice The platform share can be lowered, never raised past this.
     uint16 public constant MAX_PLATFORM_BPS = 2500;
     uint256 public constant MAX_LINK_BYTES = 256;
@@ -96,7 +101,7 @@ contract CallZVault is EIP712, ReentrancyGuard {
     uint256 internal constant ACC_SCALE = 1e36;
 
     bytes32 public constant SUBMISSION_TYPEHASH = keccak256(
-        "Submission(address holder,address token,uint256 epoch,uint8 kind,bytes32 linkHash,bytes32 profileHash,uint256 mcap,uint256 nonce,uint256 deadline)"
+        "Submission(address holder,address token,uint256 epoch,uint8 kind,bytes32 linkHash,bytes32 profileHash,uint256 mcap,uint256 held,uint256 nonce,uint256 deadline)"
     );
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -267,11 +272,15 @@ contract CallZVault is EIP712, ReentrancyGuard {
 
     /// @notice Pay a fee for `token` into the vault. Anyone can; the CallZ router and the CallZ mints do.
     /// @dev Splits the value into the three buckets, forwards the platform share to the team wallet, and sweeps
-    ///      one finished round if there is one. No loop, and nothing here can revert the trade or launch that
+    ///      up to two finished rounds. No loop, and nothing here can revert the trade or launch that
     ///      pays it: if the team wallet does not take the money, it waits in `platformAccrued`.
     function deposit(address token) external payable {
         uint256 value = msg.value;
         if (value == 0) return;
+        if (value < MIN_ROUND_FEE) {
+            _forwardToTeam(value);
+            return;
+        }
 
         uint256 toHolders = (value * holdersBps) / BPS;
         uint256 toCallouts = (value * calloutBps) / BPS;
@@ -294,9 +303,9 @@ contract CallZVault is EIP712, ReentrancyGuard {
         }
         emit Deposited(token, msg.sender, epoch, value);
 
-        // The platform takes its share and whatever the divisions above rounded off, plus one finished round's
-        // unclaimed rewards.
-        _forwardToTeam(value - toHolders - toCallouts + _sweepNext());
+        // The platform takes its share and whatever the divisions above rounded off, plus the unclaimed rewards of
+        // up to two finished rounds.
+        _forwardToTeam(value - toHolders - toCallouts + _sweepNext() + _sweepNext());
     }
 
     /// @notice BNB sent without naming a token has no book to go to, so it is the team's.
@@ -378,7 +387,8 @@ contract CallZVault is EIP712, ReentrancyGuard {
 
     /// @notice Record a callout the attester verified. Anyone can send it; it counts for `s.holder`.
     /// @dev The holder's first callout of the round (the `requiredLinks`-th, if more are required) takes their
-    ///      snapshot: the balance of the token in their wallet at this moment.
+    ///      snapshot: the balance of the token in their wallet at this moment, and never more than the attested
+    ///      balance they had when they posted the callout.
     /// @param link The link's canonical text. Emitted, so every rewarded link is public.
     function submitAttested(Submission calldata s, string calldata link, bytes calldata signature) external {
         uint256 epoch = currentEpoch();
@@ -393,7 +403,10 @@ contract CallZVault is EIP712, ReentrancyGuard {
 
         Entry storage e = _entries[s.token][epoch][s.holder];
         if (e.links >= maxLinksPerEpoch) revert TooManyLinks();
+        // The snapshot is the smaller of what the wallet held when the callout was posted (attested) and what
+        // it holds now. Tokens moved in only for the moment of recording therefore add nothing.
         uint256 holding = holdingOf(s.token, s.holder);
+        if (s.held < holding) holding = s.held;
         if (holding == 0 || holding * PPM < _totalSupply(s.token) * minHoldPpm) revert BelowMinHold();
 
         usedLink[s.linkHash] = true;
@@ -427,6 +440,7 @@ contract CallZVault is EIP712, ReentrancyGuard {
                     s.linkHash,
                     s.profileHash,
                     s.mcap,
+                    s.held,
                     s.nonce,
                     s.deadline
                 )
@@ -460,7 +474,31 @@ contract CallZVault is EIP712, ReentrancyGuard {
             total += _claimRound(token, epochs[i], holding);
         }
         if (total == 0) revert NothingToClaim();
-        _pay(token, msg.sender, total);
+        _book(token, total);
+        _sendBnb(msg.sender, total);
+    }
+
+    /// @notice Collect everything several tokens owe the caller for the listed rounds, in one transaction. A
+    ///         token that owes nothing is skipped.
+    function claimMany(address[] calldata tokens, uint256[] calldata epochs)
+        external
+        nonReentrant
+        returns (uint256 total)
+    {
+        for (uint256 t; t < tokens.length; ++t) {
+            address token = tokens[t];
+            uint256 holding = holdingOf(token, msg.sender);
+            uint256 owed;
+            for (uint256 i; i < epochs.length; ++i) {
+                owed += _claimRound(token, epochs[i], holding);
+            }
+            if (owed != 0) {
+                _book(token, owed);
+                total += owed;
+            }
+        }
+        if (total == 0) revert NothingToClaim();
+        _sendBnb(msg.sender, total);
     }
 
     function _claimRound(address token, uint256 epoch, uint256 holding) private returns (uint256 total) {
@@ -625,12 +663,11 @@ contract CallZVault is EIP712, ReentrancyGuard {
 
     /// @dev Every payout of a token's rewards goes through here: it is booked against the token's own ledger and
     ///      refused if it would take out more than the token's fees brought in.
-    function _pay(address token, address to, uint256 amount) private {
+    function _book(address token, uint256 amount) private {
         Ledger storage l = _ledgers[token];
         uint256 paid = uint256(l.paid) + amount;
         if (paid > l.received) revert Insolvent();
         l.paid = uint128(paid);
-        _sendBnb(to, amount);
     }
 
     function _sendBnb(address to, uint256 amount) private {

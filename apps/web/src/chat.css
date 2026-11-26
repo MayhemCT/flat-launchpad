@@ -6,6 +6,10 @@
 }
 .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
 .chat-head h2 { margin: 0; font-size: 16px; }
+/* The room switch keeps its own width beside the heading, on a phone too, where other switches fill their row. */
+.chat-panel .chat-head .chat-rooms { flex: none; width: auto; max-width: 100%; flex-wrap: nowrap; }
+.chat-panel .chat-head .chat-rooms button { flex: none; min-height: 44px; padding: 0 14px; }
+.chat-room-note { margin: 0; color: var(--dim); font-size: 12.5px; overflow-wrap: anywhere; }
 
 /* The room scrolls on its own, so a long conversation never pushes the composer off the screen. */
 .chat-list {

@@ -1,10 +1,11 @@
-import { stringToHex, type Hex } from 'viem'
+import { numberToHex, stringToHex, type Hex } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, it } from 'vitest'
 import {
   ISSUED_AT_WINDOW,
   MAX_BODY_LENGTH,
   canonicalSignature,
+  chatRoomOf,
   chatSigningText,
   cleanBody,
   handleChat,
@@ -259,10 +260,10 @@ describe('handleChat, before the database', () => {
         throw new Error('the database must not be reached')
       },
     },
-  ) as Parameters<typeof handleChat>[1]
+  ) as Parameters<typeof handleChat>[1]['DB']
   const ROOM = `https://callz.test/api/chat/bsc/${TOKEN}`
 
-  const send = (url: string, init?: RequestInit) => handleChat(new Request(url, init), noDatabase)
+  const send = (url: string, init?: RequestInit) => handleChat(new Request(url, init), { DB: noDatabase })
   const postJson = (body: string, headers: Record<string, string> = { 'content-type': 'application/json' }) =>
     send(ROOM, { method: 'POST', headers, body })
   const errorOf = async (response: Response) => ((await response.json()) as { error: string }).error
@@ -281,6 +282,16 @@ describe('handleChat, before the database', () => {
     expect((await send('https://callz.test/api/chat/bsc')).status).toBe(404)
     expect((await send(`${ROOM}/extra`)).status).toBe(404)
     expect((await send('https://callz.test/api/chat/bsc/0x1234')).status).toBe(400)
+  })
+
+  it('answers 400 to a room that is neither of the two, reading or posting', async () => {
+    for (const room of ['private', 'Holders', 'holders ', '', 'public,holders']) {
+      const reading = await send(`${ROOM}?room=${encodeURIComponent(room)}`)
+      expect(reading.status, room).toBe(400)
+      expect(await errorOf(reading)).toBe('room must be public or holders.')
+      const posting = await send(`${ROOM}?room=${encodeURIComponent(room)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+      expect(posting.status, room).toBe(400)
+    }
   })
 
   it('answers 400 to a POST that is not application/json', async () => {
@@ -364,5 +375,161 @@ describe('links and injection', () => {
     const parsed = parseChatPost({ author: `0x${'1'.repeat(40)}`, body, issuedAt: 1, signature: `0x${'1'.repeat(128)}1b` })
     // It is stored through a bound parameter and shown as a text node, so it stays exactly this string.
     expect(parsed).toMatchObject({ ok: true, post: { body } })
+  })
+})
+
+describe('chat rooms', () => {
+  const fields = { chain: 'bsc', token: TOKEN.toLowerCase(), body: 'gm holders', issuedAt: NOW } as const
+
+  it('reads the room from the request, the public one when none is named', () => {
+    expect(chatRoomOf(null)).toBe('public')
+    expect(chatRoomOf('public')).toBe('public')
+    expect(chatRoomOf('holders')).toBe('holders')
+    for (const other of ['', 'Public', 'HOLDERS', 'holder', 'holders ', 'private', 'public&room=holders', "holders' OR 1=1"]) {
+      expect(chatRoomOf(other), other).toBeNull()
+    }
+  })
+
+  it('gives each room its own signing text, the same but for the first line', () => {
+    expect(chatSigningText({ ...fields, room: 'holders' })).toBe(
+      'CallZ holder room\n\nToken: 0x000000000000000000000000000000000000dead\nNetwork: bsc\nTime: 1800000000\n\ngm holders',
+    )
+    expect(chatSigningText({ ...fields, room: 'public' })).toBe(
+      'CallZ chat\n\nToken: 0x000000000000000000000000000000000000dead\nNetwork: bsc\nTime: 1800000000\n\ngm holders',
+    )
+    // Naming no room is naming the public one: what wallets signed before there were two still verifies.
+    expect(chatSigningText(fields)).toBe(chatSigningText({ ...fields, room: 'public' }))
+    expect(chatSigningText({ ...fields, room: 'holders' })).not.toBe(chatSigningText(fields))
+    expect(chatSigningText({ ...fields, room: 'holders' }).split('\n').slice(1)).toEqual(chatSigningText(fields).split('\n').slice(1))
+  })
+
+  it('verifies a signature only in the room it was made for', async () => {
+    const account = newAccount()
+    const forPublic = await account.signMessage({ message: chatSigningText(fields) })
+    const forHolders = await account.signMessage({ message: chatSigningText({ ...fields, room: 'holders' }) })
+    const signed = { ...fields, author: account.address }
+    expect(await verifyChatSignature({ ...signed, signature: forPublic })).toBe(true)
+    expect(await verifyChatSignature({ ...signed, room: 'public', signature: forPublic })).toBe(true)
+    expect(await verifyChatSignature({ ...signed, room: 'holders', signature: forHolders })).toBe(true)
+    // A message signed for the public room is not a holder-room message, and the other way round.
+    expect(await verifyChatSignature({ ...signed, room: 'holders', signature: forPublic })).toBe(false)
+    expect(await verifyChatSignature({ ...signed, room: 'public', signature: forHolders })).toBe(false)
+    expect(await verifyChatSignature({ ...signed, signature: forHolders })).toBe(false)
+  })
+})
+
+describe('the holder room', () => {
+  type Env = Parameters<typeof handleChat>[1]
+  const HOLDERS = `https://callz.test/api/chat/bsc/${TOKEN}?room=holders`
+  const errorOf = async (response: Response) => ((await response.json()) as { error: string }).error
+
+  /** A database that takes one message: it records the rooms it was read and written with. */
+  const database = () => {
+    const bound: unknown[][] = []
+    const statement = (values: unknown[]) => ({ values, all: async () => ({ results: [] }) })
+    const db = {
+      prepare: () => ({ bind: (...values: unknown[]) => (bound.push(values), statement(values)) }),
+      batch: async () => [{ results: [{ replayed: 0, latest: null, in_hour: 0, oldest_in_hour: null }] }, { results: [{ id: 41 }] }],
+    } as unknown as Env['DB']
+    return { db, bound }
+  }
+  /** The chain, answering every `balanceOf` with `balance`; null: the endpoint is down. It counts the calls made. */
+  const chain = (balance: bigint | null) => {
+    const calls: Array<{ to: string; data: string }> = []
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://rpc.test/')
+      const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: [{ to: string; data: string }, string] }
+      expect(body.method).toBe('eth_call')
+      calls.push(body.params[0])
+      if (balance === null) return new Response('down', { status: 502 })
+      return Response.json({ jsonrpc: '2.0', id: body.id, result: numberToHex(balance, { size: 32 }) })
+    }) as typeof fetch
+    return { fetcher, calls }
+  }
+  const post = async (url: string, room: 'public' | 'holders', balance: bigint | null) => {
+    const account = newAccount()
+    const issuedAt = Math.floor(Date.now() / 1000)
+    const signature = await account.signMessage({ message: chatSigningText({ chain: 'bsc', token: TOKEN, body: 'gm', issuedAt, room }) })
+    const { db, bound } = database()
+    const { fetcher, calls } = chain(balance)
+    const response = await handleChat(
+      new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: account.address, body: 'gm', issuedAt, signature }) }),
+      { DB: db, BSC_RPC_URL: 'https://rpc.test/' },
+      fetcher,
+    )
+    return { response, bound, calls, author: account.address.toLowerCase() }
+  }
+
+  it('takes a message from a wallet that holds the token, and stores it in that room', async () => {
+    const { response, bound, calls, author } = await post(HOLDERS, 'holders', 1n)
+    expect(response.status).toBe(201)
+    expect(await response.json()).toMatchObject({ message: { id: 41, author, body: 'gm' } })
+    // One read of the author's balance, from the token itself.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.to).toBe(TOKEN.toLowerCase())
+    expect(calls[0]?.data).toBe(`0x70a08231${author.slice(2).padStart(64, '0')}`)
+    expect(bound[1]?.at(-1)).toBe('holders')
+  })
+
+  it('answers 403 to a wallet that holds none, and stores nothing', async () => {
+    const { response, bound, calls } = await post(HOLDERS, 'holders', 0n)
+    expect(response.status).toBe(403)
+    expect(await errorOf(response)).toBe('The holder room is for wallets that hold this token.')
+    expect(calls).toHaveLength(1)
+    expect(bound).toEqual([])
+  })
+
+  it('answers 503 when the holding cannot be read, rather than taking it for none or for some', async () => {
+    const { response, bound } = await post(HOLDERS, 'holders', null)
+    expect(response.status).toBe(503)
+    expect(await errorOf(response)).toBe("This wallet's holdings could not be read right now. Try again in a moment.")
+    expect(bound).toEqual([])
+  })
+
+  it('answers 403 to a public-room signature, before any balance is read', async () => {
+    const { response, bound, calls } = await post(HOLDERS, 'public', 1n)
+    expect(response.status).toBe(403)
+    expect(await errorOf(response)).toBe('The signature does not match this wallet and message.')
+    expect(calls).toEqual([])
+    expect(bound).toEqual([])
+  })
+
+  it('reads no balance for the public room, and stores the message there', async () => {
+    const { response, bound, calls } = await post(`https://callz.test/api/chat/bsc/${TOKEN}`, 'public', 0n)
+    expect(response.status).toBe(201)
+    expect(calls).toEqual([])
+    expect(bound[1]?.at(-1)).toBe('public')
+    // And a holder-room signature is not one for the public room.
+    expect((await post(`https://callz.test/api/chat/bsc/${TOKEN}?room=public`, 'holders', 1n)).response.status).toBe(403)
+  })
+
+  it('has no holder room to post in on another network', async () => {
+    const account = newAccount()
+    const issuedAt = Math.floor(Date.now() / 1000)
+    const signature = await account.signMessage({ message: chatSigningText({ chain: 'bscTestnet', token: TOKEN, body: 'gm', issuedAt, room: 'holders' }) })
+    const { db, bound } = database()
+    const { fetcher, calls } = chain(1n)
+    const response = await handleChat(
+      new Request(`https://callz.test/api/chat/bscTestnet/${TOKEN}?room=holders`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ author: account.address, body: 'gm', issuedAt, signature }),
+      }),
+      { DB: db, BSC_RPC_URL: 'https://rpc.test/' },
+      fetcher,
+    )
+    expect(response.status).toBe(403)
+    expect(calls).toEqual([])
+    expect(bound).toEqual([])
+  })
+
+  it('lets anyone read either room, each by its own name', async () => {
+    for (const [url, room] of [[HOLDERS, 'holders'], [`https://callz.test/api/chat/bsc/${TOKEN}`, 'public'], [`${HOLDERS}&after=5&limit=10`, 'holders']] as const) {
+      const { db, bound } = database()
+      const response = await handleChat(new Request(url), { DB: db })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ messages: [] })
+      expect(bound[0]?.slice(0, 3)).toEqual(['bsc', TOKEN.toLowerCase(), room])
+    }
   })
 })
