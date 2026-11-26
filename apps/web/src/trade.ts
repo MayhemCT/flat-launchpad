@@ -209,6 +209,40 @@ export async function balances(market: Market, account: Address): Promise<{ bnb:
   return { bnb, token };
 }
 
+const BOUGHT_KEY = "callz.bought";
+
+/** Tokens this browser bought through the site, newest first: they show under the wallet's positions. */
+export function rememberedTokens(): Address[] {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(BOUGHT_KEY) ?? "[]");
+    return Array.isArray(stored) ? stored.filter((value): value is Address => typeof value === "string" && /^0x[0-9a-f]{40}$/.test(value)).slice(0, 60) : [];
+  } catch {
+    return []; // storage blocked or unreadable: the board's own tokens still show
+  }
+}
+
+function rememberBought(token: Address) {
+  try {
+    const address = lower(token) as Address;
+    window.localStorage.setItem(BOUGHT_KEY, JSON.stringify([address, ...rememberedTokens().filter((other) => other !== address)].slice(0, 60)));
+  } catch {
+    // storage blocked: nothing to remember it in
+  }
+}
+
+/** Which of `tokens` the account holds, with each balance. One request for all of them. */
+export async function heldTokens(account: Address, tokens: Address[]): Promise<Array<{ token: Address; balance: bigint }>> {
+  if (tokens.length === 0) return [];
+  const results = await client.multicall({
+    contracts: tokens.map((token) => ({ address: token, abi: tokenAbi, functionName: "balanceOf" as const, args: [account] as const })),
+    allowFailure: true,
+  });
+  return tokens.flatMap((token, index) => {
+    const result = results[index];
+    return result?.status === "success" && typeof result.result === "bigint" && result.result > 0n ? [{ token, balance: result.result }] : [];
+  });
+}
+
 function wallet() {
   if (!window.ethereum) throw new TradeError("WALLET_MISSING", "No wallet found", "No browser wallet was found. Install MetaMask, Rabby or another wallet, then connect.");
   return createWalletClient({ chain: bsc, transport: custom(window.ethereum) });
@@ -298,7 +332,9 @@ export async function buy({ market, account, amountIn, slippageBps, onStep }: Tr
         onStep?.("confirm");
         hash = await signer.writeContract({ ...request, gas: withHeadroom(gas) });
         onStep?.("pending", hash);
-        return { hash: await settle(hash), quote };
+        const settled = await settle(hash);
+        rememberBought(market.token);
+        return { hash: settled, quote };
       } catch (error) {
         const failure = explain(error, hash !== undefined, hash);
         // The price can move between pricing and checking: price it once more before giving up.

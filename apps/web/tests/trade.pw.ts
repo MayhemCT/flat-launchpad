@@ -105,6 +105,19 @@ test("post a signed message in a token's chat", async ({ page }) => {
   await expect(chat.locator(".chat-message").filter({ hasText: text })).toBeVisible({ timeout: 30_000 });
 });
 
+test("the wallet menu lists a bought token and sells all of it", async ({ page }) => {
+  await useForkWallet(page);
+  await buy(page, BNB_POOLED, "0.05");
+  // The wallet button shows the balance; opening it lists what the wallet holds.
+  await page.getByTestId("wallet").click();
+  const positions = page.getByTestId("positions");
+  const row = positions.locator("li").first();
+  await expect(row).toContainText("BNB", { timeout: 30_000 });
+  await row.getByRole("button", { name: "Sell all" }).click();
+  // A position sold in full leaves the list; the menu keeps saying what happened to it.
+  await expect(positions.locator(".trade-done")).toContainText("Sold.", { timeout: 120_000 });
+});
+
 test("one-click buy from the Memescope board", async ({ page }) => {
   await useForkWallet(page);
   await page.goto("/#/scope");

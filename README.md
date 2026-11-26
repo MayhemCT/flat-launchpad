@@ -1,12 +1,19 @@
-# RaidPass
+# CallZ
 
-A board for every launch on [Flap](https://docs.flap.sh) Pool Launch, and RaidPass, a launchpad where the presale is an NFT mint. On BNB Chain. Built for BNB Hack Bangkok 2026.
+Mint the pass. Make the call.
+
+A board for every launch on [Flap](https://docs.flap.sh) Pool Launch with charts, trading and chat, and a launchpad where the presale is an NFT pass mint that funds a token's first liquidity pool. On BNB Chain. Built for BNB Hack Bangkok 2026. (The project was first called RaidPass: contract and file names still say so.)
 
 Live: https://raidpass.dry-dust-1399.workers.dev
 
-- **Aggregator.** Every Launcher, launched token, factory and deployer on Pool Launch, across all Launcher Factories, on BNB Chain and BNB Chain Testnet. Each launch opens on Flap, where its own factory's UI lives.
 - **Memescope.** Every launchpad built on Pool Launch on one live board, in three columns a launch crosses as it fills: New, Final stretch, Launched. Raises are ranked by how much of their target they hold, launchpads are named and colour-coded, and launched tokens show their own pictures.
-- **RaidPass launchpad.** Our own Launcher Factory: create an NFT mint, mint, launch, claim.
+- **Token pages.** For every launched token on BNB Chain: the DexScreener chart with the pool's trades under it, price, market cap, liquidity and volume, the token's own taxes, whether its DexScreener profile is paid, and its description and links from its own metadata and from DexScreener.
+- **Trading.** Buy and sell through PancakeSwap's router straight from the visitor's wallet, on the token page, with one click from the board, or from the wallet menu, which lists the positions a wallet holds and sells them. The site adds no fee and never holds funds.
+- **Chat.** One room per token. Messages are signed by the wallet that wrote them; text only, no links.
+- **Launchpad.** NFT pass mints that launch a token: straight into a PancakeSwap pool on BNB Chain (`CallZPancake`), and through Flap Pool Launch on BNB Chain Testnet (`RaidPassLauncher`).
+- **Aggregator.** Every Launcher, launched token, factory and deployer on Pool Launch, on BNB Chain and BNB Chain Testnet.
+
+Not built yet: the holder room and rewards for verified callouts that the tagline points at.
 
 ## The mechanism
 
@@ -20,27 +27,33 @@ The NFT mint replaces the bonding curve as the way a launch raises its first liq
 
 Nobody can withdraw the raise. It leaves the mint only through the launch or through refunds. There is no mint fee, no commission receiver and no royalty.
 
-## Two launch paths
+## Three launch paths
 
 | | What the launch does with the raise | Network | Permission |
 | --- | --- | --- | --- |
 | `RaidPassLauncher` | Flap Pool Launch: the raise and the pool share of the supply go straight into a DEX pool, LP burned. The NFTs share the rest of the supply. | BNB Chain Testnet today | On BNB Chain, Flap must audit and enable the factory |
 | `RaidPassCurve` | Flap bonding curve: the raise is the launch's first buy. The NFTs share the tokens bought. | BNB Chain | None. The bonding curve Portal is permissionless |
+| `CallZPancake` | PancakeSwap directly: the mint creates a plain token and puts the whole raise, with the pool share of the supply, into a PancakeSwap V2 pool. LP burned. The NFTs share the rest of the supply. | BNB Chain | None |
 
-Both are the same mint with the same rules. `RaidPassLauncher` is the design the Flap track asks for. `RaidPassCurve` exists because Pool Launch is permissioned on BNB Chain: it is the way to run the mint live on mainnet without waiting for an audit.
+All three are the same mint with the same rules. `RaidPassLauncher` is the design the Flap track asks for. Pool Launch is permissioned on BNB Chain, so the other two are the ways to run the mint on mainnet without waiting for an audit: `CallZPancake` is the one the site's launchpad uses, because it does what Pool Launch does (the raise funds the pool) with PancakeSwap alone.
+
+`CallZPancake` adds liquidity by sending both assets to the pair and calling `mint` on it, not through the router: the token address is predictable, so anyone can create the pair first, and the router's `addLiquidityETH` cannot be relied on in every state such a pair can be in. The token is a plain ERC-20: fixed supply, no owner, no tax.
 
 ```
 RaidPassLauncherFactory  0x1F28ba409797a1309e52F90B331934092D1b4aBD   (CREATE2: same on BNB Chain and Testnet)
 RaidPassCurveFactory     0xAF9cfB507271D8bFD3A8284555C7C54026Fe3FB4   (CREATE2: BNB Chain)
+CallZPancakeFactory      0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (CREATE2: BNB Chain)
 ```
 
-Neither is deployed yet. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change.
+None is deployed yet. The site's launch pages deploy `RaidPassLauncherFactory` and `CallZPancakeFactory` from a browser wallet, with one transaction each. The `RaidPassCurveFactory` address predates the rename and will differ. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change.
 
 ## Status
 
 - `RaidPassLauncher`: 15 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
 - `RaidPassCurve`: 7 fork tests pass against Flap's bonding curve Portal on a fork of BNB Chain, with nothing impersonated. The deploy, create, mint and claim commands below were rehearsed end to end on a local fork.
 - Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. In `apps/web` it has created a Launcher, minted to the cap, launched and claimed on a local fork of BNB Chain Testnet. It has not been run inside Flap's own host.
+- `CallZPancake`: 16 fork tests pass against PancakeSwap on a fork of BNB Chain, including a pair created and funded by someone else before the launch, re-entry during the launch and payments, and the heaviest launch (7.8M gas, under the 16.7M cap).
+- Site: `apps/web/tests/trade.pw.ts` drives buys, sells, a wallet-menu sale, one-click buys and a signed chat post through the page, and `tests/launch.pw.ts` drives the whole mainnet launch (deploy the factory, create, mint to the cap, launch, claim, buy the new token), both on a local fork of BNB Chain against the real PancakeSwap contracts.
 - The contracts are not audited.
 
 ## What is in this repository
@@ -48,7 +61,8 @@ Neither is deployed yet. Each address depends only on the contract bytecode, so 
 | Path | What it is |
 | --- | --- |
 | `contracts/src/raidpass/` | `RaidPassLauncher` and `RaidPassLauncherFactory` (Pool Launch, on Flap's `LauncherBase` and `LauncherFactoryBase`), and `RaidPassCurve` and `RaidPassCurveFactory` (bonding curve). |
-| `contracts/test/raidpass/` | Fork tests that run the whole flow against Flap's live contracts. |
+| `contracts/src/callz/` | `CallZPancake`, `CallZPancakeFactory` and `CallZToken`: the pass mint that launches into PancakeSwap. |
+| `contracts/test/raidpass/`, `contracts/test/callz/` | Fork tests that run the whole flow against Flap's and PancakeSwap's live contracts. |
 | `contracts/script/` | Deploy and create scripts for both paths. |
 | `flap-ui/raidpass-launcher/` | The launch UI in Flap's Launcher UI template format: creation form and mint page. |
 | `apps/web/` | The site: the aggregator pages and the RaidPass launchpad, which hosts the launch UI package against the chain with a browser wallet. |
@@ -191,6 +205,8 @@ The site and its indexer are one Cloudflare Worker (`apps/web/wrangler.jsonc`, c
 
 - **Pages.** Static files. `/`, `/scope` (Memescope), `/launches`, `/tokens`, `/factories` and `/deployers` read the index; `/raidpass`, `/create` and `/launcher/<address>` are the launchpad and talk to the chain and the visitor's wallet.
 - **`/api/<chain>/<resource>`.** Read-only JSON: `overview`, `scope`, `launchers`, `tokens`, `factories`, `deployers`, for `bsc` and `bscTestnet`.
+- **`/api/chat/<chain>/<token>`.** A token's chat room (`apps/worker/src/chat.ts`). A message is stored when its author's wallet signed its exact text within the last five minutes and that signature has not been used before. Every value reaches the database as a bound parameter of a prepared statement. Messages are plain text with control and invisible characters removed, links are refused, and the page shows them as text nodes. Rate limited per wallet inside the insert itself.
+- **`/api/meta/<ipfs path>`.** A token's own description and links, from the metadata its creator pinned at launch.
 - **`/api/image/<ipfs path>?w=64|128|256`.** A token's picture as a small thumbnail, so the page loads pictures from its own origin and its content policy stays `img-src 'self'`. Only IPFS paths are accepted, only raster images are passed on, nothing over 2 MB.
 - **Cron, every minute.** Reads new Pool Launch Portal events into a D1 database (`apps/worker/migrations/`). It follows the head in steps of at most 2,000 blocks, stays 20 blocks behind it, and records its last error where `overview` shows it. Each run also reads, in one Multicall3 call per chain, the quote balance every open Launcher holds (its raise progress), and resolves a few tokens' pictures from their metadata on IPFS (`apps/worker/src/enrich.ts`).
 - **Launchpad names.** A Launcher Factory is named by the title most of its Launchers carry in their own on-chain description. A factory whose Launchers each carry a different title is shown by its address.

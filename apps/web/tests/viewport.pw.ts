@@ -24,7 +24,10 @@ const PAGES = [
   { name: "deployers", hash: "#/deployers", ready: "[data-testid=deployer-table], [data-testid=deployer-cards]" },
   // A real launched token: its page loads the chart frame, the market and the trade panel.
   { name: "token", hash: "#/token/0x7c45614b3449cf2603262b3854c75a67d1517777", ready: "[data-testid=trade-panel]" },
-  { name: "launch", hash: "#/launch", ready: "[data-testid=not-deployed], [data-testid=mint-table], [data-testid=mint-cards]" },
+  { name: "launch", hash: "#/launch", ready: "[data-testid=pancake-not-deployed], [data-testid=pancake-empty], [data-testid=pancake-mints]" },
+  { name: "launch create", hash: "#/launch/create", ready: "[data-testid=pancake-create]" },
+  { name: "mint", hash: "#/mint/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-mint]" },
+  { name: "launch testnet", hash: "#/launch/testnet", ready: "[data-testid=not-deployed], [data-testid=mint-table], [data-testid=mint-cards]" },
   { name: "create", hash: "#/create", ready: "input[name=name]" },
   // An address the Portal has no record of: the page must still lay out its message correctly.
   { name: "launcher", hash: "#/launcher/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-launcher]" },

@@ -4,12 +4,17 @@ import { short } from "./format";
 import { RAIDPASS, SITES, type ChainKey, type Site } from "./site";
 import { connect, switchChain, useWallet } from "./wallet";
 import { ScopePage } from "./scope";
+import type { PancakeRoute } from "./pancake";
 import type { Locale, RaidPassRoute } from "./raidpass";
 
 // The launchpad needs a chain library and the launch UI package: both load only when one of its pages opens.
 const RaidPassSection = lazy(() => import("./raidpass"));
 // A token's page trades through PancakeSwap, which needs the chain library too.
 const TokenPage = lazy(() => import("./token"));
+// The launchpad on BNB Chain mainnet: pass mints that launch into PancakeSwap.
+const PancakeSection = lazy(() => import("./pancake"));
+// The wallet's positions read balances and sell through the same library: loaded when first opened.
+const Positions = lazy(() => import("./positions"));
 
 const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
   { id: "en", label: "EN" },
@@ -18,7 +23,7 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
 ];
 
 type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
-type Route = AggregatorRoute | RaidPassRoute | { name: "token"; address: string } | { name: "missing" };
+type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | { name: "token"; address: string } | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
@@ -26,7 +31,12 @@ function parseRoute(hash: string): Route {
   if (path === "/scope" || path === "/launches" || path === "/tokens" || path === "/factories" || path === "/deployers") {
     return { name: path.slice(1) as AggregatorRoute["name"] };
   }
-  if (path === "/launch" || path === "/raidpass") return { name: "raidpass" };
+  // The launchpad: BNB Chain (PancakeSwap) by default, and the Flap Pool Launch one on testnet.
+  if (path === "/launch") return { name: "launch" };
+  if (path === "/launch/create") return { name: "launch-create" };
+  if (path === "/launch/testnet" || path === "/raidpass") return { name: "raidpass" };
+  const mint = /^\/mint\/(0x[0-9a-fA-F]{40})$/.exec(path);
+  if (mint?.[1]) return { name: "mint", address: mint[1].toLowerCase() };
   const token = /^\/token\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (token?.[1]) return { name: "token", address: token[1].toLowerCase() };
   if (path === "/create") return { name: "create" };
@@ -96,7 +106,65 @@ function WalletButton({ target }: { target: Site }) {
       </button>
     );
   }
-  return <span className="pill" data-testid="wallet" title={wallet.account}>{short(wallet.account)}</span>;
+  return <WalletMenu account={wallet.account} chainId={wallet.chainId} unit={target.unit} />;
+}
+
+/** "0.4215" from a hex wei balance: four decimals, no chain library. */
+function formatBalance(hex: string): string {
+  const wei = BigInt(hex);
+  const whole = wei / 10n ** 18n;
+  const fraction = ((wei % 10n ** 18n) / 10n ** 14n).toString().padStart(4, "0").replace(/0+$/, "");
+  return `${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+/** The connected wallet: its balance, and a menu of the positions it can sell. */
+function WalletMenu({ account, chainId, unit }: { account: `0x${string}`; chainId: number | null; unit: string }) {
+  const [open, setOpen] = useState(false);
+  const [balance, setBalance] = useState<string | null>(null);
+  const menu = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let current = true;
+    const read = () =>
+      window.ethereum
+        ?.request({ method: "eth_getBalance", params: [account, "latest"] })
+        .then((value) => current && setBalance(formatBalance(String(value))), () => undefined);
+    setBalance(null);
+    void read();
+    const timer = window.setInterval(() => void read(), 20_000);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [account, chainId, open]);
+
+  // Close on a click anywhere else, and on Escape.
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => !menu.current?.contains(event.target as Node) && setOpen(false);
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="wallet-menu" ref={menu}>
+      <button type="button" className="wallet-button" data-testid="wallet" aria-expanded={open} aria-haspopup="dialog" title={account} onClick={() => setOpen((value) => !value)}>
+        <span className="num">{balance === null ? "…" : balance} {unit}</span>
+        <span className="num dim wallet-address">{short(account)}</span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <Suspense fallback={<div className="positions"><p className="positions-note" role="status">Loading…</p></div>}>
+          <Positions account={account} chainId={chainId} onNavigate={() => setOpen(false)} />
+        </Suspense>
+      )}
+    </div>
+  );
 }
 
 /** Which chain the aggregator shows. The launchpad pages are always on RaidPass's own network. */
@@ -127,11 +195,14 @@ const NAV: ReadonlyArray<{ href: string; label: string; short?: string; routes: 
   { href: "#/tokens", label: "Tokens", routes: ["tokens"] },
   { href: "#/factories", label: "Factories", routes: ["factories"] },
   { href: "#/deployers", label: "Deployers", routes: ["deployers"] },
-  { href: "#/launch", label: "Launch", routes: ["raidpass", "create", "launcher"] },
+  { href: "#/launch", label: "Launch", routes: ["launch", "launch-create", "mint", "raidpass", "create", "launcher"] },
 ];
 
-/** What a page works with: the index for either network, the launchpad's own network, or one mainnet token. */
+/** What a page works with: the index for either network, the testnet launchpad's own network, or BNB Chain itself. */
 type Mode = "board" | "launchpad" | "token";
+
+const isMainnetPage = (route: Route): route is PancakeRoute | { name: "token"; address: string } =>
+  route.name === "token" || route.name === "launch" || route.name === "launch-create" || route.name === "mint";
 
 interface ShellProps {
   route: Route;
@@ -217,7 +288,7 @@ export function App() {
   return (
     <>
       <Backdrop />
-      <Shell route={route} mode={isLaunchpad(route) ? "launchpad" : route.name === "token" ? "token" : "board"} chain={chain} onChain={setChain} locale={locale} onLocale={setLocale}>
+      <Shell route={route} mode={isLaunchpad(route) ? "launchpad" : isMainnetPage(route) ? "token" : "board"} chain={chain} onChain={setChain} locale={locale} onLocale={setLocale}>
         {route.name === "home" && <HomePage site={site} mobile={mobile} />}
         {route.name === "scope" && <ScopePage site={site} mobile={mobile} />}
         {route.name === "launches" && <LaunchesPage site={site} mobile={mobile} />}
@@ -232,6 +303,11 @@ export function App() {
         {route.name === "token" && (
           <Suspense fallback={<p className="note" role="status">Loading the token…</p>}>
             <TokenPage key={route.address} address={route.address} mobile={mobile} />
+          </Suspense>
+        )}
+        {(route.name === "launch" || route.name === "launch-create" || route.name === "mint") && (
+          <Suspense fallback={<p className="note" role="status">Loading the launchpad…</p>}>
+            <PancakeSection route={route} />
           </Suspense>
         )}
         {route.name === "missing" && <p className="note" role="alert">That page does not exist. <a href="#/">Back to the board.</a></p>}

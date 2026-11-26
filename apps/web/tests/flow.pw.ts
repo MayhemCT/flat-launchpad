@@ -46,7 +46,7 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
   page.on("pageerror", (error) => errors.push(error.message));
 
   // On a fresh fork the factory does not exist: deploy it from the page, with one transaction.
-  await page.goto("/#/raidpass");
+  await page.goto("/#/launch/testnet");
   const deployButton = page.getByRole("button", { name: "Deploy the factory" });
   await expect(deployButton.or(page.getByText("No mints yet"))).toBeVisible({ timeout: 30_000 });
   if (await deployButton.isVisible()) {
@@ -94,7 +94,7 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
   await expect(page.getByRole("button", { name: "Claim tokens" })).toHaveCount(0, { timeout: 90_000 });
 
   // The launchpad lists it.
-  await page.goto("/#/raidpass");
+  await page.goto("/#/launch/testnet");
   await expect(page.getByText("Flow Test")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Launched")).toBeVisible();
   // A mint whose cap is under the Portal's floor is flagged before anyone puts BNB into it.
