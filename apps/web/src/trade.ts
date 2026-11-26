@@ -129,8 +129,12 @@ async function reserves(pair: Address, token: Address): Promise<{ reserveToken: 
   return lower(token0) === lower(token) ? { reserveToken: reserve0, reserveQuote: reserve1 } : { reserveToken: reserve1, reserveQuote: reserve0 };
 }
 
-/** The token and its PancakeSwap pool. Throws NO_POOL when it has none with liquidity. */
-export async function loadMarket(token: Address): Promise<Market> {
+/**
+ * The token and its PancakeSwap pool. A token can have one against BNB and one against USDT: `prefer` picks
+ * between them, and without it the one that holds more of the token is used. Throws NO_POOL when it has none
+ * with liquidity.
+ */
+export async function loadMarket(token: Address, prefer?: "BNB" | "USDT"): Promise<Market> {
   const read = <T,>(functionName: "name" | "symbol" | "decimals" | "totalSupply" | "buyTaxRate" | "sellTaxRate") =>
     client.readContract({ address: token, abi: tokenAbi, functionName }).catch(() => null) as Promise<T | null>;
   const pairOf = (other: Address) => client.readContract({ address: PANCAKE_FACTORY, abi: factoryAbi, functionName: "getPair", args: [token, other] });
@@ -152,7 +156,8 @@ export async function loadMarket(token: Address): Promise<Market> {
       .filter(([pair]) => pair !== ZERO)
       .map(async ([pair, quote]) => ({ pair, quote, ...(await reserves(pair, token)) })),
   );
-  const pool = candidates.filter((candidate) => candidate.reserveToken > 0n && candidate.reserveQuote > 0n).sort((a, b) => (b.reserveToken > a.reserveToken ? 1 : -1))[0];
+  const funded = candidates.filter((candidate) => candidate.reserveToken > 0n && candidate.reserveQuote > 0n).sort((a, b) => (b.reserveToken > a.reserveToken ? 1 : -1));
+  const pool = funded.find((candidate) => candidate.quote === prefer) ?? funded[0];
   if (!pool) throw new TradeError("NO_POOL", "No pool yet", "This token has no PancakeSwap pool with liquidity yet, so there is nothing to trade against.");
 
   const tax = (value: bigint | null) => (value !== null && value < BPS ? Number(value) : 0);
@@ -571,7 +576,7 @@ export interface LiquidityRequest {
 
 /**
  * Adds liquidity: `amount` of the pool's quote asset and the matching tokens at the pool's current price,
- * through PancakeSwap's router. The LP tokens come to the account. A token that takes a tax on transfers takes
+ * through PancakeSwap's router. Only to a pool that passes `poolChecks`. The LP tokens come to the account. A token that takes a tax on transfers takes
  * it on the tokens going into the pool, so the LP tokens received are that much fewer than the amounts suggest:
  * the transaction is simulated first, and what it really returns is what is reported.
  */
@@ -580,6 +585,9 @@ export async function addLiquidity({ market, account, amount, slippageBps, onSte
   try {
     const signer = wallet();
     onStep?.("pricing");
+    // Enforced here, not only on the page: liquidity goes into graduated, burned-LP PancakeSwap pools only.
+    const checks = await poolChecks(market);
+    if (!checks.ok) throw new TradeError("POOL_REJECTED", "Pool not eligible", `${checks.reason} Nothing was sent.`);
     const position = await poolPosition(market, account);
     const tokens = tokensFor(position, amount);
     if (tokens === 0n) throw new TradeError("NO_POOL", "Amount too small", "This amount is too small to add at the pool's price. Nothing was sent.");
@@ -719,4 +727,144 @@ export async function poolSummaries(tokens: Array<{ token: Address; pair: Addres
     summaries.push({ token, pair, quote, reserveToken, reserveQuote, liquidityBnb: quoteInBnb * 2n });
   });
   return summaries.sort((a, b) => (b.liquidityBnb > a.liquidityBnb ? 1 : -1));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Which pools liquidity may be added to
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEAD: Address = "0x000000000000000000000000000000000000dEaD";
+/** The least share of a launch pool's LP that must be burned before this site adds liquidity to it. In basis points. */
+const MIN_BURNED_BPS = 9000;
+/** A major pool must hold at least this much on its quote side, counted in BNB, to be taken as established. */
+const MIN_MAJOR_QUOTE_BNB = 50n * 10n ** 18n;
+const pairFactoryAbi = parseAbi(["function factory() view returns (address)"]);
+
+/**
+ * The major assets: the ones on PancakeSwap's own Default token list for BNB Chain
+ * (tokens.pancakeswap.finance/pancakeswap-default.json, read on 27 Nov 2026), by lowercase address.
+ * BNB itself is the other side of most of their pools. BUSD is on that list too, but is being wound down.
+ */
+export const MAJOR_ASSETS: Readonly<Record<string, string>> = {
+  "0x55d398326f99059ff775485246999027b3197955": "USDT",
+  "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": "USDC",
+  "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82": "CAKE",
+  "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c": "BTCB",
+  "0x2170ed0880ac9a755fd29b2688956bd959f933f8": "ETH",
+};
+
+/** The major pools this site lists: each major asset against BNB, and USDC against USDT. */
+const MAJOR_POOLS: ReadonlyArray<{ token: Address; quote: "BNB" | "USDT" }> = [
+  { token: "0x55d398326f99059fF775485246999027B3197955", quote: "BNB" },
+  { token: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", quote: "BNB" },
+  { token: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", quote: "USDT" },
+  { token: "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82", quote: "BNB" },
+  { token: "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c", quote: "BNB" },
+  { token: "0x2170Ed0880ac9A755fd29B2688956BD959F933F8", quote: "BNB" },
+];
+
+/** The major pools as they stand, deepest first, each with its asset's symbol. */
+export async function majorPools(): Promise<Array<PoolSummary & { symbol: string }>> {
+  const pairs = await client.multicall({
+    allowFailure: false,
+    contracts: MAJOR_POOLS.map(({ token, quote }) => ({ address: PANCAKE_FACTORY, abi: factoryAbi, functionName: "getPair" as const, args: [token, quote === "BNB" ? WBNB : USDT] as const })),
+  });
+  const listed = MAJOR_POOLS.flatMap(({ token, quote }, index) => (pairs[index] === ZERO ? [] : [{ token, pair: pairs[index] as Address, quoteToken: quote === "USDT" ? USDT : null }]));
+  return (await poolSummaries(listed)).map((pool) => ({ ...pool, symbol: MAJOR_ASSETS[lower(pool.token)] ?? "" }));
+}
+
+export interface PoolCheck {
+  label: string;
+  ok: boolean;
+}
+
+export interface PoolChecks {
+  /** A pool from a Pool Launch graduation, a pool between major assets, or neither. */
+  kind: "flap" | "major";
+  items: PoolCheck[];
+  /** Every check passed. */
+  ok: boolean;
+  /** Why not, in plain words: the first failed check. Null when `ok`. */
+  reason: string | null;
+}
+
+/**
+ * Whether this site will add liquidity to `market`'s pool. Only to a pool that cannot be a trap, of two kinds.
+ *
+ * A pool between major assets (PancakeSwap's own default token list, and BNB):
+ *  - it is the pair PancakeSwap's own factory holds for the two;
+ *  - it holds liquidity, at least 50 BNB's worth on its quote side.
+ *
+ * A pool of a token that graduated on Flap's Pool Launch:
+ *  - the token graduated, by this site's index of the Portal's own events, not by the page's address bar;
+ *  - the pool is the pair PancakeSwap's own factory created for it, the same one the launch recorded;
+ *  - it holds liquidity now;
+ *  - at least 90% of its LP tokens are burned, so the liquidity that prices the token cannot be withdrawn.
+ *
+ * Checked on 27 Nov 2026: every graduated Pool Launch pool on BNB Chain passes, with 99.85% to 100% of its LP
+ * at the burn address. Any other pool is refused. Taking your own liquidity out is never blocked by any of this.
+ */
+export async function poolChecks(market: Market): Promise<PoolChecks> {
+  const quoteAsset = market.quote === "BNB" ? WBNB : USDT;
+  const [pairOwner, factoryPair, pool] = await Promise.all([
+    client.readContract({ address: market.pair, abi: pairFactoryAbi, functionName: "factory" }).catch(() => ZERO),
+    client.readContract({ address: PANCAKE_FACTORY, abi: factoryAbi, functionName: "getPair", args: [market.token, quoteAsset] }),
+    reserves(market.pair, market.token),
+  ]);
+  const official = lower(pairOwner) === lower(PANCAKE_FACTORY) && lower(factoryPair) === lower(market.pair);
+  const funded = pool.reserveToken > 0n && pool.reserveQuote > 0n;
+  const finish = (kind: PoolChecks["kind"], checks: Array<PoolCheck & { why: string }>): PoolChecks => {
+    const failed = checks.find((check) => !check.ok);
+    return { kind, items: checks.map(({ label, ok }) => ({ label, ok })), ok: !failed, reason: failed?.why ?? null };
+  };
+
+  if (MAJOR_ASSETS[lower(market.token)]) {
+    // The quote side in BNB: a USDT side is priced through PancakeSwap's BNB/USDT pool.
+    let quoteInBnb = pool.reserveQuote;
+    if (market.quote === "USDT") {
+      const bnbUsdt = await client.readContract({ address: PANCAKE_FACTORY, abi: factoryAbi, functionName: "getPair", args: [WBNB, USDT] });
+      const price = await reserves(bnbUsdt, WBNB);
+      quoteInBnb = price.reserveQuote === 0n ? 0n : (pool.reserveQuote * price.reserveToken) / price.reserveQuote;
+    }
+    const deep = quoteInBnb >= MIN_MAJOR_QUOTE_BNB;
+    return finish("major", [
+      { label: "Both assets are on PancakeSwap's own default token list", ok: true, why: "" },
+      { label: "PancakeSwap's own pool for this pair", ok: official, why: "This is not the pool PancakeSwap's factory holds for this pair." },
+      { label: "Holds liquidity now", ok: funded, why: "This pool holds no liquidity." },
+      {
+        label: `Established: ${(quoteInBnb / 10n ** 18n).toLocaleString("en")} BNB's worth on its quote side (at least 50 needed)`,
+        ok: deep,
+        why: "This pool is too shallow to count as an established one: under 50 BNB's worth on its quote side.",
+      },
+    ]);
+  }
+
+  const [indexed, lpSupply, atDead, atZero] = await Promise.all([
+    fetch(`/api/bsc/tokens?address=${lower(market.token)}`)
+      .then((response) => (response.ok ? (response.json() as Promise<{ items: Array<{ graduated: boolean; pool: string | null }> }>) : null))
+      .catch(() => null),
+    client.readContract({ address: market.pair, abi: erc20Abi, functionName: "totalSupply" }),
+    client.readContract({ address: market.pair, abi: erc20Abi, functionName: "balanceOf", args: [DEAD] }),
+    client.readContract({ address: market.pair, abi: erc20Abi, functionName: "balanceOf", args: [ZERO] }),
+  ]);
+  const row = indexed?.items[0] ?? null;
+  const recorded = typeof row?.pool === "string" && lower(row.pool) === lower(market.pair);
+  const burnedBps = lpSupply === 0n ? 0 : Number(((atDead + atZero) * BPS) / lpSupply);
+  return finish("flap", [
+    {
+      label: "Graduated on Flap's Pool Launch",
+      ok: row?.graduated === true,
+      why:
+        indexed === null
+          ? "This site's index could not be reached to confirm the token graduated on Flap."
+          : "This token is not a major asset and has not graduated on Flap's Pool Launch. Liquidity can only be added to graduated pools and to pools between major assets.",
+    },
+    { label: "PancakeSwap's own pool for this token, the one its launch recorded", ok: official && recorded, why: "This is not the PancakeSwap pool the token's launch recorded." },
+    { label: "Holds liquidity now", ok: funded, why: "This pool holds no liquidity." },
+    {
+      label: `${(burnedBps / 100).toFixed(2)}% of its LP is burned (at least 90% needed), so it cannot be pulled`,
+      ok: burnedBps >= MIN_BURNED_BPS,
+      why: `Only ${(burnedBps / 100).toFixed(1)}% of this pool's LP is burned, so most of its liquidity could be withdrawn. At least 90% must be burned.`,
+    },
+  ]);
 }

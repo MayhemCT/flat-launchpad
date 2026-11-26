@@ -573,3 +573,15 @@ h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
   .shell-desktop .nav a { padding: 0 9px; font-size: 14px; }
   .shell-desktop .topbar { gap: 12px; }
 }
+
+.pool-checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; font-size: 14px; }
+.pool-checks li { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 8px; color: var(--dim); }
+.pool-checks li::before { content: "…"; font-weight: 800; text-align: center; }
+.pool-checks li[data-ok="true"] { color: var(--ink); }
+.pool-checks li[data-ok="true"]::before { content: "✓"; color: var(--good); }
+.pool-checks li[data-ok="false"] { color: var(--ink); }
+.pool-checks li[data-ok="false"]::before { content: "✕"; color: var(--warn); }
+
+.pool-heading { margin: 8px 0 0; }
+/* The phone top bar holds the brand, the network and the wallet: the network's name gives way first. */
+.shell-mobile .topbar-end .pill-muted { max-width: 26vw; }

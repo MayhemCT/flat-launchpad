@@ -164,15 +164,6 @@ function WalletGate(): ReactNode {
 
 const RISK = "These contracts are new and have not been audited. Use only what you can afford to lose.";
 
-function Modes() {
-  return (
-    <nav className="seg seg-small" aria-label="Network" data-testid="launch-networks">
-      <a href="#/launch" aria-current="page">BNB Chain · PancakeSwap</a>
-      <a href="#/launch/testnet">Testnet · Flap Pool Launch</a>
-    </nav>
-  );
-}
-
 interface MintSummary {
   address: Address;
   name: string;
@@ -234,10 +225,7 @@ function LaunchHome() {
   return (
     <>
       <div className="page-head">
-        <div className="scope-head">
-          <h1 className="page-title">Launch</h1>
-          <Modes />
-        </div>
+        <h1 className="page-title">Launch</h1>
         <p className="lede">
           Sell NFT passes at a flat price. The mint that reaches the cap creates the token and puts the whole raise, with the pool's share of
           the supply, into a PancakeSwap pool. The pool's LP tokens are burned, and every pass claims an equal share of the rest.

@@ -193,10 +193,6 @@ function MintList({ mobile }: { mobile: boolean }) {
 function RaidPassHome({ mobile }: { mobile: boolean }) {
   return (
     <>
-      <nav className="seg seg-small" aria-label="Network" data-testid="launch-networks">
-        <a href="#/launch">BNB Chain · PancakeSwap</a>
-        <a href="#/launch/testnet" aria-current="page">Testnet · Flap Pool Launch</a>
-      </nav>
       <section className="hero">
         <p className="eyebrow">Our launchpad · {NETWORK.label}</p>
         <h1>The presale is an <span className="accent">NFT mint.</span></h1>

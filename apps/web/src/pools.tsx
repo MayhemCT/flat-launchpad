@@ -11,11 +11,14 @@ import {
   TradeError,
   addLiquidity,
   loadMarket,
+  majorPools,
+  poolChecks,
   poolPosition,
   poolSummaries,
   removeLiquidity,
   tokensFor,
   type Market,
+  type PoolChecks,
   type PoolPosition,
   type PoolSummary,
   type TradeStep,
@@ -32,7 +35,7 @@ const STEP_TEXT: Record<TradeStep, string> = {
   pending: "Waiting for confirmation…",
 };
 
-export type PoolsRoute = { name: "pools" } | { name: "pool"; address: string };
+export type PoolsRoute = { name: "pools" } | { name: "pool"; address: string; quote?: "BNB" | "USDT" };
 
 const graduatedRows = (page: Page<TokenRow>) => page.items.filter((token) => token.graduated && token.pool);
 
@@ -40,7 +43,19 @@ function PoolsList() {
   const indexed = useApi<Page<TokenRow>>("bsc", "tokens?limit=200", 60_000);
   const rows = useMemo(() => (indexed.state === "ready" ? graduatedRows(indexed.data) : null), [indexed]);
   const [pools, setPools] = useState<PoolSummary[] | null>(null);
+  const [majors, setMajors] = useState<Array<PoolSummary & { symbol: string }> | null>(null);
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    const load = () => majorPools().then((next) => current && setMajors(next), () => undefined);
+    void load();
+    const timer = window.setInterval(load, 60_000);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!rows) return;
@@ -65,10 +80,11 @@ function PoolsList() {
       <div className="page-head">
         <h1 className="page-title">Pools</h1>
         <p className="lede">
-          The PancakeSwap pools of the tokens that graduated on Flap, deepest first. Add liquidity to one to earn its trading fees, and take it
-          out whenever you like.
+          The PancakeSwap pools of the tokens that graduated on Flap, and PancakeSwap's major pairs. Add liquidity to one to earn its trading
+          fees, and take it out whenever you like. Only pools that pass the checks on their page can be added to.
         </p>
       </div>
+      <h2 className="pool-heading">Graduated on Flap <span className="dim">{pools ? pools.length : ""}</span></h2>
       {(indexed.state === "loading" || (rows && pools === null && !failed)) && <p className="note" role="status">Reading the pools from BNB Chain…</p>}
       {(indexed.state === "error" || (failed && pools === null)) && <p className="note" role="alert">The pools could not be read. Reload to try again.</p>}
       {pools !== null && pools.length === 0 && <p className="note" data-testid="pools-empty">No token has graduated on Flap's Pool Launch here yet.</p>}
@@ -100,8 +116,33 @@ function PoolsList() {
           })}
         </ul>
       )}
+      <h2 className="pool-heading">Major PancakeSwap pairs <span className="dim">{majors ? majors.length : ""}</span></h2>
+      {majors === null && <p className="note" role="status">Reading PancakeSwap's major pairs…</p>}
+      {majors !== null && (
+        <ul className="cards pool-cards" data-testid="major-pools">
+          {majors.map((pool) => (
+            <li key={pool.pair}>
+              <a className="card pool-card" href={`#/pool/${pool.token.toLowerCase()}/${pool.quote.toLowerCase()}`}>
+                <span className="pool-pair">
+                  <TokenImage image={null} label={pool.symbol} colour="var(--gold)" size={44} />
+                  <span>
+                    <strong>{pool.symbol} / {pool.quote}</strong>
+                    <span className="dim">PancakeSwap V2</span>
+                  </span>
+                </span>
+                <span className="pool-figures">
+                  <span className="tag tag-gold">Major pair</span>
+                  <span className="num">{amount(pool.reserveQuote, 2)} {pool.quote} + {amount(pool.reserveToken, 2)} {pool.symbol}</span>
+                  <span className="num dim">≈ {amount(pool.liquidityBnb, 0)} BNB of liquidity</span>
+                </span>
+                <span className="pool-go">Add liquidity →</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
       <p className="scope-source dim">
-        Pools are PancakeSwap V2 pairs, read from BNB Chain. Adding liquidity puts in both the token and BNB (or USDT) at the pool's price and
+        Pools are PancakeSwap V2 pairs, read from BNB Chain. Major pairs are between BNB and the assets on PancakeSwap's own default token list. Adding liquidity puts in both the token and BNB (or USDT) at the pool's price and
         gives you LP tokens; the value of what they return moves with the price. CallZ adds no fee and never holds your funds.
       </p>
     </>
@@ -116,7 +157,7 @@ interface Outcome {
   hash?: Hex;
 }
 
-function LiquidityPanel({ market, position, reload }: { market: Market; position: PoolPosition | null; reload(): void }) {
+function LiquidityPanel({ market, position, checks, reload }: { market: Market; position: PoolPosition | null; checks: PoolChecks | null; reload(): void }) {
   const wallet = useWallet();
   const account = wallet.account;
   const [side, setSide] = useState<Side>("add");
@@ -140,8 +181,12 @@ function LiquidityPanel({ market, position, reload }: { market: Market; position
   const out = side === "remove" && value !== null && position && position.lpSupply > 0n
     ? { token: (position.reserveToken * value) / position.lpSupply, quote: (position.reserveQuote * value) / position.lpSupply }
     : null;
+  // Adding waits for the pool's checks, and stays closed when one fails. Taking liquidity out is never blocked.
+  const closed = side === "add" && checks !== null && !checks.ok;
   let problem: string | null = null;
-  if (position && value !== null && account) {
+  if (side === "add" && checks === null) problem = "Checking the pool…";
+  else if (closed) problem = "Adding is closed for this pool";
+  else if (position && value !== null && account) {
     if (side === "add" && value > position.quoteBalance) problem = `Not enough ${market.quote}`;
     else if (side === "add" && tokensIn !== null && tokensIn > position.tokenBalance) problem = `Not enough ${symbol}`;
     else if (side === "remove" && value > position.lpBalance) problem = "More than your LP tokens";
@@ -187,6 +232,8 @@ function LiquidityPanel({ market, position, reload }: { market: Market; position
         <button type="button" aria-pressed={side === "add"} onClick={() => { setSide("add"); setText(""); setOutcome(null); }}>Add</button>
         <button type="button" aria-pressed={side === "remove"} onClick={() => { setSide("remove"); setText(""); setOutcome(null); }}>Remove</button>
       </div>
+
+      {closed && <p className="trade-outcome trade-error" role="alert" data-testid="liquidity-closed"><strong>Adding liquidity is closed here.</strong> {checks?.reason}</p>}
 
       <label className="trade-amount">
         <span className="stat-label">{side === "add" ? `${market.quote} to put in` : "LP tokens to take out"}</span>
@@ -249,7 +296,7 @@ function LiquidityPanel({ market, position, reload }: { market: Market; position
   );
 }
 
-function PoolPage({ address }: { address: string }) {
+function PoolPage({ address, quote }: { address: string; quote?: "BNB" | "USDT" }) {
   const token = address as Address;
   const wallet = useWallet();
   const account = wallet.account;
@@ -257,17 +304,20 @@ function PoolPage({ address }: { address: string }) {
   const row = indexed.state === "ready" ? indexed.data.items[0] ?? null : null;
   const [market, setMarket] = useState<Market | null>(null);
   const [position, setPosition] = useState<PoolPosition | null>(null);
+  const [checks, setChecks] = useState<PoolChecks | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
-    loadMarket(token)
+    loadMarket(token, quote)
       .then(async (next) => {
         setMarket(next);
-        setPosition(await poolPosition(next, account));
+        const [nextPosition, nextChecks] = await Promise.all([poolPosition(next, account), poolChecks(next)]);
+        setPosition(nextPosition);
+        setChecks(nextChecks);
         setError(null);
       })
       .catch((cause) => setError(cause instanceof TradeError ? cause.message : "BNB Chain could not be reached. Reload to try again."));
-  }, [token, account]);
+  }, [token, quote, account]);
   useEffect(() => {
     reload();
     const timer = window.setInterval(reload, 15_000);
@@ -310,8 +360,13 @@ function PoolPage({ address }: { address: string }) {
             <div><dt>Buy / sell tax</dt><dd className="num">{market.buyTaxBps / 100}% / {market.sellTaxBps / 100}%</dd></div>
           </dl>
           <div className="pool-grid">
-            <LiquidityPanel market={market} position={position} reload={reload} />
+            <LiquidityPanel market={market} position={position} checks={checks} reload={reload} />
             <section className="token-about">
+              <h2>Pool checks</h2>
+              <ul className="pool-checks" data-testid="pool-checks">
+                {checks ? checks.items.map((check) => <li key={check.label} data-ok={check.ok}>{check.label}</li>) : <li>Checking the pool…</li>}
+              </ul>
+              <p className="dim token-source">Liquidity can be added only when every check passes. These are read from BNB Chain and this site's index, not taken from the page's address. Taking your own liquidity out is never blocked.</p>
               <h2>How this works</h2>
               <p className="token-description">
                 Adding liquidity puts {market.quote} and {symbol} into the pool in the pool's own ratio, and gives you LP tokens for your share.
@@ -331,5 +386,5 @@ function PoolPage({ address }: { address: string }) {
 }
 
 export default function PoolsSection({ route }: { route: PoolsRoute }) {
-  return route.name === "pool" ? <PoolPage key={route.address} address={route.address} /> : <PoolsList />;
+  return route.name === "pool" ? <PoolPage key={`${route.address}-${route.quote ?? ""}`} address={route.address} quote={route.quote} /> : <PoolsList />;
 }

@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { DeployersPage, FactoriesPage, HomePage, LaunchesPage, TokensPage } from "./aggregator";
 import { short } from "./format";
-import { RAIDPASS, SITES, type ChainKey, type Site } from "./site";
+import { RAIDPASS, SITES, type Site } from "./site";
 import { connect, switchChain, useWallet } from "./wallet";
 import { ScopePage } from "./scope";
 import type { PancakeRoute } from "./pancake";
@@ -36,15 +36,16 @@ function parseRoute(hash: string): Route {
   if (path === "/scope" || path === "/launches" || path === "/tokens" || path === "/factories" || path === "/deployers") {
     return { name: path.slice(1) as AggregatorRoute["name"] };
   }
-  // The launchpad: BNB Chain (PancakeSwap) by default, and the Flap Pool Launch one on testnet.
+  // The launchpad is on BNB Chain. The Flap Pool Launch one on testnet is kept for the hackathon's testnet run:
+  // it is reachable by its address and linked from nowhere.
   if (path === "/launch") return { name: "launch" };
   if (path === "/launch/create") return { name: "launch-create" };
   if (path === "/launch/testnet" || path === "/raidpass") return { name: "raidpass" };
   const mint = /^\/mint\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (mint?.[1]) return { name: "mint", address: mint[1].toLowerCase() };
   if (path === "/pools") return { name: "pools" };
-  const pool = /^\/pool\/(0x[0-9a-fA-F]{40})$/.exec(path);
-  if (pool?.[1]) return { name: "pool", address: pool[1].toLowerCase() };
+  const pool = /^\/pool\/(0x[0-9a-fA-F]{40})(?:\/(bnb|usdt))?$/.exec(path);
+  if (pool?.[1]) return { name: "pool", address: pool[1].toLowerCase(), ...(pool[2] ? { quote: pool[2] === "usdt" ? ("USDT" as const) : ("BNB" as const) } : {}) };
   const pop = /^\/pop\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (pop?.[1]) return { name: "pop", address: pop[1].toLowerCase() };
   const token = /^\/token\/(0x[0-9a-fA-F]{40})$/.exec(path);
@@ -177,17 +178,6 @@ function WalletMenu({ account, chainId, unit }: { account: `0x${string}`; chainI
   );
 }
 
-/** Which chain the aggregator shows. The launchpad pages are always on RaidPass's own network. */
-function ChainSwitch({ chain, onChange }: { chain: ChainKey; onChange(next: ChainKey): void }) {
-  return (
-    <div className="seg seg-small" role="group" aria-label="Network" data-testid="chain-switch">
-      {(Object.keys(SITES) as ChainKey[]).map((key) => (
-        <button key={key} type="button" aria-pressed={chain === key} onClick={() => onChange(key)}>{SITES[key].short}</button>
-      ))}
-    </div>
-  );
-}
-
 function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange(next: Locale): void }) {
   return (
     <label className="locale">
@@ -210,7 +200,7 @@ const NAV: ReadonlyArray<{ href: string; label: string; short?: string; wide?: b
   { href: "#/launch", label: "Launch", routes: ["launch", "launch-create", "mint", "raidpass", "create", "launcher"] },
 ];
 
-/** What a page works with: the index for either network, the testnet launchpad's own network, or BNB Chain itself. */
+/** What a page works with: the index, the unlinked testnet launchpad's own network, or the chain itself. All but that one are on BNB Chain. */
 type Mode = "board" | "launchpad" | "token";
 
 const isMainnetPage = (route: Route): route is PancakeRoute | PoolsRoute | { name: "token"; address: string } =>
@@ -219,8 +209,6 @@ const isMainnetPage = (route: Route): route is PancakeRoute | PoolsRoute | { nam
 interface ShellProps {
   route: Route;
   mode: Mode;
-  chain: ChainKey;
-  onChain(next: ChainKey): void;
   locale: Locale;
   onLocale(next: Locale): void;
   children: ReactNode;
@@ -238,21 +226,19 @@ function NavLinks({ route, compact = false }: { route: Route; compact?: boolean 
   );
 }
 
-/** The board picks its chain; the launchpad shows the one network it runs on and its language; a token page is on mainnet. */
-function Controls({ mode, chain, onChain, locale, onLocale }: Omit<ShellProps, "route" | "children">) {
-  if (mode === "token") return <span className="pill pill-muted">{SITES.bsc.label}</span>;
-  return mode === "launchpad" ? (
+/** The network the page is on, and on the Flap launch page the language of its launch UI. */
+function Controls({ mode, locale, onLocale }: Omit<ShellProps, "route" | "children">) {
+  if (mode !== "launchpad") return <span className="pill pill-muted">{SITES.bsc.label}</span>;
+  return (
     <>
       <span className="pill pill-muted">{RAIDPASS.short}</span>
       <LocaleSwitch locale={locale} onChange={onLocale} />
     </>
-  ) : (
-    <ChainSwitch chain={chain} onChange={onChain} />
   );
 }
 
 /** The network a page's wallet button checks for. */
-const walletTarget = (mode: Mode, chain: ChainKey): Site => (mode === "launchpad" ? RAIDPASS : mode === "token" ? SITES.bsc : SITES[chain]);
+const walletTarget = (mode: Mode): Site => (mode === "launchpad" ? RAIDPASS : SITES.bsc);
 
 function DesktopShell({ route, children, ...controls }: ShellProps) {
   return (
@@ -262,7 +248,7 @@ function DesktopShell({ route, children, ...controls }: ShellProps) {
         <nav className="nav" aria-label="Main" data-testid="desktop-nav"><NavLinks route={route} /></nav>
         <div className="topbar-end">
           <Controls {...controls} />
-          <WalletButton target={walletTarget(controls.mode, controls.chain)} />
+          <WalletButton target={walletTarget(controls.mode)} />
         </div>
       </header>
       <main className="content">{children}</main>
@@ -277,7 +263,7 @@ function MobileShell({ route, children, ...controls }: ShellProps) {
         <a className="brand" href="#/"><img src="/callz-logo.svg" alt="" width="28" height="28" />CallZ</a>
         <div className="topbar-end">
           <Controls {...controls} />
-          {controls.mode !== "board" && <WalletButton target={walletTarget(controls.mode, controls.chain)} />}
+          <WalletButton target={walletTarget(controls.mode)} />
         </div>
       </header>
       <main className="content">{children}</main>
@@ -293,8 +279,7 @@ export function App() {
   const route = useRoute();
   const mobile = useIsMobile();
   const [locale, setLocale] = useState<Locale>("en");
-  const [chain, setChain] = useState<ChainKey>("bsc");
-  const site = SITES[chain];
+  const site = SITES.bsc;
   const Shell = mobile ? MobileShell : DesktopShell;
 
   // A pop-out window is only the chart and the chat: no navigation, no background scene.
@@ -309,7 +294,7 @@ export function App() {
   return (
     <>
       <Backdrop />
-      <Shell route={route} mode={isLaunchpad(route) ? "launchpad" : isMainnetPage(route) ? "token" : "board"} chain={chain} onChain={setChain} locale={locale} onLocale={setLocale}>
+      <Shell route={route} mode={isLaunchpad(route) ? "launchpad" : isMainnetPage(route) ? "token" : "board"} locale={locale} onLocale={setLocale}>
         {route.name === "home" && <HomePage site={site} mobile={mobile} />}
         {route.name === "scope" && <ScopePage site={site} mobile={mobile} />}
         {route.name === "launches" && <LaunchesPage site={site} mobile={mobile} />}

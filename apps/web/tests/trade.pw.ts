@@ -15,6 +15,8 @@ const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 // Two tokens launched through Pool Launch: one pooled against BNB, one against USDT.
 const BNB_POOLED = "0x7c45614b3449cf2603262b3854c75a67d1517777";
 const USDT_POOLED = "0x4d1fc29de06b7a39bbec1a3468104802d3277777";
+// A token that graduated on Pool Launch, pooled against BNB, with its launch LP burned. BNB_POOLED above has not graduated.
+const GRADUATED = "0xc6d357ac5316160c23c02ad0b87357719b8c7777";
 
 test.skip(!RPC, "set TRADE_RPC_URL to a local fork of BNB Chain");
 test.setTimeout(180_000);
@@ -125,10 +127,12 @@ test("add liquidity to a graduated Flap pool, then take it out again", async ({ 
   await expect(page.getByTestId("pool-list").locator("li").first()).toBeVisible({ timeout: 60_000 });
 
   // Liquidity takes both sides of the pool, so buy some of the token first.
-  await buy(page, BNB_POOLED, "0.2");
-  await page.goto(`/#/pool/${BNB_POOLED}`);
+  await buy(page, GRADUATED, "0.2");
+  await page.goto(`/#/pool/${GRADUATED}`);
   const panel = page.getByTestId("liquidity-panel");
   await expect(panel).toBeVisible({ timeout: 30_000 });
+  // All four pool checks pass before anything can be added.
+  await expect(page.getByTestId("pool-checks").locator("li[data-ok=true]")).toHaveCount(4, { timeout: 30_000 });
   await panel.locator("input[name=amount]").fill("0.05");
   await expect(panel.locator(".trade-quote dd").first()).not.toHaveText("—", { timeout: 30_000 });
   await panel.locator("button.trade-go").click();
@@ -140,6 +144,38 @@ test("add liquidity to a graduated Flap pool, then take it out again", async ({ 
   await expect(panel.locator(".trade-quote dd").first()).toContainText("BNB", { timeout: 30_000 });
   await panel.locator("button.trade-go").click();
   await expect(panel.getByText("Liquidity removed.")).toBeVisible({ timeout: 120_000 });
+});
+
+test("add liquidity to a major PancakeSwap pair, USDT/BNB, then take it out again", async ({ page }) => {
+  await useForkWallet(page);
+  await page.goto("/#/pools");
+  await expect(page.getByTestId("major-pools").locator("li").first()).toBeVisible({ timeout: 60_000 });
+
+  // Both sides are needed: buy some USDT with BNB first.
+  await buy(page, "0x55d398326f99059ff775485246999027b3197955", "0.2");
+  await page.goto("/#/pool/0x55d398326f99059ff775485246999027b3197955/bnb");
+  const panel = page.getByTestId("liquidity-panel");
+  await expect(page.getByTestId("pool-checks").locator("li[data-ok=true]")).toHaveCount(4, { timeout: 30_000 });
+  await panel.locator("input[name=amount]").fill("0.05");
+  await expect(panel.locator(".trade-quote dd").first()).toContainText("USDT", { timeout: 30_000 });
+  await panel.locator("button.trade-go").click();
+  await expect(panel.getByText("Liquidity added.")).toBeVisible({ timeout: 120_000 });
+
+  await panel.getByRole("button", { name: "Remove", exact: true }).click();
+  await panel.getByRole("button", { name: "100%" }).click();
+  await expect(panel.locator(".trade-quote dd").first()).toContainText("BNB", { timeout: 30_000 });
+  await panel.locator("button.trade-go").click();
+  await expect(panel.getByText("Liquidity removed.")).toBeVisible({ timeout: 120_000 });
+});
+
+test("adding liquidity is closed for a pool that has not graduated", async ({ page }) => {
+  await useForkWallet(page);
+  await page.goto(`/#/pool/${BNB_POOLED}`);
+  const panel = page.getByTestId("liquidity-panel");
+  await expect(page.getByTestId("liquidity-closed")).toContainText("has not graduated", { timeout: 30_000 });
+  await panel.locator("input[name=amount]").fill("0.05");
+  await expect(panel.locator("button.trade-go")).toBeDisabled();
+  await expect(page.getByTestId("pool-checks").locator("li[data-ok=false]").first()).toContainText("Graduated");
 });
 
 test("one-click buy from the Memescope board", async ({ page }) => {
