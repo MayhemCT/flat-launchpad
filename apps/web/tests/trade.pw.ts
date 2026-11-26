@@ -93,6 +93,18 @@ test("a buy the pool cannot fill is refused before the wallet opens", async ({ p
   await expect(panel.locator("button.trade-go")).toContainText("Not enough BNB");
 });
 
+test("post a signed message in a token's chat", async ({ page }) => {
+  await useForkWallet(page);
+  await page.goto(`/#/token/${BNB_POOLED}`);
+  const chat = page.getByTestId("token-chat");
+  await expect(chat).toBeVisible({ timeout: 30_000 });
+  const text = `fork test ${Date.now()}`;
+  await chat.locator("input").fill(text);
+  await chat.getByRole("button", { name: "Send" }).click();
+  // The wallet signs the message, the server checks the signature, and it shows up in the room.
+  await expect(chat.locator(".chat-message").filter({ hasText: text })).toBeVisible({ timeout: 30_000 });
+});
+
 test("one-click buy from the Memescope board", async ({ page }) => {
   await useForkWallet(page);
   await page.goto("/#/scope");
@@ -107,5 +119,7 @@ test("one-click buy from the Memescope board", async ({ page }) => {
   // After that it is one click.
   await button.click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.locator(".toast-done")).toHaveCount(2, { timeout: 90_000 });
+  // A second buy right after the first is the case a bare gas estimate ran out of gas on.
+  await expect(page.locator(".toast").last()).toContainText("Bought.", { timeout: 90_000 });
+  await expect(page.locator(".toast-error")).toHaveCount(0);
 });

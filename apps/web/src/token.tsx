@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { formatUnits, parseUnits, type Address, type Hex } from "viem";
 import { useApi, type Page, type TokenRow } from "./api";
+import { TokenChat } from "./chat";
 import { chartEmbedUrl, dexPaidStatus, pairLinks, pairPageUrl, tokenPairs, venueName, type DsPair, type TokenLink } from "./dexscreener";
 import { ago, amount, short, usd } from "./format";
 import { platformOf } from "./platform";
@@ -326,7 +327,8 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
   const change = pair?.priceChange?.h24;
   const trades = pair?.txns?.h24;
   const chartId = pair?.pairAddress ?? market?.pair ?? null;
-  const chartHeight = mobile ? 380 : 480;
+  // The frame holds the chart and, under it, the pool's own trades as DexScreener lists them.
+  const chartHeight = mobile ? 720 : 860;
 
   const copy = () => {
     void navigator.clipboard?.writeText(token).then(() => {
@@ -369,9 +371,10 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
       </dl>
 
       <div className="token-grid">
-        <section className="token-chart" aria-label="Price chart">
+        <div className="token-main">
+        <section className="token-chart" aria-label="Price chart and trades">
           <div className="token-chart-head">
-            <h2>Chart</h2>
+            <h2>Chart and trades</h2>
             <div className="seg seg-small" role="group" aria-label="Chart interval">
               {INTERVALS.map(({ id, label }) => (
                 <button key={id} type="button" aria-pressed={interval === id} onClick={() => setIntervalId(id)}>{label}</button>
@@ -383,7 +386,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
               <iframe
                 key={`${chartId}-${interval}`}
                 title={`${symbol || "Token"} price chart`}
-                src={chartEmbedUrl(chartId, interval)}
+                src={chartEmbedUrl(chartId, interval, true)}
                 style={{ height: chartHeight + FOOTER_CROP }}
                 referrerPolicy="no-referrer"
                 sandbox="allow-scripts allow-same-origin"
@@ -394,6 +397,8 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
             <p className="token-nochart dim">{pairs === null && loading ? "Loading the chart…" : "No pool yet. The chart appears once this token has a PancakeSwap pool."}</p>
           )}
         </section>
+        <TokenChat chain="bsc" token={token} />
+        </div>
 
         <aside className="token-side">
           <TradePanel market={market} error={error} loading={loading} onTraded={reload} />

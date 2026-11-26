@@ -1,0 +1,44 @@
+/* ── Token chat ─────────────────────────────────────────────────────────── */
+
+.chat-panel {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; max-width: 100%; padding: 14px;
+  border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+.chat-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.chat-head h2 { margin: 0; font-size: 16px; }
+
+/* The room scrolls on its own, so a long conversation never pushes the composer off the screen. */
+.chat-list {
+  max-height: 360px; min-width: 0; overflow-x: hidden; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+}
+.chat-list:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.chat-messages { margin: 0; padding: 0; list-style: none; }
+.chat-message {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+.chat-message:last-child { border-bottom: 0; }
+.chat-meta { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+.chat-author { font-family: var(--mono); color: var(--gold); white-space: nowrap; }
+.chat-message[data-own="true"] .chat-author { color: var(--good); }
+.chat-time { color: var(--dim); white-space: nowrap; }
+/* A message is plain text. A long unbroken run of characters wraps rather than widening the page. */
+.chat-body { min-width: 0; font-size: 14.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.chat-empty { margin: 0; padding: 32px 16px; text-align: center; color: var(--dim); font-size: 14px; }
+
+.chat-form { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-input { flex: 1 1 0; min-width: 0; }
+/* 16px: a smaller input makes iOS zoom the page in when it takes focus. */
+.chat-input input {
+  width: 100%; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  color: var(--ink); font: inherit; font-size: 16px;
+}
+.chat-input input::placeholder { color: var(--dim); }
+.chat-input input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.chat-send { flex: none; min-height: 44px; }
+.chat-connect { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.chat-hint { color: var(--dim); font-size: 13px; }
+
+.chat-error { margin: 0; color: var(--warn); font-size: 13.5px; overflow-wrap: anywhere; }
+.chat-notice { margin: 0; color: var(--dim); font-size: 12.5px; }

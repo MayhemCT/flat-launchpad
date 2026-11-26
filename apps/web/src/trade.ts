@@ -9,7 +9,10 @@
  *    signs for is what will really arrive.
  * 3. Simulates the exact transaction before the wallet opens. If the price moved in between, it prices and
  *    simulates once more. A trade the chain would reject is never sent.
- * 4. Sends it through the router's fee-on-transfer swap, and follows it to a definite outcome.
+ * 4. Sends it through the router's fee-on-transfer swap with gas to spare, and follows it to a definite outcome.
+ *    A tax token does different amounts of work from one transfer to the next (it sells its collected tax every
+ *    so often), and a gas estimate taken a moment earlier can fall short of that: on a fork, a buy sent with the
+ *    bare estimate ran out of gas. So each trade carries half as much gas again; what is not used is not paid for.
  *
  * This site adds no fee and never holds funds: the only contracts called are PancakeSwap's router and, for a
  * sell, the token's own `approve` for the exact amount being sold.
@@ -109,6 +112,9 @@ export class TradeError extends Error {
 }
 
 export type TradeStep = "pricing" | "approving" | "checking" | "confirm" | "pending";
+
+/** The gas limit a trade is sent with: the estimate, half as much again, and a fixed margin. Unused gas costs nothing. */
+const withHeadroom = (estimate: bigint) => (estimate * 3n) / 2n + 60_000n;
 
 const lower = (address: string) => address.toLowerCase();
 const afterTax = (amount: bigint, taxBps: number) => (amount * (BPS - BigInt(taxBps))) / BPS;
@@ -272,16 +278,25 @@ export async function buy({ market, account, amountIn, slippageBps, onStep }: Tr
       if (quote.amountOut === 0n) throw new TradeError("NO_POOL", "Amount too small", "This amount buys nothing at the current price. Nothing was sent.");
       onStep?.("checking");
       try {
+        const args = [withSlippage(quote.amountOut, slippageBps), market.path, account, await deadline()] as const;
         const { request } = await client.simulateContract({
           account,
           address: PANCAKE_ROUTER,
           abi: routerAbi,
           functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
-          args: [withSlippage(quote.amountOut, slippageBps), market.path, account, await deadline()],
+          args,
+          value: amountIn,
+        });
+        const gas = await client.estimateContractGas({
+          account,
+          address: PANCAKE_ROUTER,
+          abi: routerAbi,
+          functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
+          args,
           value: amountIn,
         });
         onStep?.("confirm");
-        hash = await signer.writeContract(request);
+        hash = await signer.writeContract({ ...request, gas: withHeadroom(gas) });
         onStep?.("pending", hash);
         return { hash: await settle(hash), quote };
       } catch (error) {
@@ -316,15 +331,23 @@ export async function sell({ market, account, amountIn, slippageBps, onStep }: T
       if (quote.amountOut === 0n) throw new TradeError("NO_POOL", "Amount too small", "This amount returns nothing at the current price. Nothing was sent.");
       onStep?.("checking");
       try {
+        const args = [amountIn, withSlippage(quote.amountOut, slippageBps), path, account, await deadline()] as const;
         const { request } = await client.simulateContract({
           account,
           address: PANCAKE_ROUTER,
           abi: routerAbi,
           functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
-          args: [amountIn, withSlippage(quote.amountOut, slippageBps), path, account, await deadline()],
+          args,
+        });
+        const gas = await client.estimateContractGas({
+          account,
+          address: PANCAKE_ROUTER,
+          abi: routerAbi,
+          functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
+          args,
         });
         onStep?.("confirm");
-        hash = await signer.writeContract(request);
+        hash = await signer.writeContract({ ...request, gas: withHeadroom(gas) });
         onStep?.("pending", hash);
         return { hash: await settle(hash), quote };
       } catch (error) {

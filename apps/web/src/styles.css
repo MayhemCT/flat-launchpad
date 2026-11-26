@@ -472,3 +472,6 @@ h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
 .mint-panel { max-width: 560px; }
 .mint-panel h2 { margin: 0; font-size: 18px; }
 .trade-working { border-color: color-mix(in srgb, var(--gold) 50%, transparent); }
+
+/* The chart with the token's chat room under it. */
+.token-main { display: grid; gap: 14px; min-width: 0; grid-template-columns: minmax(0, 1fr); }

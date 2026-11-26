@@ -1,5 +1,6 @@
 import { CHAINS, type ChainKey } from '@flat/protocol'
 import { handleApi } from './api.js'
+import { handleChat } from './chat.js'
 import { handleImage, handleMeta } from './image.js'
 import { Budget, syncChain } from './sync.js'
 
@@ -61,6 +62,7 @@ export default {
     const url = new URL(request.url)
     if (url.pathname.startsWith('/api/image/')) return handleImage(request, ctx)
     if (url.pathname.startsWith('/api/meta/')) return handleMeta(request, ctx)
+    if (url.pathname.startsWith('/api/chat/')) return handleChat(request, env.DB)
     if (url.pathname.startsWith('/api/')) return handleApi(request, env.DB)
     return env.ASSETS.fetch(request)
   },
