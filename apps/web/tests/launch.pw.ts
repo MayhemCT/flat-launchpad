@@ -44,14 +44,14 @@ test("deploy the factory, create a mint, mint to the cap, launch, claim and trad
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
 
-  // On a fresh fork the factory does not exist: the page deploys it with one transaction.
+  // On a fresh fork CallZ's contracts do not exist: the page deploys the vault, the router and the factory.
   await page.goto("/#/launch");
-  const deploy = page.getByRole("button", { name: "Deploy the factory" });
+  const deploy = page.getByRole("button", { name: /^Deploy \d contracts?$/ });
   const create = page.getByRole("link", { name: "Create a mint" });
   await expect(deploy.or(create)).toBeVisible({ timeout: 30_000 });
   if (await deploy.isVisible()) {
     await deploy.click();
-    await expect(create).toBeVisible({ timeout: 120_000 });
+    await expect(create).toBeVisible({ timeout: 240_000 });
   }
 
   // Create: 0.5 BNB a pass, cap 1 BNB, so two passes; half the supply into the pool.
@@ -64,6 +64,9 @@ test("deploy the factory, create a mint, mint to the cap, launch, claim and trad
   await form.locator("input[name=hours]").fill("1");
   await form.locator("input[name=poolShare]").fill("50");
   await expect(page.getByTestId("pancake-summary")).toContainText("250,000,000");
+  // The launch fee is named before the mint is created: 10% of the 1 BNB raise, the rest into the pool.
+  await expect(page.getByTestId("pancake-summary")).toContainText("10% of the raise · 0.1 BNB");
+  await expect(page.getByTestId("pancake-summary")).toContainText("0.9 BNB + 50% of supply");
   await form.getByRole("button", { name: "Create the mint" }).click();
   await expect(page).toHaveURL(/#\/mint\/0x[0-9a-f]{40}$/, { timeout: 120_000 });
 
@@ -74,6 +77,7 @@ test("deploy the factory, create a mint, mint to the cap, launch, claim and trad
   await panel.getByRole("button", { name: "Mint 2 passes" }).click();
   await expect(page.getByTestId("mint-status")).toHaveText("Launched", { timeout: 120_000 });
   await expect(page.getByTestId("mint-stats")).toContainText("2 / 2");
+  await expect(page.getByTestId("mint-stats")).toContainText("10% of the raise");
 
   // Claim: two passes share half of a 1,000,000,000 supply.
   await expect(panel).toContainText("500M", { timeout: 30_000 });

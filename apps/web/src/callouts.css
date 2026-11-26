@@ -1,0 +1,82 @@
+/* ── Callouts ───────────────────────────────────────────────────────────── */
+
+.callouts-panel {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; max-width: 100%; padding: 14px;
+  border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+.callouts-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; }
+.callouts-head h2 { margin: 0; font-size: 16px; }
+.callouts-help { margin: 0; color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
+
+/* The link gets a row of its own: it is long. The note and the button share the next one. */
+.callouts-form { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.callouts-input { flex: 1 1 100%; min-width: 0; }
+/* Where the two do not fit side by side, the button takes a row of its own and fills it. */
+.callouts-input + .callouts-input { flex: 999 1 150px; }
+.callouts-form .callouts-post { flex: 1 0 auto; }
+/* 16px: a smaller input makes iOS zoom the page in when it takes focus. */
+.callouts-input input {
+  width: 100%; min-width: 0; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  color: var(--ink); font: inherit; font-size: 16px;
+}
+.callouts-input input::placeholder { color: var(--dim); }
+.callouts-input input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.callouts-post { min-height: 44px; }
+.callouts-connect { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+
+.callouts-error { margin: 0; color: var(--warn); font-size: 13.5px; overflow-wrap: anywhere; }
+.callouts-notice { margin: 0; color: var(--dim); font-size: 12.5px; }
+.callouts-empty {
+  margin: 0; padding: 24px 16px; text-align: center; color: var(--dim); font-size: 14px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+}
+
+.callouts-list { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.callout-card {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+}
+.callout-card[data-own="true"] { border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); }
+.callout-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; font-size: 12px; }
+.callout-site {
+  --tone: var(--ink); display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; font-weight: 700; white-space: nowrap;
+  color: var(--tone); background: color-mix(in srgb, var(--tone) 12%, transparent); border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent);
+}
+.callout-site[data-kind="1"] { --tone: #86efac; }
+.callout-site[data-kind="2"] { --tone: #f0b90b; }
+.callout-author { font-family: var(--mono); color: var(--gold); white-space: nowrap; }
+.callout-card[data-own="true"] .callout-author { color: var(--good); }
+.callout-time { color: var(--dim); white-space: nowrap; }
+/* The status sits at the end of the row, and drops to the next one when the row is full. */
+.callout-status {
+  --tone: var(--dim); margin-left: auto; display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 12px; font-weight: 700;
+  white-space: nowrap; color: var(--tone); border: 1px solid color-mix(in srgb, var(--tone) 55%, transparent);
+}
+.callout-status[data-status="approved"] { --tone: var(--gold); }
+.callout-status[data-status="counted"] { --tone: var(--good); }
+.callout-status[data-status="expired"] { --tone: var(--warn); }
+/* A note is plain text. A long unbroken run of characters wraps rather than widening the page. */
+.callout-note { margin: 0; min-width: 0; font-size: 14.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.callout-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.callout-open {
+  display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px;
+  font-size: 13px; font-weight: 600; text-decoration: none; overflow-wrap: anywhere;
+}
+.callout-open:hover { border-color: var(--gold); color: var(--gold); }
+.callout-record { min-height: 44px; padding: 0 14px; font-size: 14px; }
+.callout-hint { margin: 0; color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
+
+/* On a phone the callouts follow the chat, ahead of the token's description. */
+.shell-mobile .callouts-panel { order: 4; }
+
+/* ── The reviewer's page ────────────────────────────────────────────────── */
+
+.review-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.review-page .page-head h1 { font-size: clamp(26px, 5vw, 40px); }
+.review-list .callout-card { padding: 14px; background: color-mix(in srgb, var(--panel) 92%, transparent); }
+.review-facts { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; font-size: 13.5px; }
+.review-facts > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; min-width: 0; }
+.review-facts dt { color: var(--dim); }
+.review-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.review-buttons { display: inline-flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.review-switch { justify-self: start; }

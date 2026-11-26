@@ -144,7 +144,7 @@ export function useQuickBuy(): QuickBuy {
               The ⚡ button buys <strong>{amount} BNB</strong> of a token straight away, through PancakeSwap, with 5% slippage on top of the
               token's own tax. Your wallet still asks you to confirm each buy.
             </p>
-            <p>Anyone can launch a token, and many are worth nothing. Open a token's page to check it first. CallZ adds no fee and never holds your funds.</p>
+            <p>Anyone can launch a token, and many are worth nothing. Open a token's page to check it first. Each buy carries the CallZ fee (2% of the BNB), which goes to the rewards vault. CallZ never holds your funds.</p>
             <div className="actions">
               <button
                 type="button"

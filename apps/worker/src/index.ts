@@ -1,5 +1,6 @@
 import { CHAINS, type ChainKey } from '@flat/protocol'
 import { handleApi } from './api.js'
+import { handleCallouts } from './callouts.js'
 import { handleChat } from './chat.js'
 import { handleImage, handleMeta } from './image.js'
 import { Budget, syncChain } from './sync.js'
@@ -16,6 +17,10 @@ export interface Env {
    * paid plan to catch up faster.
    */
   SUBREQUEST_BUDGET?: string
+  /** The wallet whose signature approves a callout. A public address, not a secret. */
+  CALLOUT_ATTESTER?: string
+  /** The rewards vault the callout attestations are for. A public address. */
+  CALLZ_VAULT?: string
 }
 
 const DEFAULT_BUDGET = 44
@@ -63,6 +68,7 @@ export default {
     if (url.pathname.startsWith('/api/image/')) return handleImage(request, ctx)
     if (url.pathname.startsWith('/api/meta/')) return handleMeta(request, ctx)
     if (url.pathname.startsWith('/api/chat/')) return handleChat(request, env.DB)
+    if (url.pathname.startsWith('/api/callouts/')) return handleCallouts(request, env)
     if (url.pathname.startsWith('/api/')) return handleApi(request, env.DB)
     return env.ASSETS.fetch(request)
   },

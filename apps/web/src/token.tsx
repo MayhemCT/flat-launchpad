@@ -4,6 +4,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { formatUnits, parseUnits, type Address, type Hex } from "viem";
 import { useApi, type Page, type TokenRow } from "./api";
+import { Callouts } from "./callouts";
+import { RewardsPanel } from "./rewards-panel";
 import { TokenChat } from "./chat";
 import { chartEmbedUrl, dexPaidStatus, pairLinks, pairPageUrl, tokenPairs, venueName, type DsPair, type TokenLink } from "./dexscreener";
 import { ago, amount, short, usd } from "./format";
@@ -198,6 +200,8 @@ function TradePanel({ market, error, loading, onTraded }: { market: Market | nul
       setText("");
       loadHeld();
       onTraded();
+      // The trade paid a fee into this token's round: the rewards panel reads it again.
+      window.dispatchEvent(new Event("callz:traded"));
     } catch (cause) {
       const failure = cause instanceof TradeError ? cause : new TradeError("NETWORK", "Something went wrong", "The trade could not be completed. Check your wallet's activity before trying again.");
       setOutcome({ kind: "error", title: failure.title, text: failure.message, hash: failure.hash });
@@ -267,6 +271,10 @@ function TradePanel({ market, error, loading, onTraded }: { market: Market | nul
           <dt>Token's own {side} tax</dt>
           <dd className="num">{market ? `${tax / 100}%` : "—"}</dd>
         </div>
+        <div data-testid="trade-fee">
+          <dt>CallZ fee, to the rewards vault</dt>
+          <dd className="num">{quote ? (quote.feeBps === 0 ? "None" : `${quote.feeBps / 100}% · ${amount(quote.fee, 5)} BNB`) : "—"}</dd>
+        </div>
       </dl>
 
       <div className="trade-slippage">
@@ -287,7 +295,7 @@ function TradePanel({ market, error, loading, onTraded }: { market: Market | nul
         </p>
       )}
       <p className="trade-foot dim">
-        Sent from your wallet straight to PancakeSwap's router{market ? `, through the ${market.quote} pool` : ""}. CallZ adds no fee and never holds your funds. Anyone can launch a token: check it before you buy.
+        Swapped on PancakeSwap{market ? `, through the ${market.quote} pool` : ""}, by the CallZ router. The CallZ fee is taken on the BNB side and goes to the rewards vault, which pays it to the token's stakers and verified callers. CallZ never holds your funds. Anyone can launch a token: check it before you buy.
       </p>
     </section>
   );
@@ -483,6 +491,8 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
         <aside className="token-side">
           <TradePanel market={market} error={error} loading={loading} onTraded={reload} />
           <TokenChat chain="bsc" token={token} />
+          <Callouts token={token} />
+          <RewardsPanel token={token as Address} market={market} />
           {(meta?.description || links.length > 0) && (
             <section className="token-about" aria-label="About this token">
               <h2>About</h2>

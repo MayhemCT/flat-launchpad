@@ -143,7 +143,7 @@ function PoolsList() {
       )}
       <p className="scope-source dim">
         Pools are PancakeSwap V2 pairs, read from BNB Chain. Major pairs are between BNB and the assets on PancakeSwap's own default token list. Adding liquidity puts in both the token and BNB (or USDT) at the pool's price and
-        gives you LP tokens; the value of what they return moves with the price. CallZ adds no fee and never holds your funds.
+        gives you LP tokens; the value of what they return moves with the price. CallZ takes no fee on liquidity and never holds your funds.
       </p>
     </>
   );
@@ -290,7 +290,7 @@ function LiquidityPanel({ market, position, checks, reload }: { market: Market; 
       )}
       <p className="trade-foot dim">
         Sent from your wallet straight to PancakeSwap's router. The transaction is checked on BNB Chain before your wallet opens. A token that
-        taxes transfers takes its tax on tokens entering or leaving the pool. CallZ adds no fee and never holds your funds.
+        taxes transfers takes its tax on tokens entering or leaving the pool. CallZ takes no fee on liquidity and never holds your funds.
       </p>
     </section>
   );

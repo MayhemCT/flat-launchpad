@@ -32,6 +32,12 @@
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
     // RPC requests one cron run may make across both chains. This account is on the Workers Paid plan.
-    "SUBREQUEST_BUDGET": "400"
+    "SUBREQUEST_BUDGET": "400",
+    // The wallet whose signature approves a callout. This is a public address, not a secret: the Worker
+    // only checks signatures against it, and still holds no keys.
+    "CALLOUT_ATTESTER": "0x2fcb91295c790d15d5f21ed9d95c6a89e0683c58",
+    // The CallZ rewards vault that approvals are signed for. Written by scripts/callz-deployment.mjs: a public
+    // contract address.
+    "CALLZ_VAULT": "0x1D94326876EF9b34B07442fdDa4a7D29c8aCA009"
   }
 }

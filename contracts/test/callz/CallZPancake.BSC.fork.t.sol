@@ -9,6 +9,8 @@ import {LibClone} from "solady/utils/LibClone.sol";
 
 import {CallZPancake, CallZPancakeConfig, IPancakeFactory} from "src/callz/CallZPancake.sol";
 import {CallZPancakeFactory} from "src/callz/CallZPancakeFactory.sol";
+import {CallZRouter} from "src/callz/CallZRouter.sol";
+import {CallZVault} from "src/callz/CallZVault.sol";
 import {DeployCallZPancake} from "script/DeployCallZPancake.s.sol";
 
 interface IPancakeRouterLike {
@@ -153,6 +155,10 @@ contract CallZPancakeBSCForkTest is Test {
     uint256 internal constant NFTS = 10;
 
     CallZPancakeFactory internal factory;
+    /// @dev The mint's own behaviour is tested here with the launch fee at zero, so the whole raise reaches the
+    ///      pool. The fee itself is tested in CallZFees.BSC.fork.t.sol.
+    CallZVault internal vault;
+    address internal guardian = address(uint160(0xC0DE0007));
     // Plain numbered addresses. The usual named test accounts come from published private keys, and on BNB Chain
     // several of them carry an EIP-7702 delegation that forwards any BNB they receive.
     address internal creator = address(uint160(0xC0DE0001));
@@ -176,7 +182,8 @@ contract CallZPancakeBSCForkTest is Test {
             require(accounts[i].code.length == 0, "a test account has code on BNB Chain");
             vm.deal(accounts[i], 20 ether);
         }
-        factory = new CallZPancakeFactory(PANCAKE_FACTORY, WBNB);
+        vault = new CallZVault(guardian, guardian, guardian);
+        factory = new CallZPancakeFactory(PANCAKE_FACTORY, WBNB, address(vault), guardian, 0);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -335,7 +342,7 @@ contract CallZPancakeBSCForkTest is Test {
         assertEq(mint.maxNFTs(), NFTS, "cap / nftPrice NFTs are for sale");
         assertEq(mint.saleDeadline(), block.timestamp + 1 days);
         assertEq(mint.poolShareBps(), 5000);
-        assertEq(mint.version(), "1.0.0");
+        assertEq(mint.version(), "2.0.0");
         assertEq(mint.name(), "Call Example CallZ Pass");
         assertEq(mint.symbol(), "CALLX-PASS");
         uint256 share = TOTAL_SUPPLY / 2 / NFTS;
@@ -694,17 +701,23 @@ contract CallZPancakeBSCForkTest is Test {
 
         // Neither the factory nor a mint accepts a zero address.
         vm.expectRevert(CallZPancakeFactory.ZeroAddress.selector);
-        new CallZPancakeFactory(address(0), WBNB);
+        new CallZPancakeFactory(address(0), WBNB, address(vault), guardian, 0);
         vm.expectRevert(CallZPancakeFactory.ZeroAddress.selector);
-        new CallZPancakeFactory(PANCAKE_FACTORY, address(0));
+        new CallZPancakeFactory(PANCAKE_FACTORY, address(0), address(vault), guardian, 0);
+        vm.expectRevert(CallZPancakeFactory.ZeroAddress.selector);
+        new CallZPancakeFactory(PANCAKE_FACTORY, WBNB, address(0), guardian, 0);
+        vm.expectRevert(CallZPancakeFactory.ZeroAddress.selector);
+        new CallZPancakeFactory(PANCAKE_FACTORY, WBNB, address(vault), address(0), 0);
+        vm.expectRevert(CallZPancakeFactory.FeeTooHigh.selector);
+        new CallZPancakeFactory(PANCAKE_FACTORY, WBNB, address(vault), guardian, 1001);
         c = _config();
         CallZPancake raw = CallZPancake(LibClone.clone(factory.implementation()));
         vm.expectRevert(CallZPancake.InvalidConfig.selector);
-        raw.initialize(address(0), WBNB, creator, c);
+        raw.initialize(address(0), WBNB, creator, address(vault), 0, c);
         vm.expectRevert(CallZPancake.InvalidConfig.selector);
-        raw.initialize(PANCAKE_FACTORY, address(0), creator, c);
+        raw.initialize(PANCAKE_FACTORY, address(0), creator, address(vault), 0, c);
         vm.expectRevert(CallZPancake.InvalidConfig.selector);
-        raw.initialize(PANCAKE_FACTORY, WBNB, address(0), c);
+        raw.initialize(PANCAKE_FACTORY, WBNB, address(0), address(vault), 0, c);
     }
 
     function test_05_mintGuards() public {
@@ -887,10 +900,10 @@ contract CallZPancakeBSCForkTest is Test {
         // A clone is initialised once, by the factory, in the transaction that deploys it.
         vm.prank(creator);
         vm.expectRevert(bytes("Initializable: contract is already initialized"));
-        mint.initialize(PANCAKE_FACTORY, WBNB, creator, c);
+        mint.initialize(PANCAKE_FACTORY, WBNB, creator, address(vault), 0, c);
         vm.prank(attacker);
         vm.expectRevert(bytes("Initializable: contract is already initialized"));
-        mint.initialize(attacker, attacker, attacker, c);
+        mint.initialize(attacker, attacker, attacker, attacker, 0, c);
         assertEq(mint.creator(), creator);
         assertEq(mint.pancakeFactory(), PANCAKE_FACTORY);
 
@@ -898,7 +911,7 @@ contract CallZPancakeBSCForkTest is Test {
         CallZPancake impl = CallZPancake(factory.implementation());
         vm.prank(attacker);
         vm.expectRevert(bytes("Initializable: contract is already initialized"));
-        impl.initialize(PANCAKE_FACTORY, WBNB, attacker, c);
+        impl.initialize(PANCAKE_FACTORY, WBNB, attacker, address(vault), 0, c);
         assertEq(impl.creator(), address(0));
         assertEq(impl.cap(), 0);
         vm.prank(attacker);
@@ -911,7 +924,7 @@ contract CallZPancakeBSCForkTest is Test {
         assertTrue(mint.launched());
         vm.prank(attacker);
         vm.expectRevert(bytes("Initializable: contract is already initialized"));
-        mint.initialize(attacker, attacker, attacker, c);
+        mint.initialize(attacker, attacker, attacker, attacker, 0, c);
 
         // The same creator and salt cannot deploy twice; another creator with that salt gets another address.
         bytes32 salt = bytes32(saltCounter);
@@ -963,7 +976,7 @@ contract CallZPancakeBSCForkTest is Test {
     ///      mint from inside the launch; every action is refused and the launch completes untouched.
     function test_11_nothingCanReenterDuringTheLaunch() public {
         ReentrantPancakeFactory hostile = new ReentrantPancakeFactory(PANCAKE_FACTORY);
-        CallZPancakeFactory hostileFactory = new CallZPancakeFactory(address(hostile), WBNB);
+        CallZPancakeFactory hostileFactory = new CallZPancakeFactory(address(hostile), WBNB, address(vault), guardian, 0);
         vm.prank(creator);
         CallZPancake mint = CallZPancake(hostileFactory.create(_config(), bytes32(uint256(1))));
 
@@ -1109,32 +1122,69 @@ contract CallZPancakeBSCForkTest is Test {
 
     /// @dev Runs the deploy script itself on the fork. Nothing is sent to BNB Chain.
     function test_15_theDeployScriptDeploysAWorkingFactory() public {
-        CallZPancakeFactory deployed = new DeployCallZPancake().run();
+        address team = 0x2FcB91295c790d15d5f21eD9D95C6a89E0683C58;
+        (CallZVault deployedVault, CallZRouter deployedRouter, CallZPancakeFactory deployed) =
+            new DeployCallZPancake().run();
 
-        // CREATE2 through the deterministic deployer: the address depends only on the bytecode, the constructor
+        // CREATE2 through the deterministic deployer: each address depends only on the bytecode, the constructor
         // arguments and the salt.
-        bytes32 initCodeHash =
-            keccak256(abi.encodePacked(type(CallZPancakeFactory).creationCode, abi.encode(PANCAKE_FACTORY, WBNB)));
+        assertEq(
+            address(deployedVault),
+            vm.computeCreate2Address(
+                keccak256("CallZVault.v1"),
+                keccak256(abi.encodePacked(type(CallZVault).creationCode, abi.encode(team, team, team))),
+                CREATE2_FACTORY
+            ),
+            "vault deployed through the deterministic deployer"
+        );
         assertEq(
             address(deployed),
-            vm.computeCreate2Address(keccak256("CallZPancakeFactory.v1"), initCodeHash, CREATE2_FACTORY),
-            "deployed through the deterministic deployer"
+            vm.computeCreate2Address(
+                keccak256("CallZPancakeFactory.v2"),
+                keccak256(
+                    abi.encodePacked(
+                        type(CallZPancakeFactory).creationCode,
+                        abi.encode(PANCAKE_FACTORY, WBNB, address(deployedVault), team, uint16(1000))
+                    )
+                ),
+                CREATE2_FACTORY
+            ),
+            "factory deployed through the deterministic deployer"
         );
+        assertEq(deployedVault.guardian(), team);
+        assertEq(deployedVault.attester(), team);
+        assertEq(deployedVault.teamWallet(), team);
+        assertEq(deployedRouter.vault(), address(deployedVault));
+        assertEq(deployedRouter.guardian(), team);
+        assertEq(deployedRouter.feeBps(), 200);
+        assertEq(deployedRouter.pancakeRouter(), address(ROUTER));
         assertEq(deployed.pancakeFactory(), PANCAKE_FACTORY);
         assertEq(deployed.wbnb(), WBNB);
+        assertEq(deployed.vault(), address(deployedVault));
+        assertEq(deployed.guardian(), team);
+        assertEq(deployed.launchFeeBps(), 1000);
         assertGt(deployed.implementation().code.length, 0);
         assertEq(deployed.mintCount(), 0);
 
-        // The factory it deployed creates a mint that sells out and launches.
+        // The factory it deployed creates a mint that sells out and launches, paying 10% of the raise to the vault.
         vm.prank(creator);
         CallZPancake mint = CallZPancake(deployed.create(_config(), bytes32(uint256(1))));
         assertEq(address(mint), deployed.predict(creator, bytes32(uint256(1))));
+        uint256 teamBefore = team.balance;
         vm.prank(alice);
         mint.mint{value: NFTS * PRICE}();
-        _assertLaunchState(mint, 0, 0);
+        assertTrue(mint.launched());
+        assertEq(
+            address(deployedVault).balance + team.balance - teamBefore,
+            NFTS * PRICE / 10,
+            "a tenth of the raise went to the vault, which forwards the platform share to the team wallet"
+        );
+        (, uint256 wbnbReserve) = _reserves(mint.pair(), mint.token());
+        assertEq(wbnbReserve, NFTS * PRICE * 9 / 10, "the rest is in the pool");
 
+        emit log_named_address("CallZVault (deterministic)", address(deployedVault));
+        emit log_named_address("CallZRouter (deterministic)", address(deployedRouter));
         emit log_named_address("CallZPancakeFactory (deterministic)", address(deployed));
-        emit log_named_address("implementation", deployed.implementation());
     }
 
     /// @dev For every allowed pool share and NFT count, the pool and the NFTs together own the whole supply.

@@ -20,6 +20,8 @@ const PancakeSection = lazy(() => import("./pancake"));
 const PoolsSection = lazy(() => import("./pools"));
 // The wallet's positions read balances and sell through the same library: loaded when first opened.
 const Positions = lazy(() => import("./positions"));
+// Where the reviewer wallet approves callouts. Reached by its address, linked from nowhere.
+const ReviewPage = lazy(() => import("./callouts").then((module) => ({ default: module.ReviewPage })));
 
 const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
   { id: "en", label: "EN" },
@@ -28,7 +30,7 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
 ];
 
 type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
-type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | PoolsRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "missing" };
+type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | PoolsRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "review" } | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
@@ -51,6 +53,7 @@ function parseRoute(hash: string): Route {
   const token = /^\/token\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (token?.[1]) return { name: "token", address: token[1].toLowerCase() };
   if (path === "/create") return { name: "create" };
+  if (path === "/review") return { name: "review" };
   const launcher = /^\/launcher\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (launcher?.[1]) return { name: "launcher", address: launcher[1].toLowerCase() };
   return { name: "missing" };
@@ -319,6 +322,11 @@ export function App() {
         {(route.name === "pools" || route.name === "pool") && (
           <Suspense fallback={<p className="note" role="status">Loading the pools…</p>}>
             <PoolsSection route={route} />
+          </Suspense>
+        )}
+        {route.name === "review" && (
+          <Suspense fallback={<p className="note" role="status">Loading the review queue…</p>}>
+            <ReviewPage />
           </Suspense>
         )}
         {route.name === "missing" && <p className="note" role="alert">That page does not exist. <a href="#/">Back to the board.</a></p>}

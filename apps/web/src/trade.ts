@@ -9,13 +9,17 @@
  *    signs for is what will really arrive.
  * 3. Simulates the exact transaction before the wallet opens. If the price moved in between, it prices and
  *    simulates once more. A trade the chain would reject is never sent.
- * 4. Sends it through the router's fee-on-transfer swap with gas to spare, and follows it to a definite outcome.
+ * 4. Sends it through the CallZ router with gas to spare, and follows it to a definite outcome. The CallZ router
+ *    takes the CallZ trading fee on the BNB side (2%: out of the BNB paid on a buy, out of the BNB received on a
+ *    sell), pays it to the CallZ vault, and makes PancakeSwap's fee-on-transfer swap with the rest.
  *    A tax token does different amounts of work from one transfer to the next (it sells its collected tax every
  *    so often), and a gas estimate taken a moment earlier can fall short of that: on a fork, a buy sent with the
  *    bare estimate ran out of gas. So each trade carries half as much gas again; what is not used is not paid for.
  *
- * This site adds no fee and never holds funds: the only contracts called are PancakeSwap's router and, for a
- * sell, the token's own `approve` for the exact amount being sold.
+ * CallZ never holds funds: the router keeps nothing between transactions, bought tokens go from the pool
+ * straight to the buyer, and a sell approves the router for exactly the amount being sold. The fee is shown in
+ * every quote before the wallet opens. While the CallZ router is not deployed, trades go to PancakeSwap's router
+ * directly and carry no CallZ fee.
  *
  * Addresses were read from the chain on 27 Nov 2026: the router's `factory()` and `WETH()` are the factory
  * and WBNB below.
@@ -28,17 +32,25 @@ import {
   custom,
   http,
   parseAbi,
+  type Abi,
   type Address,
   type Hex,
 } from "viem";
 import { bsc } from "viem/chains";
-import { address as callzFactory } from "./pancake-deployment.json";
+import callz from "./callz-deployment.json";
+import { address as firstCallzFactory } from "./pancake-deployment.json";
 import { SITES } from "./site";
 
 export const PANCAKE_ROUTER: Address = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
 export const PANCAKE_FACTORY: Address = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73";
 export const WBNB: Address = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
 export const USDT: Address = "0x55d398326f99059fF775485246999027B3197955";
+/** CallZ's trade router: takes the trading fee and swaps through PancakeSwap. */
+export const CALLZ_ROUTER = callz.router.address as Address;
+/** CallZ's vault: where every fee goes and is paid out from. */
+export const CALLZ_VAULT = callz.vault.address as Address;
+/** CallZ's mint factories, newest first. The first one launched before fees existed; its tokens still list. */
+export const CALLZ_FACTORIES: Address[] = [callz.factory.address as Address, firstCallzFactory as Address];
 const ZERO: Address = "0x0000000000000000000000000000000000000000";
 /** How long a signed trade stays valid, in seconds. */
 const DEADLINE_SECONDS = 600n;
@@ -48,6 +60,15 @@ const routerAbi = parseAbi([
   "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)",
   "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable",
   "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline)",
+]);
+const callzRouterAbi = parseAbi([
+  "function feeBps() view returns (uint16)",
+  "function buy(address token, address[] path, uint256 minOut, uint256 deadline) payable returns (uint256 tokensOut)",
+  "function sell(address token, uint256 amountIn, address[] path, uint256 minBnbOut, uint256 deadline) returns (uint256 bnbOut)",
+  "error InsufficientOutput(uint256 out, uint256 minimum)",
+  "error InvalidPath()",
+  "error ZeroAmount()",
+  "error BnbTransferFailed()",
 ]);
 const factoryAbi = parseAbi(["function getPair(address tokenA, address tokenB) view returns (address)"]);
 const pairAbi = parseAbi([
@@ -68,7 +89,7 @@ const tokenAbi = parseAbi([
 ]);
 
 // VITE_BSC_RPC_URL points trading at another endpoint: a private one, or a local fork in the tests.
-const client = createPublicClient({ chain: bsc, transport: http(import.meta.env.VITE_BSC_RPC_URL ?? SITES.bsc.rpcUrl), batch: { multicall: true } });
+export const client = createPublicClient({ chain: bsc, transport: http(import.meta.env.VITE_BSC_RPC_URL ?? SITES.bsc.rpcUrl), batch: { multicall: true } });
 
 export interface Market {
   token: Address;
@@ -112,10 +133,19 @@ export class TradeError extends Error {
   }
 }
 
+/** One contract call of a trade: to the CallZ router, or to PancakeSwap's while the CallZ router is not deployed. */
+interface RouterCall {
+  address: Address;
+  abi: Abi;
+  functionName: string;
+  args: readonly unknown[];
+  value?: bigint;
+}
+
 export type TradeStep = "pricing" | "approving" | "checking" | "confirm" | "pending";
 
 /** The gas limit a trade is sent with: the estimate, half as much again, and a fixed margin. Unused gas costs nothing. */
-const withHeadroom = (estimate: bigint) => (estimate * 3n) / 2n + 60_000n;
+export const withHeadroom = (estimate: bigint) => (estimate * 3n) / 2n + 60_000n;
 
 const lower = (address: string) => address.toLowerCase();
 const afterTax = (amount: bigint, taxBps: number) => (amount * (BPS - BigInt(taxBps))) / BPS;
@@ -177,10 +207,39 @@ export async function loadMarket(token: Address, prefer?: "BNB" | "USDT"): Promi
   };
 }
 
+export interface TradeFee {
+  /** True once the CallZ router is deployed: trades go through it. */
+  live: boolean;
+  /** The CallZ trading fee, in basis points of the BNB side. */
+  bps: number;
+}
+
+let feeRead: { at: number; value: Promise<TradeFee> } | null = null;
+
+/**
+ * The CallZ trading fee in force, read from the CallZ router and kept for half a minute. Before the router is
+ * deployed there is nothing to read: trades then go straight to PancakeSwap, with no CallZ fee.
+ */
+export function tradeFee(): Promise<TradeFee> {
+  if (feeRead && Date.now() - feeRead.at < 30_000) return feeRead.value;
+  const value = (async (): Promise<TradeFee> => {
+    const code = await client.getCode({ address: CALLZ_ROUTER });
+    if (!code || code === "0x") return { live: false, bps: 0 };
+    return { live: true, bps: await client.readContract({ address: CALLZ_ROUTER, abi: callzRouterAbi, functionName: "feeBps" }) };
+  })();
+  feeRead = { at: Date.now(), value };
+  // A failed read is not remembered: the next trade asks again.
+  value.catch(() => (feeRead = null));
+  return value;
+}
+
 export interface Quote {
   amountIn: bigint;
-  /** What arrives, after the pool's price and the token's tax. */
+  /** What arrives, after the pool's price, the token's tax and the CallZ fee. */
   amountOut: bigint;
+  /** The CallZ trading fee on this trade, in BNB, and its rate. Zero while the CallZ router is not deployed. */
+  fee: bigint;
+  feeBps: number;
   /** How much worse than the pool's current price this trade fills, in basis points, pool fee included. */
   impactBps: number;
 }
@@ -193,18 +252,28 @@ function impact(paid: bigint, got: bigint, reservePaid: bigint, reserveGot: bigi
 
 /** What `bnbIn` buys right now. */
 export async function quoteBuy(market: Market, bnbIn: bigint): Promise<Quote> {
-  const amounts = await client.readContract({ address: PANCAKE_ROUTER, abi: routerAbi, functionName: "getAmountsOut", args: [bnbIn, market.path] });
+  const { bps } = await tradeFee();
+  // The fee comes out of the BNB first; the rest is what PancakeSwap swaps.
+  const fee = (bnbIn * BigInt(bps)) / BPS;
+  if (bnbIn - fee === 0n) return { amountIn: bnbIn, amountOut: 0n, fee, feeBps: bps, impactBps: 0 };
+  const amounts = await client.readContract({ address: PANCAKE_ROUTER, abi: routerAbi, functionName: "getAmountsOut", args: [bnbIn - fee, market.path] });
   const out = amounts[amounts.length - 1]!;
   const paid = amounts[amounts.length - 2]!;
-  return { amountIn: bnbIn, amountOut: afterTax(out, market.buyTaxBps), impactBps: impact(paid, out, market.reserveQuote, market.reserveToken) };
+  return { amountIn: bnbIn, amountOut: afterTax(out, market.buyTaxBps), fee, feeBps: bps, impactBps: impact(paid, out, market.reserveQuote, market.reserveToken) };
 }
 
 /** What selling `tokenIn` returns in BNB right now. The token takes its tax before the pool sees the rest. */
 export async function quoteSell(market: Market, tokenIn: bigint): Promise<Quote> {
   const reaches = afterTax(tokenIn, market.sellTaxBps);
   const path = [...market.path].reverse();
-  const amounts = await client.readContract({ address: PANCAKE_ROUTER, abi: routerAbi, functionName: "getAmountsOut", args: [reaches, path] });
-  return { amountIn: tokenIn, amountOut: amounts[amounts.length - 1]!, impactBps: impact(reaches, amounts[1]!, market.reserveToken, market.reserveQuote) };
+  const [{ bps }, amounts] = await Promise.all([
+    tradeFee(),
+    client.readContract({ address: PANCAKE_ROUTER, abi: routerAbi, functionName: "getAmountsOut", args: [reaches, path] }),
+  ]);
+  // The fee comes out of the BNB the swap returns.
+  const gross = amounts[amounts.length - 1]!;
+  const fee = (gross * BigInt(bps)) / BPS;
+  return { amountIn: tokenIn, amountOut: gross - fee, fee, feeBps: bps, impactBps: impact(reaches, amounts[1]!, market.reserveToken, market.reserveQuote) };
 }
 
 export async function balances(market: Market, account: Address): Promise<{ bnb: bigint; token: bigint }> {
@@ -313,11 +382,15 @@ const callzFactoryAbi = parseAbi(["function mintCount() view returns (uint256)",
 const callzMintAbi = parseAbi(["function token() view returns (address)"]);
 
 /**
- * The tokens launched through CallZ's own launchpad on BNB Chain, newest first: read from its factory's list of
- * mints, so a token shows up the moment its mint launches. Empty while the factory is not deployed.
+ * The tokens launched through CallZ's own launchpad on BNB Chain, newest first: read from its factories' lists of
+ * mints, so a token shows up the moment its mint launches. A factory that is not deployed yet lists nothing.
  */
 export async function callzTokens(): Promise<Address[]> {
-  const factory = callzFactory as Address;
+  const lists = await Promise.all(CALLZ_FACTORIES.map((factory) => factoryTokens(factory).catch(() => [] as Address[])));
+  return [...new Set(lists.flat())];
+}
+
+async function factoryTokens(factory: Address): Promise<Address[]> {
   const count = await client.readContract({ address: factory, abi: callzFactoryAbi, functionName: "mintCount" }).catch(() => 0n);
   if (count === 0n) return [];
   const newest = Array.from({ length: Number(count > 100n ? 100n : count) }, (_, index) => count - 1n - BigInt(index));
@@ -346,13 +419,13 @@ export async function heldTokens(account: Address, tokens: Address[]): Promise<A
   });
 }
 
-function wallet() {
+export function wallet() {
   if (!window.ethereum) throw new TradeError("WALLET_MISSING", "No wallet found", "No browser wallet was found. Install MetaMask, Rabby or another wallet, then connect.");
   return createWalletClient({ chain: bsc, transport: custom(window.ethereum) });
 }
 
 /** Turns anything thrown along the way into a TradeError that says what happened to the funds. */
-function explain(error: unknown, sent: boolean, hash?: Hex): TradeError {
+export function explain(error: unknown, sent: boolean, hash?: Hex): TradeError {
   if (error instanceof TradeError) return error;
   const text = error instanceof BaseError ? `${error.shortMessage} ${error.details ?? ""}` : String((error as { message?: string })?.message ?? error);
   const code = (error as { code?: number })?.code ?? ((error as BaseError)?.walk?.() as { code?: number } | undefined)?.code;
@@ -366,7 +439,7 @@ function explain(error: unknown, sent: boolean, hash?: Hex): TradeError {
     return new TradeError("INSUFFICIENT_FUNDS", "Not enough BNB", "Your balance does not cover this amount plus the network fee. Nothing was sent.");
   }
   if (error instanceof BaseError && error.walk((cause) => cause instanceof ContractFunctionRevertedError)) {
-    if (/INSUFFICIENT_OUTPUT_AMOUNT/.test(text)) {
+    if (/INSUFFICIENT_OUTPUT_AMOUNT|InsufficientOutput/.test(text)) {
       return new TradeError("PRICE_MOVED", "Price moved", "The price moved past your slippage while the trade was being prepared, or the token takes more than the tax it states. Nothing was sent. Try again, or raise slippage.");
     }
     const reason = /reason:\s*(.{1,80})/i.exec(text)?.[1] ?? /reverted[^:]*:\s*(.{1,80})/i.exec(text)?.[1];
@@ -382,7 +455,7 @@ async function deadline(): Promise<bigint> {
   return block.timestamp + DEADLINE_SECONDS;
 }
 
-async function settle(hash: Hex): Promise<Hex> {
+export async function settle(hash: Hex): Promise<Hex> {
   let receipt;
   try {
     receipt = await client.waitForTransactionReceipt({ hash, timeout: 120_000 });
@@ -415,25 +488,16 @@ export async function buy({ market, account, amountIn, slippageBps, onStep }: Tr
       if (quote.amountOut === 0n) throw new TradeError("NO_POOL", "Amount too small", "This amount buys nothing at the current price. Nothing was sent.");
       onStep?.("checking");
       try {
-        const args = [withSlippage(quote.amountOut, slippageBps), market.path, account, await deadline()] as const;
-        const { request } = await client.simulateContract({
-          account,
-          address: PANCAKE_ROUTER,
-          abi: routerAbi,
-          functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
-          args,
-          value: amountIn,
-        });
-        const gas = await client.estimateContractGas({
-          account,
-          address: PANCAKE_ROUTER,
-          abi: routerAbi,
-          functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
-          args,
-          value: amountIn,
-        });
+        const minOut = withSlippage(quote.amountOut, slippageBps);
+        const until = await deadline();
+        // Through the CallZ router once it is deployed; before that, PancakeSwap's router directly.
+        const call: RouterCall = (await tradeFee()).live
+          ? { address: CALLZ_ROUTER, abi: callzRouterAbi, functionName: "buy", args: [market.token, market.path, minOut, until], value: amountIn }
+          : { address: PANCAKE_ROUTER, abi: routerAbi, functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens", args: [minOut, market.path, account, until], value: amountIn };
+        await client.simulateContract({ account, ...call });
+        const gas = await client.estimateContractGas({ account, ...call });
         onStep?.("confirm");
-        hash = await signer.writeContract({ ...request, gas: withHeadroom(gas) });
+        hash = await signer.writeContract({ account, chain: bsc, ...call, gas: withHeadroom(gas) });
         onStep?.("pending", hash);
         const settled = await settle(hash);
         rememberBought(market.token);
@@ -449,15 +513,17 @@ export async function buy({ market, account, amountIn, slippageBps, onStep }: Tr
   }
 }
 
-/** Sells for BNB. Approves the router for exactly the amount sold when it is not already allowed. */
+/** Sells for BNB. Approves the router it sells through for exactly the amount sold when it is not already allowed. */
 export async function sell({ market, account, amountIn, slippageBps, onStep }: TradeRequest): Promise<{ hash: Hex; quote: Quote }> {
   let hash: Hex | undefined;
   try {
     const signer = wallet();
-    const allowance = await client.readContract({ address: market.token, abi: tokenAbi, functionName: "allowance", args: [account, PANCAKE_ROUTER] });
+    const live = (await tradeFee()).live;
+    const spender = live ? CALLZ_ROUTER : PANCAKE_ROUTER;
+    const allowance = await client.readContract({ address: market.token, abi: tokenAbi, functionName: "allowance", args: [account, spender] });
     if (allowance < amountIn) {
       onStep?.("approving");
-      const { request } = await client.simulateContract({ account, address: market.token, abi: tokenAbi, functionName: "approve", args: [PANCAKE_ROUTER, amountIn] });
+      const { request } = await client.simulateContract({ account, address: market.token, abi: tokenAbi, functionName: "approve", args: [spender, amountIn] });
       const approval = await signer.writeContract(request);
       const receipt = await client.waitForTransactionReceipt({ hash: approval, timeout: 120_000 });
       if (receipt.status !== "success") throw new TradeError("REVERTED", "Approval reverted", "The token rejected the approval. Only the network fee was spent.", approval);
@@ -470,23 +536,15 @@ export async function sell({ market, account, amountIn, slippageBps, onStep }: T
       if (quote.amountOut === 0n) throw new TradeError("NO_POOL", "Amount too small", "This amount returns nothing at the current price. Nothing was sent.");
       onStep?.("checking");
       try {
-        const args = [amountIn, withSlippage(quote.amountOut, slippageBps), path, account, await deadline()] as const;
-        const { request } = await client.simulateContract({
-          account,
-          address: PANCAKE_ROUTER,
-          abi: routerAbi,
-          functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
-          args,
-        });
-        const gas = await client.estimateContractGas({
-          account,
-          address: PANCAKE_ROUTER,
-          abi: routerAbi,
-          functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
-          args,
-        });
+        const minOut = withSlippage(quote.amountOut, slippageBps);
+        const until = await deadline();
+        const call: RouterCall = live
+          ? { address: CALLZ_ROUTER, abi: callzRouterAbi, functionName: "sell", args: [market.token, amountIn, path, minOut, until] }
+          : { address: PANCAKE_ROUTER, abi: routerAbi, functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens", args: [amountIn, minOut, path, account, until] };
+        await client.simulateContract({ account, ...call });
+        const gas = await client.estimateContractGas({ account, ...call });
         onStep?.("confirm");
-        hash = await signer.writeContract({ ...request, gas: withHeadroom(gas) });
+        hash = await signer.writeContract({ account, chain: bsc, ...call, gas: withHeadroom(gas) });
         onStep?.("pending", hash);
         return { hash: await settle(hash), quote };
       } catch (error) {

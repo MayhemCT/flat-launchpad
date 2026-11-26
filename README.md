@@ -8,14 +8,16 @@ Live: https://callz.fun (also at https://raidpass.dry-dust-1399.workers.dev)
 
 - **Memescope.** Every launchpad built on Pool Launch on one live board, in three columns a launch crosses as it fills: New, Final stretch, Launched. Raises are ranked by how much of their target they hold, launchpads are named and colour-coded, and launched tokens show their own pictures.
 - **Token pages.** For every launched token on BNB Chain: the DexScreener chart with the pool's trades under it, price, market cap, liquidity and volume, the token's own taxes, whether its DexScreener profile is paid, and its description and links from its own metadata and from DexScreener.
-- **Trading.** Buy and sell through PancakeSwap's router straight from the visitor's wallet, on the token page, with one click from the board, or from the wallet menu, which lists the positions a wallet holds and sells them. The site adds no fee and never holds funds.
+- **Trading.** Buy and sell through PancakeSwap's router straight from the visitor's wallet, on the token page, with one click from the board, or from the wallet menu, which lists the positions a wallet holds and sells them. Trades go through the CallZ router, which takes a 2% fee on the BNB side and pays it to the rewards vault in the same transaction; the fee is shown in every quote before the wallet opens. CallZ never holds funds.
 - **Pools.** The PancakeSwap pools of the tokens that graduated on Flap, and PancakeSwap's major pairs, with adding and removing liquidity through PancakeSwap's router. Liquidity can be added only to a pool that passes the checks on its page: either a graduated Pool Launch pool that is PancakeSwap's own pair with at least 90% of its LP burned, or a pool between BNB and the assets on PancakeSwap's own default token list with at least 50 BNB's worth on its quote side. Taking liquidity out is never blocked.
 - **Pop-out windows.** A small window per token with the chart on top and the chat under it; several can be open at once.
 - **Chat.** One room per token. Messages are signed by the wallet that wrote them; text only, no links.
+- **Callouts.** Under the chat, a feed of the callouts people posted for the token: links to their X posts, pump.fun callouts and fomo.family trades. A pump.fun or fomo.family link carries its contract address, and one for a different contract is refused. Each link can be posted once. A reviewer wallet approves a callout by signing it; the author then records it in the vault, where it earns.
+- **Rewards.** Every CallZ fee on a token goes to the vault and is shared: stake the token for the holder share, post verified callouts for the callout pool and the callout-unlocked share. See "Fees and the vault" below.
 - **Launchpad.** NFT pass mints that launch a token: straight into a PancakeSwap pool on BNB Chain (`CallZPancake`), and through Flap Pool Launch on BNB Chain Testnet (`RaidPassLauncher`).
 - **Aggregator.** Every Launcher, launched token, factory and deployer on Pool Launch, on BNB Chain and BNB Chain Testnet.
 
-Not built yet: the holder room and rewards for verified callouts that the tagline points at.
+Not built yet: the holder room.
 
 ## The mechanism
 
@@ -27,7 +29,7 @@ The NFT mint replaces the bonding curve as the way a launch raises its first liq
 4. Every NFT then claims an equal share of the tokens, once. The NFT is not burned by the claim: it stays in the holder's wallet as a membership pass.
 5. If the cap is not reached by the deadline, an NFT is burned for its price. The refund goes to whoever holds the NFT, so NFTs can change hands before the launch.
 
-Nobody can withdraw the raise. It leaves the mint only through the launch or through refunds. There is no mint fee, no commission receiver and no royalty.
+Nobody can withdraw the raise. It leaves the mint only through the launch or through refunds. On the mainnet path (`CallZPancake`) a launch pays a launch fee, 10% of the raise, to the CallZ vault; it is taken only if the mint launches, so a refund returns the full price. The Flap Pool Launch path has no commission receiver and no royalty.
 
 ## Three launch paths
 
@@ -35,7 +37,7 @@ Nobody can withdraw the raise. It leaves the mint only through the launch or thr
 | --- | --- | --- | --- |
 | `RaidPassLauncher` | Flap Pool Launch: the raise and the pool share of the supply go straight into a DEX pool, LP burned. The NFTs share the rest of the supply. | BNB Chain Testnet today | On BNB Chain, Flap must audit and enable the factory |
 | `RaidPassCurve` | Flap bonding curve: the raise is the launch's first buy. The NFTs share the tokens bought. | BNB Chain | None. The bonding curve Portal is permissionless |
-| `CallZPancake` | PancakeSwap directly: the mint creates a plain token and puts the whole raise, with the pool share of the supply, into a PancakeSwap V2 pool. LP burned. The NFTs share the rest of the supply. | BNB Chain | None |
+| `CallZPancake` | PancakeSwap directly: the mint creates a plain token, pays the 10% launch fee to the CallZ vault and puts the rest of the raise, with the pool share of the supply, into a PancakeSwap V2 pool. LP burned. The NFTs share the rest of the supply. | BNB Chain | None |
 
 All three are the same mint with the same rules. `RaidPassLauncher` is the design the Flap track asks for. Pool Launch is permissioned on BNB Chain, so the other two are the ways to run the mint on mainnet without waiting for an audit: `CallZPancake` is the one the site's launchpad uses, because it does what Pool Launch does (the raise funds the pool) with PancakeSwap alone.
 
@@ -44,12 +46,47 @@ All three are the same mint with the same rules. `RaidPassLauncher` is the desig
 ```
 RaidPassLauncherFactory  0x1F28ba409797a1309e52F90B331934092D1b4aBD   (CREATE2: same on BNB Chain and Testnet)
 RaidPassCurveFactory     0xAF9cfB507271D8bFD3A8284555C7C54026Fe3FB4   (CREATE2: BNB Chain)
-CallZPancakeFactory      0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (CREATE2: BNB Chain)
+CallZPancakeFactory      0x126c8E8A605684845298d7891898979a02b030Df   (CREATE2: BNB Chain, takes the launch fee)
+CallZRouter              0x6AAb7261532D00fBAd91ce0f750f89C105Dda174   (CREATE2: BNB Chain, takes the trading fee)
+CallZVault               0x1D94326876EF9b34B07442fdDa4a7D29c8aCA009   (CREATE2: BNB Chain, holds and pays every fee)
+CallZPancakeFactory v1   0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (deployed on BNB Chain; no fee; its mints still list)
 ```
 
-None is deployed yet. The site's launch pages deploy `RaidPassLauncherFactory` and `CallZPancakeFactory` from a browser wallet, with one transaction each. The `RaidPassCurveFactory` address predates the rename and will differ. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change.
+The site's launch pages deploy `RaidPassLauncherFactory` and the three CallZ contracts from a browser wallet, with one transaction each. Until the CallZ contracts are deployed, trades on the site go straight to PancakeSwap's router with no CallZ fee. The `RaidPassCurveFactory` address predates the rename and will differ. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change.
+
+## Fees and the vault
+
+CallZ collects two fees, both in BNB, both paid straight into `CallZVault` by the contract that takes them:
+
+- **Launch fee:** 10% of the raise of every `CallZPancake` mint that launches (`CallZPancakeFactory.launchFeeBps`, fixed into each mint when it is created, at most 10%).
+- **Trading fee:** 2% of the BNB side of every buy and sell made through the site (`CallZRouter.feeBps`, at most 2%). The router swaps on PancakeSwap V2 and keeps nothing.
+
+The vault keeps a separate book per token and splits every deposit on arrival:
+
+| Share | Who gets it | How |
+| --- | --- | --- |
+| 35% | Holders, by weight | Streamed over 3 days to the token's stakers in the vault. A stake is returned in full at any time. |
+| 10% | Holders with a verified callout that round | Shared by token weight (wallet plus stake at the moment of unlocking), paid on the smaller of that and what is still held. |
+| 30% | Callout reward pool | Split equally per verified callout of the round. |
+| 25% | Platform | Sent to the team wallet inside the deposit that pays the fee. |
+
+A round is one UTC day. Its 10% and 30% can be claimed during the 24 hours after it ends; whatever is not claimed by then goes to the team wallet. What a stake has earned from the 35% stream does not expire.
+
+Nobody signs per payout. A holder's single `claim(token, rounds)` pays everything the token owes them. The team sends nothing to be paid: the platform share is forwarded on every deposit, and every deposit also sweeps one finished round, if there is one, so rounds are settled by the fees that keep arriving. `collect(maxRounds)`, callable by anyone, does the same when fees have stopped arriving or the team wallet could not be paid inside a deposit (it gets 30,000 gas there; a wallet that needs more is paid by `collect`).
+
+A callout counts when the attester signed it (EIP-712 `Submission`) for the running round and it is recorded in the vault before the round ends; a holder can record at most 3 a round and must hold at least 0.01% of the token's supply. Every recorded link is emitted in full.
+
+**Solvency.** Each token has a ledger of what its fees brought in for holders and callers and what has been paid out of it. A payout that would take a token past what it produced reverts (`Insolvent`), so one token's rewards are never paid with another's fees. `ledgerOf(token)` shows both numbers.
+
+**Roles, and no secrets.** The team wallet is the guardian of the vault, the router and the factory, the receiver of the platform share, and the first attester. The guardian can change the two fee rates (within their caps), replace the attester and the team wallet, move the split (the platform share can never exceed 25%) and change the round rules. It cannot touch stakes or amounts already owed. No server holds a key: fees are split by the contracts, and callouts are approved by the attester wallet signing in the browser at `#/review`. The Worker's configuration holds two public addresses (`CALLOUT_ATTESTER`, `CALLZ_VAULT`) and nothing secret.
+
+**Holders are stakers** because the vault does not control the tokens it serves: it cannot see their transfers, and a balance read at one moment can be moved to another wallet and read again. For the same reason the 10% share is paid on what the holder still holds at claim.
+
+Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAULT` slots on a Flap tax token, behind `DirectLaunchVaultFactoryBase`), X proofs through Flap's `XGeneralVerifier` (X posts go through the same review as the other sites), and the Trigger Service auto-sweep (finished rounds are swept by the next fee instead). The passdown's rollover of the unclaimed 10% share was replaced by the 24-hour rule above.
 
 ## Status
+
+- `CallZVault`, `CallZRouter` and the launch fee: 13 fork tests pass on a fork of BNB Chain (`test/callz/CallZFees.BSC.fork.t.sol`), against the real PancakeSwap and two live Flap tax tokens, one pooled against BNB and one against USDT: the split to the wei, the holder stream, callout rounds, refusals, the 24-hour window, the team wallet being paid by the next fee, a team wallet that refuses BNB, the fee caps, an attester wallet with delegated code (EIP-7702), and the per-token solvency ledger. `apps/web/tests/fees.pw.ts` drives a buy, a sell, a stake, a callout (posted, approved, recorded) and the claim after the round ends through the pages on a local fork.
 
 - `RaidPassLauncher`: 15 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
 - `RaidPassCurve`: 7 fork tests pass against Flap's bonding curve Portal on a fork of BNB Chain, with nothing impersonated. The deploy, create, mint and claim commands below were rehearsed end to end on a local fork.

@@ -29,6 +29,7 @@ const PAGES = [
   { name: "launch", hash: "#/launch", ready: "[data-testid=pancake-not-deployed], [data-testid=pancake-empty], [data-testid=pancake-mints]" },
   { name: "launch create", hash: "#/launch/create", ready: "[data-testid=pancake-create]" },
   { name: "mint", hash: "#/mint/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-mint]" },
+  { name: "review", hash: "#/review", ready: "[data-testid=review-page]" },
   { name: "launch testnet", hash: "#/launch/testnet", ready: "[data-testid=not-deployed], [data-testid=mint-table], [data-testid=mint-cards]" },
   { name: "create", hash: "#/create", ready: "input[name=name]" },
   // An address the Portal has no record of: the page must still lay out its message correctly.

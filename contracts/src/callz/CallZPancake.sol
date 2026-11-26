@@ -25,13 +25,18 @@ interface IWBNB {
     function deposit() external payable;
 }
 
+/// @notice The part of CallZVault that CallZPancake uses.
+interface ICallZFeeVault {
+    function deposit(address token) external payable;
+}
+
 /// @notice Payload for `CallZPancakeFactory.create`.
 /// @param name          Token name. The NFT collection is named after it.
 /// @param symbol        Token symbol.
 /// @param meta          Token metadata reference (a CID), kept on the mint for the app to read.
 /// @param nftPrice      BNB per NFT. Every NFT costs the same.
-/// @param cap           BNB the mint raises: at most 10 BNB and an exact multiple of `nftPrice`. All of it becomes
-///                      the pool's BNB side. `cap / nftPrice` NFTs are sold.
+/// @param cap           BNB the mint raises: at most 10 BNB and an exact multiple of `nftPrice`. The launch fee comes
+///                      out of it and the rest becomes the pool's BNB side. `cap / nftPrice` NFTs are sold.
 /// @param saleDuration  Length of the mint window in seconds, counted from creation.
 /// @param poolShareBps  Share of the supply that goes into the pool, in bps (1000 to 9000). The rest is split
 ///                      equally between the NFTs.
@@ -49,16 +54,19 @@ struct CallZPancakeConfig {
 /// @notice An NFT mint that launches a token straight into a PancakeSwap V2 pool.
 ///
 ///         Buyers mint CallZ NFTs with BNB at a flat price. The mint that brings the raise to its cap deploys the
-///         token and, in that same transaction, puts the whole raise and the pool share of the supply into the
-///         token's PancakeSwap V2 pair with WBNB. The LP tokens are minted to the dead address, so the liquidity
-///         can never be removed. Every NFT then claims an equal share of the rest of the supply, once, and stays
+///         token and, in that same transaction, pays the launch fee to the CallZ vault and puts the rest of the
+///         raise and the pool share of the supply into the token's PancakeSwap V2 pair with WBNB. The LP tokens
+///         are minted to the dead address, so the liquidity can never be removed. Every NFT then claims an equal share of the rest of the supply, once, and stays
 ///         with its holder as a membership pass.
 ///
 ///         If the cap is not reached by the deadline, an NFT is burned for its price. The refund goes to whoever
 ///         holds the NFT at that moment.
 ///
 ///         Nobody can withdraw the raise: it leaves this contract only through the launch or through refunds.
-///         There is no mint fee, no commission and no tax on the token.
+///         The launch fee is a share of the raise, fixed when the mint is created (`launchFeeBps`, at most 10%)
+///         and taken only if the mint launches: a refund returns the full price. It goes to the CallZ vault,
+///         booked under the new token, where it is shared with the token's holders and callers. The token itself
+///         has no tax.
 ///
 /// @dev Deployed by `CallZPancakeFactory` as an immutable minimal clone. There is no owner, no admin function and
 ///      no upgrade path.
@@ -75,6 +83,8 @@ contract CallZPancake is Initializable, ERC721 {
     uint256 public constant MAX_MINT_PER_TX = 50;
     uint16 public constant MIN_POOL_SHARE_BPS = 1000;
     uint16 public constant MAX_POOL_SHARE_BPS = 9000;
+    /// @notice The highest launch fee a mint can carry: 10% of the raise.
+    uint16 public constant MAX_LAUNCH_FEE_BPS = 1000;
     uint256 public constant MIN_SALE_DURATION = 10 minutes;
     uint256 public constant MAX_SALE_DURATION = 30 days;
     /// @notice Longest token name, symbol and metadata reference, in bytes.
@@ -89,10 +99,14 @@ contract CallZPancake is Initializable, ERC721 {
     /// @notice Wrapped BNB: the pool's quote token.
     address public wbnb;
     address public creator;
+    /// @notice The CallZ vault the launch fee is paid to.
+    address public vault;
+    /// @notice Share of the raise paid to the vault at launch, in bps. Fixed at creation.
+    uint16 public launchFeeBps;
 
     /// @notice BNB per NFT.
     uint256 public nftPrice;
-    /// @notice BNB the mint raises, all of it paired with the pool's tokens at launch.
+    /// @notice BNB the mint raises. At launch the fee comes out of it and the rest is paired with the pool's tokens.
     uint256 public cap;
     /// @notice NFTs in the mint: `cap / nftPrice`.
     uint256 public maxNFTs;
@@ -131,9 +145,11 @@ contract CallZPancake is Initializable, ERC721 {
     mapping(uint256 tokenId => uint256) internal _ownedIndex;
 
     event Minted(address indexed to, uint256 firstId, uint256 qty, uint256 paid);
+    /// @param raised BNB that went into the pool: the raise less the launch fee.
     event Launched(
         address indexed token, address indexed pair, uint256 raised, uint256 poolTokens, uint256 tokensPerNFT
     );
+    event LaunchFeePaid(address indexed token, address indexed vault, uint256 amount);
     event Claimed(uint256 indexed tokenId, address indexed to, uint256 amount);
     event Refunded(uint256 indexed tokenId, address indexed to, uint256 amount);
 
@@ -159,11 +175,16 @@ contract CallZPancake is Initializable, ERC721 {
     }
 
     /// @notice Called once by the factory in the transaction that deploys the clone.
-    function initialize(address pancakeFactory_, address wbnb_, address creator_, CallZPancakeConfig calldata c)
-        external
-        initializer
-    {
+    function initialize(
+        address pancakeFactory_,
+        address wbnb_,
+        address creator_,
+        address vault_,
+        uint16 launchFeeBps_,
+        CallZPancakeConfig calldata c
+    ) external initializer {
         if (pancakeFactory_ == address(0) || wbnb_ == address(0) || creator_ == address(0)) revert InvalidConfig();
+        if (launchFeeBps_ > MAX_LAUNCH_FEE_BPS || (launchFeeBps_ != 0 && vault_ == address(0))) revert InvalidConfig();
         if (bytes(c.name).length == 0 || bytes(c.name).length > MAX_NAME_BYTES) revert InvalidConfig();
         if (bytes(c.symbol).length == 0 || bytes(c.symbol).length > MAX_SYMBOL_BYTES) revert InvalidConfig();
         if (bytes(c.meta).length > MAX_META_BYTES) revert InvalidConfig();
@@ -177,6 +198,8 @@ contract CallZPancake is Initializable, ERC721 {
         pancakeFactory = pancakeFactory_;
         wbnb = wbnb_;
         creator = creator_;
+        vault = vault_;
+        launchFeeBps = launchFeeBps_;
         nftPrice = c.nftPrice;
         cap = c.cap;
         maxNFTs = count;
@@ -202,7 +225,7 @@ contract CallZPancake is Initializable, ERC721 {
 
     /// @notice Implementation version.
     function version() external pure returns (string memory) {
-        return "1.0.0";
+        return "2.0.0";
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -304,8 +327,9 @@ contract CallZPancake is Initializable, ERC721 {
     // Launch
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// @dev Runs inside the mint that reaches the cap: deploys the token, seeds its PancakeSwap V2 pair with the
-    ///      whole raise and the pool share of the supply, and burns the LP.
+    /// @dev Runs inside the mint that reaches the cap: deploys the token, pays the launch fee to the vault, seeds
+    ///      the token's PancakeSwap V2 pair with the rest of the raise and the pool share of the supply, and burns
+    ///      the LP.
     ///
     ///      The liquidity is added by sending both assets to the pair and calling `mint` on it, not through the
     ///      router. The token address is predictable, so anyone can create the pair first and send WBNB to it.
@@ -328,6 +352,14 @@ contract CallZPancake is Initializable, ERC721 {
         address token_ = address(new CallZToken(tokenName, tokenSymbol));
         address pair_ = IPancakeFactory(factory_).getPair(token_, wbnb_);
         if (pair_ == address(0)) pair_ = IPancakeFactory(factory_).createPair(token_, wbnb_);
+
+        uint256 fee = (amount * launchFeeBps) / 10_000;
+        if (fee != 0) {
+            amount -= fee;
+            address vault_ = vault;
+            ICallZFeeVault(vault_).deposit{value: fee}(token_);
+            emit LaunchFeePaid(token_, vault_, fee);
+        }
 
         IWBNB(wbnb_).deposit{value: amount}();
         wbnb_.safeTransfer(pair_, amount);
