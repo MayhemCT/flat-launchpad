@@ -22,7 +22,8 @@ export const NETWORKS: Record<number, Network> = {
     chain: bscTestnet,
     label: "BNB Chain Testnet",
     unit: "tBNB",
-    rpcUrl: "https://bsc-testnet-rpc.publicnode.com",
+    // VITE_RPC_URL points the page at another endpoint, for example a private one or a local fork.
+    rpcUrl: import.meta.env.VITE_RPC_URL ?? "https://bsc-testnet-rpc.publicnode.com",
     explorer: "https://testnet.bscscan.com",
     flapTokenPath: "https://flap.sh/bnb-testnet",
   },

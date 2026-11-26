@@ -34,7 +34,7 @@ Neither is deployed yet. Each address depends only on the contract bytecode, so 
 
 - `RaidPassLauncher`: 15 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
 - `RaidPassCurve`: 7 fork tests pass against Flap's bonding curve Portal on a fork of BNB Chain, with nothing impersonated. The deploy, create, mint and claim commands below were rehearsed end to end on a local fork.
-- Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. It has not been run inside Flap's host.
+- Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. In `apps/web` it has created a Launcher, minted to the cap, launched and claimed on a local fork of BNB Chain Testnet. It has not been run inside Flap's own host.
 - The contracts are not audited.
 
 ## What is in this repository
@@ -172,6 +172,8 @@ npx vitest run apps/web/tests/salt.test.ts
 - **Phone layout.** Under 768 px the page renders a separate shell: compact top bar, cards in place of the table, and a tab bar at the bottom.
 - **Viewport tests.** 30 Playwright checks across ten screen sizes, from a folded Galaxy Fold to an ultrawide monitor, on every page: no sideways scroll, the right shell for the size, the canvas covering the viewport, every control on-screen and at least 44 px tall on touch screens, and the tab bar never covering content. They run in the Edge or Chrome already installed.
 - **Salt test.** The token-address prediction is checked against every salt the live Portal has locked.
+- **Flow test.** `tests/flow.pw.ts` drives the whole launch through the page on a local fork of BNB Chain Testnet: create a Launcher, mint every NFT, launch, claim. The contracts, the Portal and the page are the real ones; the fork's own account stands in for the wallet. The steps to run it are at the top of the file.
+- **Endpoint.** `VITE_RPC_URL` points the page at another RPC endpoint.
 
 ## Pool Launch indexer
 
