@@ -28,6 +28,12 @@
 .chat-author { font-family: var(--mono); color: var(--gold); white-space: nowrap; }
 .chat-message[data-own="true"] .chat-author { color: var(--good); }
 .chat-time { color: var(--dim); white-space: nowrap; }
+/* Whether the author holds the token right now: green when it does, quiet when it does not. */
+.chat-holding {
+  padding: 1px 7px; border: 1px solid color-mix(in srgb, var(--dim) 45%, transparent); border-radius: 999px;
+  color: var(--dim); font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap;
+}
+.chat-holding[data-holding="true"] { border-color: color-mix(in srgb, var(--good) 55%, transparent); color: var(--good); }
 /* A message is plain text. A long unbroken run of characters wraps rather than widening the page. */
 .chat-body { min-width: 0; font-size: 14.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .chat-empty { margin: 0; padding: 32px 16px; text-align: center; color: var(--dim); font-size: 14px; }

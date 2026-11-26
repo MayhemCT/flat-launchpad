@@ -1,11 +1,14 @@
 // Two chat rooms per token, kept by this site's Worker under /api/chat (apps/worker/src/chat.ts): the public
 // one, and a holder room that anyone can read but only wallets holding the token can post in. The Worker
-// checks the holding; this panel only says so.
-// Nobody logs in: the wallet signs each message with personal_sign, over plain EIP-1193, so this panel
-// loads no chain library.
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+// checks the holding before it stores a holder-room message. The holder room is the one a visitor sees first.
+// Beside every author the panel says whether that wallet holds the token right now, read from the token itself
+// on BNB Chain by this page, not taken from anyone's word.
+// Nobody logs in: the wallet signs each message with personal_sign, over plain EIP-1193.
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { parseAbi, type Address } from "viem";
 import { AuthorName, useDisplayName } from "./display-name";
 import { ago, short } from "./format";
+import { client } from "./trade";
 import { connect, useWallet, utf8Hex } from "./wallet";
 import "./chat.css";
 
@@ -36,6 +39,11 @@ const KEPT = 300;
 const FOLLOW_SLACK = 48;
 /** A device clock further than this from the server's is corrected for; anything less is network delay. */
 const CLOCK_SLACK_MS = 30_000;
+/** How often the authors' balances are read again. */
+const HOLDING_MS = 15_000;
+/** The most authors whose balances are read: the ones who posted last. */
+const HOLDING_AUTHORS = 100;
+const balanceAbi = parseAbi(["function balanceOf(address account) view returns (uint256)"]);
 
 /**
  * Characters that never reach a message: control characters (which include tabs and line breaks), zero-width
@@ -98,7 +106,10 @@ function containsLink(body: string): boolean {
 
 export function TokenChat({ chain, token }: { chain: ChatChain; token: string }) {
   const wallet = useWallet();
-  const [room, setRoom] = useState<ChatRoom>("public");
+  // Holders are heard first. Holdings are read on BNB Chain, so only a token there has a holder room.
+  const [room, setRoom] = useState<ChatRoom>(chain === "bsc" ? "holders" : "public");
+  /** Author to whether the wallet holds the token now. An author is absent until the chain has answered for it. */
+  const [holding, setHolding] = useState<Record<string, boolean>>({});
   const base = `/api/chat/${chain}/${token.toLowerCase()}`;
   // The public room keeps the address it always had; the holder room is named in the query.
   const address = (query: string) => `${base}?${room === "holders" ? "room=holders&" : ""}${query}`;
@@ -193,6 +204,45 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
     };
   }, [base, room]);
 
+  // Whether each author holds the token right now, read from the token itself in one request, and read again
+  // every few seconds: someone who sold since posting is shown as no longer holding.
+  const authors = useMemo(() => [...new Set(messages.map((message) => message.author).reverse())].slice(0, HOLDING_AUTHORS).sort(), [messages]);
+  const authorsKey = authors.join(",");
+  // Another token's balances say nothing about this one.
+  useEffect(() => setHolding({}), [chain, token]);
+  useEffect(() => {
+    if (chain !== "bsc" || authors.length === 0) return;
+    let current = true;
+    const read = () => {
+      if (document.visibilityState !== "visible") return;
+      client
+        .multicall({
+          allowFailure: true,
+          // No size limit on the batch: every balance travels in the one call.
+          batchSize: 0,
+          contracts: authors.map((author) => ({ address: token as Address, abi: balanceAbi, functionName: "balanceOf" as const, args: [author as Address] as const })),
+        })
+        .then(
+          (results) =>
+            current &&
+            // An author the token did not answer for keeps the reading already on the page, or none.
+            setHolding((previous) => ({
+              ...previous,
+              ...Object.fromEntries(authors.flatMap((author, index) => (results[index]?.status === "success" ? [[author, (results[index].result as bigint) > 0n]] : []))),
+            })),
+          // The chain could not be reached: the readings already on the page stand until the next try.
+          () => undefined,
+        );
+    };
+    read();
+    const timer = window.setInterval(read, HOLDING_MS);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+    // `authorsKey` is the content of `authors`.
+  }, [authorsKey, chain, token]);
+
   // Before the browser paints new messages, move to the newest, unless the reader has scrolled up.
   useLayoutEffect(() => {
     const element = list.current;
@@ -278,8 +328,8 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
         {/* Holdings are read on BNB Chain, so that is where a token has a holder room. */}
         {chain === "bsc" && (
           <div className="seg seg-small chat-rooms" role="group" aria-label="Chat room">
-            <button type="button" data-testid="chat-room-public" aria-pressed={room === "public"} onClick={() => setRoom("public")}>Chat</button>
             <button type="button" data-testid="chat-room-holders" aria-pressed={room === "holders"} onClick={() => setRoom("holders")}>Holders</button>
+            <button type="button" data-testid="chat-room-public" aria-pressed={room === "public"} onClick={() => setRoom("public")}>Chat</button>
           </div>
         )}
       </header>
@@ -293,6 +343,11 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
               <li key={message.id} className="chat-message" data-own={message.author === me}>
                 <span className="chat-meta">
                   <AuthorName className="chat-author" address={message.author} name={nameOf(message)} />
+                  {holding[message.author] !== undefined && (
+                    <span className="chat-holding" data-testid="chat-holding" data-holding={holding[message.author]} title="Read from the token on BNB Chain just now">
+                      {holding[message.author] ? "Holding" : room === "holders" ? "No longer holding" : "Not holding"}
+                    </span>
+                  )}
                   <time className="chat-time" dateTime={new Date(message.createdAt * 1000).toISOString()}>{ago(message.createdAt, now)}</time>
                 </span>
                 <span className="chat-body">{message.body}</span>
@@ -337,7 +392,10 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
       )}
       {error && <p className="chat-error" role="alert">{error}</p>}
 
-      <p className="chat-notice">Anyone can post here. Messages are signed by the wallet shown. Nothing in chat is advice.</p>
+      <p className="chat-notice">
+        {room === "holders" ? "Only holders can post here." : "Anyone can post here."} Messages are signed by the wallet shown.
+        {chain === "bsc" && " Holding is read from BNB Chain as you watch."} Nothing in chat is advice.
+      </p>
     </section>
   );
 }

@@ -101,6 +101,9 @@ test("post a signed message in a token's chat", async ({ page }) => {
   const chat = page.getByTestId("token-chat");
   await expect(chat).toBeVisible({ timeout: 30_000 });
   const text = `fork test ${Date.now()}`;
+  // The holder room is shown first: this message goes in the public one.
+  await expect(chat.getByTestId("chat-room-holders")).toHaveAttribute("aria-pressed", "true");
+  await chat.getByTestId("chat-room-public").click();
   await chat.locator("input").fill(text);
   await chat.getByRole("button", { name: "Send" }).click();
   // The wallet signs the message, the server checks the signature, and it shows up in the room.
