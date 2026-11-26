@@ -433,6 +433,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
         <div className="token-actions">
           <button type="button" className="button button-quiet" onClick={copy} title={token}>{copied ? "Copied" : <><code>{short(token)}</code>&nbsp;Copy</>}</button>
           <button type="button" className="button button-quiet" data-testid="pop-out" title="Open the chart and chat in a small window of their own" onClick={() => popOut(token)}>Pop out ⧉</button>
+          {market && <a className="button button-quiet" href={`#/pool/${token}`}>Add liquidity</a>}
           <a className="button button-flap" href={flapTokenUrl(SITE, token)} target="_blank" rel="noreferrer">Flap ↗</a>
           <a className="button button-quiet" href={pairPageUrl(pair, chartId ?? token)} target="_blank" rel="noreferrer">DexScreener ↗</a>
           <a className="button button-quiet" href={explorerAddressUrl(SITE, token)} target="_blank" rel="noreferrer">BscScan ↗</a>

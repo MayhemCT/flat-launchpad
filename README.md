@@ -9,6 +9,8 @@ Live: https://raidpass.dry-dust-1399.workers.dev
 - **Memescope.** Every launchpad built on Pool Launch on one live board, in three columns a launch crosses as it fills: New, Final stretch, Launched. Raises are ranked by how much of their target they hold, launchpads are named and colour-coded, and launched tokens show their own pictures.
 - **Token pages.** For every launched token on BNB Chain: the DexScreener chart with the pool's trades under it, price, market cap, liquidity and volume, the token's own taxes, whether its DexScreener profile is paid, and its description and links from its own metadata and from DexScreener.
 - **Trading.** Buy and sell through PancakeSwap's router straight from the visitor's wallet, on the token page, with one click from the board, or from the wallet menu, which lists the positions a wallet holds and sells them. The site adds no fee and never holds funds.
+- **Pools.** The PancakeSwap pools of the tokens that graduated on Flap, deepest first, with adding and removing liquidity through PancakeSwap's router.
+- **Pop-out windows.** A small window per token with the chart on top and the chat under it; several can be open at once.
 - **Chat.** One room per token. Messages are signed by the wallet that wrote them; text only, no links.
 - **Launchpad.** NFT pass mints that launch a token: straight into a PancakeSwap pool on BNB Chain (`CallZPancake`), and through Flap Pool Launch on BNB Chain Testnet (`RaidPassLauncher`).
 - **Aggregator.** Every Launcher, launched token, factory and deployer on Pool Launch, on BNB Chain and BNB Chain Testnet.
@@ -53,7 +55,7 @@ None is deployed yet. The site's launch pages deploy `RaidPassLauncherFactory` a
 - `RaidPassCurve`: 7 fork tests pass against Flap's bonding curve Portal on a fork of BNB Chain, with nothing impersonated. The deploy, create, mint and claim commands below were rehearsed end to end on a local fork.
 - Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. In `apps/web` it has created a Launcher, minted to the cap, launched and claimed on a local fork of BNB Chain Testnet. It has not been run inside Flap's own host.
 - `CallZPancake`: 16 fork tests pass against PancakeSwap on a fork of BNB Chain, including a pair created and funded by someone else before the launch, re-entry during the launch and payments, and the heaviest launch (7.8M gas, under the 16.7M cap).
-- Site: `apps/web/tests/trade.pw.ts` drives buys, sells, a wallet-menu sale, one-click buys and a signed chat post through the page, and `tests/launch.pw.ts` drives the whole mainnet launch (deploy the factory, create, mint to the cap, launch, claim, buy the new token), both on a local fork of BNB Chain against the real PancakeSwap contracts.
+- Site: `apps/web/tests/trade.pw.ts` drives buys, sells, a wallet-menu sale, one-click buys, adding and removing liquidity, the trades table, the pop-out and a signed chat post through the page, and `tests/launch.pw.ts` drives the whole mainnet launch (deploy the factory, create, mint to the cap, launch, claim, buy the new token), both on a local fork of BNB Chain against the real PancakeSwap contracts.
 - The contracts are not audited.
 
 ## What is in this repository

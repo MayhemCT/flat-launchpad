@@ -35,6 +35,8 @@ export interface TokenRow {
   image: string | null;
   /** IPFS path of the metadata its creator pinned at launch: description and links. */
   meta: string | null;
+  /** The token's pool, as its launch recorded it. */
+  pool: string | null;
   quoteToken: string | null;
   totalSupply: string | null;
   initialPriceWad: string | null;

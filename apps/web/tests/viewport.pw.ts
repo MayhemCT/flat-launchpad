@@ -24,6 +24,8 @@ const PAGES = [
   { name: "deployers", hash: "#/deployers", ready: "[data-testid=deployer-table], [data-testid=deployer-cards]" },
   // A real launched token: its page loads the chart frame, the market and the trade panel.
   { name: "token", hash: "#/token/0x7c45614b3449cf2603262b3854c75a67d1517777", ready: "[data-testid=trade-panel]" },
+  { name: "pools", hash: "#/pools", ready: "[data-testid=pool-list], [data-testid=pools-empty]" },
+  { name: "pool", hash: "#/pool/0x4d1fc29de06b7a39bbec1a3468104802d3277777", ready: "[data-testid=liquidity-panel]" },
   { name: "launch", hash: "#/launch", ready: "[data-testid=pancake-not-deployed], [data-testid=pancake-empty], [data-testid=pancake-mints]" },
   { name: "launch create", hash: "#/launch/create", ready: "[data-testid=pancake-create]" },
   { name: "mint", hash: "#/mint/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-mint]" },

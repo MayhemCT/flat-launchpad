@@ -5,6 +5,7 @@ import { RAIDPASS, SITES, type ChainKey, type Site } from "./site";
 import { connect, switchChain, useWallet } from "./wallet";
 import { ScopePage } from "./scope";
 import type { PancakeRoute } from "./pancake";
+import type { PoolsRoute } from "./pools";
 import type { Locale, RaidPassRoute } from "./raidpass";
 
 // The launchpad needs a chain library and the launch UI package: both load only when one of its pages opens.
@@ -15,6 +16,8 @@ const TokenPage = lazy(() => import("./token"));
 const PopPage = lazy(() => import("./token").then((module) => ({ default: module.PopPage })));
 // The launchpad on BNB Chain mainnet: pass mints that launch into PancakeSwap.
 const PancakeSection = lazy(() => import("./pancake"));
+// Pools: Flap's graduated pairs on PancakeSwap, with adding and removing liquidity.
+const PoolsSection = lazy(() => import("./pools"));
 // The wallet's positions read balances and sell through the same library: loaded when first opened.
 const Positions = lazy(() => import("./positions"));
 
@@ -25,7 +28,7 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
 ];
 
 type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
-type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "missing" };
+type Route = AggregatorRoute | RaidPassRoute | PancakeRoute | PoolsRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
@@ -39,6 +42,9 @@ function parseRoute(hash: string): Route {
   if (path === "/launch/testnet" || path === "/raidpass") return { name: "raidpass" };
   const mint = /^\/mint\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (mint?.[1]) return { name: "mint", address: mint[1].toLowerCase() };
+  if (path === "/pools") return { name: "pools" };
+  const pool = /^\/pool\/(0x[0-9a-fA-F]{40})$/.exec(path);
+  if (pool?.[1]) return { name: "pool", address: pool[1].toLowerCase() };
   const pop = /^\/pop\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (pop?.[1]) return { name: "pop", address: pop[1].toLowerCase() };
   const token = /^\/token\/(0x[0-9a-fA-F]{40})$/.exec(path);
@@ -194,19 +200,21 @@ function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange(next: Loc
 }
 
 // `short` is the label on the phone tab bar, where five tabs share the width.
-const NAV: ReadonlyArray<{ href: string; label: string; short?: string; routes: ReadonlyArray<Route["name"]> }> = [
+// `wide` entries are left off the phone tab bar, where five fit: they are linked from the Factories page.
+const NAV: ReadonlyArray<{ href: string; label: string; short?: string; wide?: boolean; routes: ReadonlyArray<Route["name"]> }> = [
   { href: "#/scope", label: "Memescope", short: "Scope", routes: ["scope", "launches"] },
-  { href: "#/tokens", label: "Tokens", routes: ["tokens"] },
+  { href: "#/tokens", label: "Tokens", routes: ["tokens", "token"] },
+  { href: "#/pools", label: "Pools", routes: ["pools", "pool"] },
   { href: "#/factories", label: "Factories", routes: ["factories"] },
-  { href: "#/deployers", label: "Deployers", routes: ["deployers"] },
+  { href: "#/deployers", label: "Deployers", routes: ["deployers"], wide: true },
   { href: "#/launch", label: "Launch", routes: ["launch", "launch-create", "mint", "raidpass", "create", "launcher"] },
 ];
 
 /** What a page works with: the index for either network, the testnet launchpad's own network, or BNB Chain itself. */
 type Mode = "board" | "launchpad" | "token";
 
-const isMainnetPage = (route: Route): route is PancakeRoute | { name: "token"; address: string } =>
-  route.name === "token" || route.name === "launch" || route.name === "launch-create" || route.name === "mint";
+const isMainnetPage = (route: Route): route is PancakeRoute | PoolsRoute | { name: "token"; address: string } =>
+  route.name === "token" || route.name === "launch" || route.name === "launch-create" || route.name === "mint" || route.name === "pools" || route.name === "pool";
 
 interface ShellProps {
   route: Route;
@@ -221,7 +229,7 @@ interface ShellProps {
 function NavLinks({ route, compact = false }: { route: Route; compact?: boolean }) {
   return (
     <>
-      {NAV.map((item) => (
+      {NAV.filter((item) => !compact || !item.wide).map((item) => (
         <a key={item.href} href={item.href} aria-current={item.routes.includes(route.name) ? "page" : undefined}>
           {compact ? item.short ?? item.label : item.label}
         </a>
@@ -321,6 +329,11 @@ export function App() {
         {(route.name === "launch" || route.name === "launch-create" || route.name === "mint") && (
           <Suspense fallback={<p className="note" role="status">Loading the launchpad…</p>}>
             <PancakeSection route={route} />
+          </Suspense>
+        )}
+        {(route.name === "pools" || route.name === "pool") && (
+          <Suspense fallback={<p className="note" role="status">Loading the pools…</p>}>
+            <PoolsSection route={route} />
           </Suspense>
         )}
         {route.name === "missing" && <p className="note" role="alert">That page does not exist. <a href="#/">Back to the board.</a></p>}

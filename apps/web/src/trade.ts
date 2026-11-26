@@ -468,3 +468,230 @@ export async function sell({ market, account, amountIn, slippageBps, onStep }: T
     throw explain(error, hash !== undefined, hash);
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Liquidity: adding to and removing from a token's PancakeSwap pool
+// ─────────────────────────────────────────────────────────────────────────────
+
+const liquidityAbi = parseAbi([
+  "function addLiquidityETH(address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline) payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity)",
+  "function addLiquidity(address tokenA, address tokenB, uint256 amountADesired, uint256 amountBDesired, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline) returns (uint256 amountA, uint256 amountB, uint256 liquidity)",
+  "function removeLiquidityETHSupportingFeeOnTransferTokens(address token, uint256 liquidity, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline) returns (uint256 amountETH)",
+  "function removeLiquidity(address tokenA, address tokenB, uint256 liquidity, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline) returns (uint256 amountA, uint256 amountB)",
+]);
+const erc20Abi = parseAbi([
+  "function totalSupply() view returns (uint256)",
+  "function balanceOf(address account) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+]);
+
+export interface PoolPosition {
+  /** The pool's reserves now. */
+  reserveToken: bigint;
+  reserveQuote: bigint;
+  /** All LP tokens of the pool, and the account's. */
+  lpSupply: bigint;
+  lpBalance: bigint;
+  /** What the account's LP tokens are worth in the pool right now. */
+  tokenShare: bigint;
+  quoteShare: bigint;
+  /** What the account has to put in: the token, and the pool's quote asset (BNB or USDT). */
+  tokenBalance: bigint;
+  quoteBalance: bigint;
+}
+
+/** The pool as it stands, and the account's part in it. */
+export async function poolPosition(market: Market, account: Address | null): Promise<PoolPosition> {
+  const holder = account ?? ZERO;
+  const [pool, lpSupply, lpBalance, tokenBalance, quoteBalance] = await Promise.all([
+    reserves(market.pair, market.token),
+    client.readContract({ address: market.pair, abi: erc20Abi, functionName: "totalSupply" }),
+    client.readContract({ address: market.pair, abi: erc20Abi, functionName: "balanceOf", args: [holder] }),
+    client.readContract({ address: market.token, abi: erc20Abi, functionName: "balanceOf", args: [holder] }),
+    account === null
+      ? 0n
+      : market.quote === "BNB"
+        ? client.getBalance({ address: account })
+        : client.readContract({ address: USDT, abi: erc20Abi, functionName: "balanceOf", args: [account] }),
+  ]);
+  const share = (reserve: bigint) => (lpSupply === 0n ? 0n : (reserve * lpBalance) / lpSupply);
+  return { ...pool, lpSupply, lpBalance, tokenShare: share(pool.reserveToken), quoteShare: share(pool.reserveQuote), tokenBalance, quoteBalance };
+}
+
+/** The tokens that go in beside `quoteIn` of the pool's quote asset, at the pool's current price. */
+export function tokensFor(position: Pick<PoolPosition, "reserveToken" | "reserveQuote">, quoteIn: bigint): bigint {
+  return position.reserveQuote === 0n ? 0n : (quoteIn * position.reserveToken) / position.reserveQuote;
+}
+
+/** Allows `spender` to move exactly `amount` of `asset`, when it is not already allowed. */
+async function allow(asset: Address, account: Address, spender: Address, amount: bigint, onStep?: (step: TradeStep, hash?: Hex) => void) {
+  const allowance = await client.readContract({ address: asset, abi: erc20Abi, functionName: "allowance", args: [account, spender] });
+  if (allowance >= amount) return;
+  onStep?.("approving");
+  const { request } = await client.simulateContract({ account, address: asset, abi: erc20Abi, functionName: "approve", args: [spender, amount] });
+  const approval = await wallet().writeContract(request);
+  const receipt = await client.waitForTransactionReceipt({ hash: approval, timeout: 120_000 });
+  if (receipt.status !== "success") throw new TradeError("REVERTED", "Approval reverted", "The approval was rejected. Only the network fee was spent.", approval);
+}
+
+export interface LiquidityRequest {
+  market: Market;
+  account: Address;
+  /** Adding: the pool's quote asset to put in. Removing: the LP tokens to take out. */
+  amount: bigint;
+  slippageBps: number;
+  onStep?(step: TradeStep, hash?: Hex): void;
+}
+
+/**
+ * Adds liquidity: `amount` of the pool's quote asset and the matching tokens at the pool's current price,
+ * through PancakeSwap's router. The LP tokens come to the account. A token that takes a tax on transfers takes
+ * it on the tokens going into the pool, so the LP tokens received are that much fewer than the amounts suggest:
+ * the transaction is simulated first, and what it really returns is what is reported.
+ */
+export async function addLiquidity({ market, account, amount, slippageBps, onStep }: LiquidityRequest): Promise<{ hash: Hex; liquidity: bigint }> {
+  let hash: Hex | undefined;
+  try {
+    const signer = wallet();
+    onStep?.("pricing");
+    const position = await poolPosition(market, account);
+    const tokens = tokensFor(position, amount);
+    if (tokens === 0n) throw new TradeError("NO_POOL", "Amount too small", "This amount is too small to add at the pool's price. Nothing was sent.");
+    if (tokens > position.tokenBalance) {
+      throw new TradeError("INSUFFICIENT_FUNDS", `Not enough ${market.symbol || "tokens"}`, "Adding liquidity takes both sides of the pool, and this wallet does not hold enough of the token for this amount. Nothing was sent.");
+    }
+    if (amount > position.quoteBalance) {
+      throw new TradeError("INSUFFICIENT_FUNDS", `Not enough ${market.quote}`, `This wallet does not hold enough ${market.quote} for this amount. Nothing was sent.`);
+    }
+
+    await allow(market.token, account, PANCAKE_ROUTER, tokens, onStep);
+    if (market.quote === "USDT") await allow(USDT, account, PANCAKE_ROUTER, amount, onStep);
+
+    onStep?.("checking");
+    const closes = await deadline();
+    const tokenMin = withSlippage(tokens, slippageBps);
+    const quoteMin = withSlippage(amount, slippageBps);
+    let liquidity: bigint;
+    if (market.quote === "BNB") {
+      const call = {
+        account,
+        address: PANCAKE_ROUTER,
+        abi: liquidityAbi,
+        functionName: "addLiquidityETH",
+        args: [market.token, tokens, tokenMin, quoteMin, account, closes],
+        value: amount,
+      } as const;
+      liquidity = (await client.simulateContract(call)).result[2];
+      const gas = await client.estimateContractGas(call);
+      onStep?.("confirm");
+      hash = await signer.writeContract({ ...call, gas: withHeadroom(gas) });
+    } else {
+      const call = {
+        account,
+        address: PANCAKE_ROUTER,
+        abi: liquidityAbi,
+        functionName: "addLiquidity",
+        args: [market.token, USDT, tokens, amount, tokenMin, quoteMin, account, closes],
+      } as const;
+      liquidity = (await client.simulateContract(call)).result[2];
+      const gas = await client.estimateContractGas(call);
+      onStep?.("confirm");
+      hash = await signer.writeContract({ ...call, gas: withHeadroom(gas) });
+    }
+    onStep?.("pending", hash);
+    return { hash: await settle(hash), liquidity };
+  } catch (error) {
+    throw explain(error, hash !== undefined, hash);
+  }
+}
+
+/** Removes liquidity: burns `amount` LP tokens for their share of the pool, paid to the account as the token and BNB or USDT. */
+export async function removeLiquidity({ market, account, amount, slippageBps, onStep }: LiquidityRequest): Promise<{ hash: Hex }> {
+  let hash: Hex | undefined;
+  try {
+    const signer = wallet();
+    onStep?.("pricing");
+    const position = await poolPosition(market, account);
+    if (amount === 0n || amount > position.lpBalance) {
+      throw new TradeError("INSUFFICIENT_FUNDS", "Not enough LP tokens", "This wallet does not hold that many LP tokens of this pool. Nothing was sent.");
+    }
+    const tokenMin = withSlippage((position.reserveToken * amount) / position.lpSupply, slippageBps);
+    const quoteMin = withSlippage((position.reserveQuote * amount) / position.lpSupply, slippageBps);
+
+    await allow(market.pair, account, PANCAKE_ROUTER, amount, onStep);
+    onStep?.("checking");
+    const closes = await deadline();
+    if (market.quote === "BNB") {
+      // The fee-on-transfer form: it pays out whatever tokens actually arrive after the token's own tax.
+      const call = {
+        account,
+        address: PANCAKE_ROUTER,
+        abi: liquidityAbi,
+        functionName: "removeLiquidityETHSupportingFeeOnTransferTokens",
+        args: [market.token, amount, tokenMin, quoteMin, account, closes],
+      } as const;
+      await client.simulateContract(call);
+      const gas = await client.estimateContractGas(call);
+      onStep?.("confirm");
+      hash = await signer.writeContract({ ...call, gas: withHeadroom(gas) });
+    } else {
+      const call = {
+        account,
+        address: PANCAKE_ROUTER,
+        abi: liquidityAbi,
+        functionName: "removeLiquidity",
+        args: [market.token, USDT, amount, tokenMin, quoteMin, account, closes],
+      } as const;
+      await client.simulateContract(call);
+      const gas = await client.estimateContractGas(call);
+      onStep?.("confirm");
+      hash = await signer.writeContract({ ...call, gas: withHeadroom(gas) });
+    }
+    onStep?.("pending", hash);
+    return { hash: await settle(hash) };
+  } catch (error) {
+    throw explain(error, hash !== undefined, hash);
+  }
+}
+
+export interface PoolSummary {
+  token: Address;
+  pair: Address;
+  quote: "BNB" | "USDT";
+  reserveToken: bigint;
+  reserveQuote: bigint;
+  /** Both sides of the pool in BNB: twice the quote side, with USDT priced through PancakeSwap's BNB/USDT pool. */
+  liquidityBnb: bigint;
+}
+
+/** The pools of `tokens` as they stand, deepest first. `pair` is the pool address the launch recorded. */
+export async function poolSummaries(tokens: Array<{ token: Address; pair: Address; quoteToken: string | null }>): Promise<PoolSummary[]> {
+  if (tokens.length === 0) return [];
+  const bnbUsdt = await client.readContract({ address: PANCAKE_FACTORY, abi: factoryAbi, functionName: "getPair", args: [WBNB, USDT] });
+  const [price, states] = await Promise.all([
+    // With BNB as the "token" side: BNB per USDT is reserveToken / reserveQuote.
+    reserves(bnbUsdt, WBNB),
+    client.multicall({
+      allowFailure: true,
+      contracts: tokens.flatMap(({ pair }) => [
+        { address: pair, abi: pairAbi, functionName: "token0" as const },
+        { address: pair, abi: pairAbi, functionName: "getReserves" as const },
+      ]),
+    }),
+  ]);
+  const summaries: PoolSummary[] = [];
+  tokens.forEach(({ token, pair, quoteToken }, index) => {
+    const token0 = states[index * 2];
+    const pool = states[index * 2 + 1];
+    if (token0?.status !== "success" || pool?.status !== "success") return;
+    const [reserve0, reserve1] = pool.result as readonly [bigint, bigint, number];
+    const tokenIsZero = lower(token0.result as string) === lower(token);
+    const reserveToken = tokenIsZero ? reserve0 : reserve1;
+    const reserveQuote = tokenIsZero ? reserve1 : reserve0;
+    const quote = quoteToken && lower(quoteToken) === lower(USDT) ? "USDT" : "BNB";
+    const quoteInBnb = quote === "BNB" ? reserveQuote : price.reserveQuote === 0n ? 0n : (reserveQuote * price.reserveToken) / price.reserveQuote;
+    summaries.push({ token, pair, quote, reserveToken, reserveQuote, liquidityBnb: quoteInBnb * 2n });
+  });
+  return summaries.sort((a, b) => (b.liquidityBnb > a.liquidityBnb ? 1 : -1));
+}

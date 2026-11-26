@@ -118,6 +118,30 @@ test("the wallet menu lists a bought token and sells all of it", async ({ page }
   await expect(positions.locator(".trade-done")).toContainText("Sold.", { timeout: 120_000 });
 });
 
+test("add liquidity to a graduated Flap pool, then take it out again", async ({ page }) => {
+  await useForkWallet(page);
+  // The Pools page lists the graduated pairs.
+  await page.goto("/#/pools");
+  await expect(page.getByTestId("pool-list").locator("li").first()).toBeVisible({ timeout: 60_000 });
+
+  // Liquidity takes both sides of the pool, so buy some of the token first.
+  await buy(page, BNB_POOLED, "0.2");
+  await page.goto(`/#/pool/${BNB_POOLED}`);
+  const panel = page.getByTestId("liquidity-panel");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  await panel.locator("input[name=amount]").fill("0.05");
+  await expect(panel.locator(".trade-quote dd").first()).not.toHaveText("—", { timeout: 30_000 });
+  await panel.locator("button.trade-go").click();
+  await expect(panel.getByText("Liquidity added.")).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByTestId("pool-stats")).not.toContainText("0.00%", { timeout: 30_000 });
+
+  await panel.getByRole("button", { name: "Remove", exact: true }).click();
+  await panel.getByRole("button", { name: "100%" }).click();
+  await expect(panel.locator(".trade-quote dd").first()).toContainText("BNB", { timeout: 30_000 });
+  await panel.locator("button.trade-go").click();
+  await expect(panel.getByText("Liquidity removed.")).toBeVisible({ timeout: 120_000 });
+});
+
 test("one-click buy from the Memescope board", async ({ page }) => {
   await useForkWallet(page);
   await page.goto("/#/scope");

@@ -272,7 +272,7 @@ export function FactoriesPage({ site, mobile }: PageProps) {
     <>
       <div className="page-head">
         <h1 className="page-title">Factories</h1>
-        <p className="lede">The launchpads built on Pool Launch. Each Launcher Factory is one launchpad's contract: it deploys one Launcher per launch, and is named here by the title its launches carry. A Vault Factory deploys a token's vault.</p>
+        <p className="lede">The launchpads built on Pool Launch. Each Launcher Factory is one launchpad's contract: it deploys one Launcher per launch, and is named here by the title its launches carry. A Vault Factory deploys a token's vault. <a href="#/deployers">See who deploys →</a></p>
       </div>
       <Status result={factories}>
         {(data) => {
