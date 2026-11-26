@@ -1,11 +1,30 @@
 {
-  // The RaidPass site: static files only. No server code, no bindings and no secrets.
-  // Visitors sign with their own wallets, and the page reads public chain data.
+  // The RaidPass site and its indexer, as one Worker.
+  //   - Static files for the pages. Visitors sign with their own wallets; the Worker holds no keys and no secrets.
+  //   - /api/*: read-only JSON over the Pool Launch index.
+  //   - A cron tick that reads new Pool Launch Portal events from public RPC endpoints into D1.
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "raidpass",
+  "main": "../worker/src/index.ts",
   "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "raidpass-index",
+      "database_id": "f9c442d0-44ec-45d0-8fe2-2b9310da3398",
+      "migrations_dir": "../worker/migrations"
+    }
+  ],
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    // RPC requests one cron run may make across both chains. This account is on the Workers Paid plan.
+    "SUBREQUEST_BUDGET": "400"
   }
 }
