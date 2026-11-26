@@ -331,6 +331,37 @@ abstract contract RaidPassFork is ForkBase {
         assertEq(alice.balance, 30 ether, "alice got everything back before the deadline");
     }
 
+    /// @dev BNB Chain rejects any transaction above 16,777,216 gas (BEP-652, live since the Mendel upgrade). The
+    ///      heaviest RaidPass transaction is the mint that buys the per-call maximum and also runs the launch.
+    ///      Run with `forge test --isolate` so each call is metered as its own transaction.
+    function test_10_theHeaviestTransactionsFitTheGasCap() public {
+        uint256 txGasCap = 16_777_216;
+        _open();
+
+        RaidPassConfig memory c = _config("raid-gas");
+        c.mintPrice = 0.2 ether;
+        c.maxPasses = 60;
+        RaidPassLauncher launcher = RaidPassLauncher(_newLauncher(address(factory), abi.encode(c)));
+
+        vm.prank(alice);
+        launcher.mint{value: 10 * c.mintPrice}();
+
+        uint256 perCall = launcher.MAX_MINT_PER_TX();
+        vm.prank(bob);
+        launcher.mint{value: perCall * c.mintPrice}();
+        uint256 launchGas = vm.lastCallGas().gasTotalUsed;
+        assertTrue(launcher.launched(), "the largest mint also launched");
+        assertLt(launchGas, txGasCap * 3 / 4, "largest mint + launch leaves a quarter of the cap spare");
+
+        vm.prank(bob);
+        launcher.claim();
+        uint256 claimGas = vm.lastCallGas().gasTotalUsed;
+        assertLt(claimGas, txGasCap / 4, "claiming a full mint call's passes is far below the cap");
+
+        emit log_named_uint("mint 50 passes + launch, gas", launchGas);
+        emit log_named_uint("claim 50 passes, gas", claimGas);
+    }
+
     function test_09_aLauncherCannotBeInitializedTwice() public {
         _open();
         RaidPassLauncher launcher = _create("raid-init");

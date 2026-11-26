@@ -26,7 +26,7 @@ What makes it different from a contribution round: the allocation is a transfera
 
 ## Status
 
-- Contracts: 9 fork tests pass against the live Portal on BNB Chain Testnet, covering create, mint, launch, claim, trading with tax dispatch, burn-to-refund, Guardian recovery and the factory's access rules.
+- Contracts: 10 fork tests pass against the live Portal on BNB Chain Testnet and against a fork of BNB Chain, covering create, mint, launch, claim, trading with tax dispatch, burn-to-refund, Guardian recovery, the factory's access rules and the gas cap.
 - Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. It has not been run inside Flap's host yet.
 - Not yet deployed to BNB Chain Testnet. The factory address below is where it will land.
 
@@ -59,21 +59,28 @@ cd contracts
 cast wallet import raidpass --interactive        # once; keeps the key out of files
 export BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com
 
-forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast
+forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy
 
 export FACTORY=0x4F51d78a3Be8093aE11CB026D563C70c1B1e9e69
 export TOKEN_NAME="Raid Example" TOKEN_SYMBOL=RAIDX
 export MINT_PRICE=250000000000000000 MAX_PASSES=10 SALE_DURATION=86400
-forge script script/CreateLauncher.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast
+forge script script/CreateLauncher.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy
 
 # mint (repeat until sold out; the last mint launches the token), then claim
-cast send <launcher> "mint()" --value 0.25ether --rpc-url $BSC_TESTNET_RPC_URL --account raidpass
-cast send <launcher> "claim()" --rpc-url $BSC_TESTNET_RPC_URL --account raidpass
+cast send <launcher> "mint()" --value 0.25ether --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --legacy
+cast send <launcher> "claim()" --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --legacy
 ```
 
 The Portal rejects a launch whose pool is below its liquidity floor. With half the supply in the pool the floor is 1,500 USD of BNB at the Portal's configured price (700 USD per BNB when this was written, so about 2.15 BNB), unless Flap sets a lower multiplier for the factory. A mint whose target is below the floor cannot sell out, and its passes are refunded after the deadline.
 
-On BNB Chain Testnet the Portal accepts Launchers from any factory. On BNB Chain a factory must be audited and enabled by Flap first.
+On BNB Chain Testnet the Portal accepts Launchers from any factory. On BNB Chain, Pool Launch is permissioned: token creation is paused and `Portal.newLauncher` reverts for any factory Flap has not audited and enabled, so RaidPass cannot launch there until Flap enables this factory. The same suite passes against a fork of BNB Chain with the factory enabled (`RaidPassBSCForkTest`, needs `BSC_RPC_URL`).
+
+### BNB Chain transaction rules this was checked against
+
+- **Send with `--legacy`.** BNB Chain's base fee is 0, and Foundry's EIP-1559 estimate on BNB Chain Testnet comes out at 1 wei, which the network does not accept. With `--legacy` Foundry uses the node's gas price (0.05 gwei on BNB Chain, the network minimum, and 0.1 gwei on Testnet when this was written).
+- **Per-transaction gas cap: 16,777,216** (BEP-652, live since the Mendel upgrade). The heaviest RaidPass transaction, a mint of the 50-pass per-call maximum that also runs the launch, uses about 9.2M gas. The factory deployment uses about 6.6M. `test_10` asserts the margin.
+- **Large holders.** `claim()` costs about 30,000 gas per pass, so one call covers roughly 500 passes; a wallet holding more uses `claimPasses(ids)` in batches. The same applies to `refund()` and `refundPasses(ids)`.
+- **Contract size.** `RaidPassLauncher` is 21.7 KB of runtime code, under the 24,576-byte limit.
 
 ## Launch UI
 
