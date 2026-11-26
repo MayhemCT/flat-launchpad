@@ -1,0 +1,20 @@
+{
+  "name": "@flat/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply flat-launchpad --local",
+    "migrate:remote": "wrangler d1 migrations apply flat-launchpad --remote"
+  },
+  "dependencies": {
+    "@flat/protocol": "*",
+    "viem": "^2.58.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261125.1",
+    "wrangler": "^4.168.0"
+  }
+}
