@@ -16,9 +16,12 @@ import {RaidPassLauncher, RaidPassConfig} from "src/raidpass/RaidPassLauncher.so
 ///     TOKEN_NAME     token name
 ///     TOKEN_SYMBOL   token symbol
 ///     TOKEN_META     metadata CID (may be empty)
-///     MINT_PRICE     wei per pass
-///     MAX_PASSES     passes in the mint
+///     NFT_PRICE      wei per NFT
+///     CAP            wei to raise: at most 10 BNB and an exact multiple of NFT_PRICE
 ///     SALE_DURATION  mint window in seconds
+///     POOL_SHARE_BPS share of supply in the pool, bps (default 5000)
+///     BUY_TAX_BPS    buy tax, bps (default 300)
+///     SELL_TAX_BPS   sell tax, bps (default 500)
 ///
 ///   forge script script/CreateLauncher.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account <keystore-name> --broadcast
 contract CreateLauncher is Script {
@@ -33,9 +36,12 @@ contract CreateLauncher is Script {
         c.name = vm.envString("TOKEN_NAME");
         c.symbol = vm.envString("TOKEN_SYMBOL");
         c.meta = vm.envOr("TOKEN_META", string(""));
-        c.mintPrice = vm.envUint("MINT_PRICE");
-        c.maxPasses = vm.envUint("MAX_PASSES");
+        c.nftPrice = vm.envUint("NFT_PRICE");
+        c.cap = vm.envUint("CAP");
         c.saleDuration = vm.envUint("SALE_DURATION");
+        c.poolShareBps = uint16(vm.envOr("POOL_SHARE_BPS", uint256(5000)));
+        c.buyTaxBps = uint16(vm.envOr("BUY_TAX_BPS", uint256(300)));
+        c.sellTaxBps = uint16(vm.envOr("SELL_TAX_BPS", uint256(500)));
         c.salt = _mineSalt(address(portal), keccak256(abi.encode(address(factory), c.name, c.symbol, block.number)));
 
         uint256 fee = portal.SALT_LOCK_FEE();

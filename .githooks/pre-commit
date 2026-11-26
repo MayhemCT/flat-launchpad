@@ -1,0 +1,34 @@
+#!/bin/sh
+# This repository is public. Refuse any commit that would add a private key, a wallet keystore,
+# a mnemonic or an env file. Enable once per clone:  git config core.hooksPath .githooks
+
+fail=0
+
+# 1. Files that must never be committed, by name.
+git diff --cached --name-only --diff-filter=ACMR | while IFS= read -r file; do
+  case "$file" in
+    *.env.example) ;;
+    .env|.env.*|*/.env|*/.env.*|*.pem|*.key|*.keystore|*keystore*|*.dev.vars|*password*|*mnemonic*|*/broadcast/*)
+      echo "pre-commit: refusing to commit '$file' (looks like a secret or a wallet file)" >&2
+      exit 1 ;;
+  esac
+done || fail=1
+
+# 2. Secret-shaped content in the lines being added.
+added=$(git diff --cached -U0 --no-color --diff-filter=ACMR | grep '^+' | grep -v '^+++')
+check() {
+  if printf '%s\n' "$added" | grep -qE -- "$1"; then
+    echo "pre-commit: refusing to commit: $2" >&2
+    fail=1
+  fi
+}
+check '--private-key[ =]+(0x)?[0-9a-fA-F]{64}' 'a --private-key value'
+check '(PRIVATE|PRIV|SECRET|SIGNER|DEPLOYER)[A-Za-z_]*KEY[A-Za-z_]*["'"'"' ]*[:=]["'"'"' ]*(0x)?[0-9a-fA-F]{64}' 'a private key assignment'
+check '(MNEMONIC|SEED_PHRASE|SEEDPHRASE)[A-Za-z_]*["'"'"' ]*[:=]["'"'"' ]*[a-z]+( [a-z]+){11,}' 'a mnemonic'
+check '"ciphertext"[[:space:]]*:' 'a wallet keystore (encrypted key JSON)'
+check 'BEGIN [A-Z ]*PRIVATE KEY' 'a PEM private key'
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit: nothing was committed. Remove the secret, and rotate it if it was ever real." >&2
+  exit 1
+fi

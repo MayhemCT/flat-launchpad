@@ -53,7 +53,7 @@ type DetailProps = {
 
 // The RaidPassLauncherFactory this UI was written for. It is deployed with CREATE2, so the address is the
 // same on BNB Chain and BNB Chain Testnet.
-const raidPassFactory = "0x4f51d78a3be8093ae11cb026d563c70c1b1e9e69";
+const raidPassFactory = "0x32dc29aaea897380ca4b802ab41ad181f8845976";
 // abi.encode(RaidPassConfig): one tuple, in the factory's field order.
 const configParameters: readonly AbiParameter[] = [
   { name: "config", type: "tuple", components: [
@@ -61,18 +61,22 @@ const configParameters: readonly AbiParameter[] = [
     { name: "symbol", type: "string" },
     { name: "meta", type: "string" },
     { name: "salt", type: "bytes32" },
-    { name: "mintPrice", type: "uint256" },
-    { name: "maxPasses", type: "uint256" },
+    { name: "nftPrice", type: "uint256" },
+    { name: "cap", type: "uint256" },
     { name: "saleDuration", type: "uint256" },
+    { name: "poolShareBps", type: "uint16" },
+    { name: "buyTaxBps", type: "uint16" },
+    { name: "sellTaxBps", type: "uint16" },
   ] },
 ];
 // Limits enforced by RaidPassLauncher.initialize and mint.
-const maxPassesLimit = 10_000n;
+const maxCap = 10n * 10n ** 18n;
+const maxNfts = 10_000n;
 const maxMintPerCall = 50n;
 const minSaleSeconds = 600n;
 const maxSaleSeconds = 2_592_000n;
-// RaidPassLauncher.RESERVED_TOKEN: the half of the supply the passes share.
-const reservedTokens = 500_000_000n * 10n ** 18n;
+// RaidPassLauncher.TOTAL_SUPPLY.
+const totalSupply = 1_000_000_000n * 10n ** 18n;
 
 const bg = "#0b0e11";
 const panel = "#14181d";
@@ -216,19 +220,45 @@ function ReceiptLine({ receipt, m }: { receipt: Submission | null; m: Messages }
   );
 }
 
-const emptyForm = { name: "", symbol: "", meta: "", price: "", passes: "", hours: "24" };
+const emptyForm = { name: "", symbol: "", meta: "", price: "", cap: "", hours: "24", poolShare: "50", buyTax: "3", sellTax: "5" };
 type Form = typeof emptyForm;
+
+// A percentage with up to two decimals, as basis points, or null when it is outside [min, max] bps.
+function percentBps(input: string, min: number, max: number) {
+  const match = /^(0|[1-9][0-9]?)(?:\.([0-9]{1,2}))?$/.exec(input.trim());
+  if (!match) return null;
+  const bps = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return bps >= min && bps <= max ? bps : null;
+}
+
+// The cap is at most 10 BNB and a whole number of NFTs.
+function capError(price: bigint | null, cap: bigint | null) {
+  if (price === null || price === 0n || cap === null || cap === 0n) return "incomplete";
+  if (cap > maxCap) return "tooHigh";
+  if (cap % price !== 0n) return "notMultiple";
+  if (cap / price > maxNfts) return "tooMany";
+  return null;
+}
 
 function readForm(form: Form) {
   const name = form.name.trim();
   const symbol = form.symbol.trim();
   const price = parseAmount(form.price);
-  const passes = parseCount(form.passes, maxPassesLimit);
+  const cap = parseAmount(form.cap);
+  const poolShareBps = percentBps(form.poolShare, 1000, 9000);
+  const buyTaxBps = percentBps(form.buyTax, 0, 1000);
+  const sellTaxBps = percentBps(form.sellTax, 0, 1000);
   const hours = /^(0|[1-9][0-9]{0,3})(?:\.([0-9]{1,2}))?$/.test(form.hours.trim()) ? Number(form.hours) : null;
   const seconds = hours === null ? null : BigInt(Math.round(hours * 3600));
-  if (!name || !symbol || price === null || price === 0n || passes === null
+  if (!name || !symbol || price === null || cap === null || capError(price, cap) !== null
+    || poolShareBps === null || buyTaxBps === null || sellTaxBps === null
     || seconds === null || seconds < minSaleSeconds || seconds > maxSaleSeconds) return null;
-  return { name, symbol, meta: form.meta.trim(), price, passes, seconds, target: price * passes };
+  const nfts = cap / price;
+  const holderPool = totalSupply - totalSupply * BigInt(poolShareBps) / 10_000n;
+  return {
+    name, symbol, meta: form.meta.trim(), price, cap, nfts, seconds, poolShareBps, buyTaxBps, sellTaxBps,
+    perNft: holderPool / nfts,
+  };
 }
 
 type Draft = NonNullable<ReturnType<typeof readForm>>;
@@ -298,7 +328,8 @@ export function LauncherConfig({ context, messages: m, host }: ConfigProps) {
     if (!isHash(salt)) { setError(m.saltUnavailable); return; }
     const d = review.draft;
     const configuration = host?.encode?.(configParameters, [{
-      name: d.name, symbol: d.symbol, meta: d.meta, salt, mintPrice: d.price, maxPasses: d.passes, saleDuration: d.seconds,
+      name: d.name, symbol: d.symbol, meta: d.meta, salt, nftPrice: d.price, cap: d.cap, saleDuration: d.seconds,
+      poolShareBps: d.poolShareBps, buyTaxBps: d.buyTaxBps, sellTaxBps: d.sellTaxBps,
     }]);
     if (!configuration) { setError(m.prepareError); return; }
     setPrepared({ configuration, account: account.toLowerCase(), valueWei: fee });
@@ -322,6 +353,9 @@ export function LauncherConfig({ context, messages: m, host }: ConfigProps) {
   const shown = review?.draft ?? draft;
   const primary = !account ? m.connectWallet : wrongChain ? m.switchChain : sameWallet ? m.confirmCreation : m.prepareCreation;
   const reviewDisabled = busy || (!draft && !review);
+  const capIssue = form.price !== "" && form.cap !== "" ? capError(parseAmount(form.price), parseAmount(form.cap)) : null;
+  const capHint = capIssue === "tooHigh" ? m.capTooHigh : capIssue === "notMultiple" ? m.capNotMultiple
+    : capIssue === "tooMany" ? m.capTooMany : m.capHint;
 
   return (
     <section style={shell} aria-label={m.createTitle}>
@@ -347,14 +381,27 @@ export function LauncherConfig({ context, messages: m, host }: ConfigProps) {
               <input name="price" value={form.price} inputMode="decimal" maxLength={26} required style={field}
                 aria-invalid={form.price !== "" && !parseAmount(form.price)} onChange={event => update("price", event.target.value)} />
             </Field>
-            <Field name={m.passCount} hint={m.passCountHint}>
-              <input name="passes" value={form.passes} inputMode="numeric" maxLength={5} required style={field}
-                aria-invalid={form.passes !== "" && parseCount(form.passes, maxPassesLimit) === null}
-                onChange={event => update("passes", event.target.value)} />
+            <Field name={`${m.cap} (${unit})`} hint={capHint}>
+              <input name="cap" value={form.cap} inputMode="decimal" maxLength={26} required style={field}
+                aria-invalid={capIssue !== null && capIssue !== "incomplete"} onChange={event => update("cap", event.target.value)} />
             </Field>
             <Field name={m.mintWindow} hint={m.mintWindowHint}>
               <input name="hours" value={form.hours} inputMode="decimal" maxLength={7} required style={field}
                 onChange={event => update("hours", event.target.value)} />
+            </Field>
+          </div>
+          <div style={grid}>
+            <Field name={m.poolShareInput} hint={m.poolShareHint}>
+              <input name="poolShare" value={form.poolShare} inputMode="decimal" maxLength={5} required style={field}
+                aria-invalid={percentBps(form.poolShare, 1000, 9000) === null} onChange={event => update("poolShare", event.target.value)} />
+            </Field>
+            <Field name={m.buyTax} hint={m.taxHint}>
+              <input name="buyTax" value={form.buyTax} inputMode="decimal" maxLength={5} required style={field}
+                aria-invalid={percentBps(form.buyTax, 0, 1000) === null} onChange={event => update("buyTax", event.target.value)} />
+            </Field>
+            <Field name={m.sellTax} hint={m.taxHint}>
+              <input name="sellTax" value={form.sellTax} inputMode="decimal" maxLength={5} required style={field}
+                aria-invalid={percentBps(form.sellTax, 0, 1000) === null} onChange={event => update("sellTax", event.target.value)} />
             </Field>
           </div>
           <p style={small}>{m.floorNote}</p>
@@ -364,10 +411,11 @@ export function LauncherConfig({ context, messages: m, host }: ConfigProps) {
           <h3 style={{ margin: 0, fontSize: 16 }}>{review ? m.reviewTitle : m.summary}</h3>
           <dl style={{ margin: 0, display: "grid", gap: 12 }}>
             <Datum name={m.token}>{shown ? `${shown.name} (${shown.symbol})` : m.unknown}</Datum>
-            <Datum name={m.targetRaise}>{shown ? `${decimal(shown.target)} ${unit}` : m.unknown}</Datum>
-            <Datum name={m.poolShare}>50%</Datum>
-            <Datum name={m.perPass}>{shown ? `${decimal(reservedTokens / shown.passes, 2)} ${shown.symbol}` : m.unknown}</Datum>
-            <Datum name={m.tax}>{m.taxValue}</Datum>
+            <Datum name={m.targetRaise}>{shown ? `${decimal(shown.cap)} ${unit}` : m.unknown}</Datum>
+            <Datum name={m.nftCount}>{shown ? shown.nfts.toString() : m.unknown}</Datum>
+            <Datum name={m.poolShare}>{shown ? `${shown.poolShareBps / 100}%` : m.unknown}</Datum>
+            <Datum name={m.perPass}>{shown ? `${decimal(shown.perNft, 2)} ${shown.symbol}` : m.unknown}</Datum>
+            <Datum name={m.tax}>{shown ? `${shown.buyTaxBps / 100}% / ${shown.sellTaxBps / 100}%` : m.unknown}</Datum>
             {review && canTransact && (
               <Datum name={m.creationFee}>{review.fee === null ? m.unknown : `${decimal(BigInt(review.fee))} ${unit}`}</Datum>
             )}

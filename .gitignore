@@ -13,3 +13,12 @@ playwright-report/
 contracts/out/
 contracts/cache/
 contracts/broadcast/
+
+# Secrets: wallet keystores, keys, password files. None of these belong in this repository.
+keystores/
+*keystore*
+*.pem
+*.key
+*.keystore-password
+*password*
+*mnemonic*

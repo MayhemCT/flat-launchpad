@@ -49,21 +49,26 @@ interface IERC20Balance {
 }
 
 /// @notice Payload for `RaidPassCurveFactory.create`.
-/// @param name         Token name. The pass collection is named after it.
+/// @param name         Token name. The NFT collection is named after it.
 /// @param symbol       Token symbol.
 /// @param meta         Token metadata CID, passed to the token unchanged.
 /// @param salt         CREATE2 launch salt, mined so the predicted token address ends in `0x7777`.
-/// @param mintPrice    BNB per pass.
-/// @param maxPasses    Passes in the mint. `mintPrice * maxPasses` is spent on the curve at launch.
+/// @param nftPrice     BNB per NFT. Every NFT costs the same.
+/// @param cap          BNB the mint raises: at most 10 BNB and an exact multiple of `nftPrice`. All of it is spent
+///                     on the curve at launch. `cap / nftPrice` NFTs are sold.
 /// @param saleDuration Length of the mint window in seconds, counted from creation.
+/// @param buyTaxBps    Buy tax in bps, 100 to 1000 (Flap's range for a tax token on the curve).
+/// @param sellTaxBps   Sell tax in bps, 100 to 1000.
 struct RaidPassCurveConfig {
     string name;
     string symbol;
     string meta;
     bytes32 salt;
-    uint256 mintPrice;
-    uint256 maxPasses;
+    uint256 nftPrice;
+    uint256 cap;
     uint256 saleDuration;
+    uint16 buyTaxBps;
+    uint16 sellTaxBps;
 }
 
 /// @notice Everything a mint page needs, in one call.
@@ -72,15 +77,17 @@ struct RaidPassCurveInfo {
     string tokenName;
     string tokenSymbol;
     string tokenMeta;
-    uint256 mintPrice;
-    uint256 maxPasses;
+    uint256 nftPrice;
+    uint256 cap;
+    uint256 maxNFTs;
     uint256 minted;
     uint256 burned;
     uint256 raised;
-    uint256 targetRaise;
     uint256 saleDeadline;
-    uint256 tokensPerPass;
-    uint256 bnbPerPass;
+    uint256 tokensPerNFT;
+    uint256 bnbPerNFT;
+    uint16 buyTaxBps;
+    uint16 sellTaxBps;
     bool launched;
     address token;
 }
@@ -88,25 +95,30 @@ struct RaidPassCurveInfo {
 /// @title RaidPassCurve
 /// @notice An NFT mint that is the entry to a Flap bonding curve launch.
 ///
-///         Buyers mint RaidPass NFTs with BNB at a fixed price. The mint that sells the last pass creates the
-///         token on Flap's bonding curve and spends the whole raise on the curve in that same transaction, as
-///         the launch's first buy. Every pass then claims an equal share of the tokens bought, once, and stays
+///         Buyers mint RaidPass NFTs with BNB at a flat price. The mint that brings the raise to its cap creates
+///         the token on Flap's bonding curve and spends the whole raise on the curve in that same transaction, as
+///         the launch's first buy. Every NFT then claims an equal share of the tokens bought, once, and stays
 ///         with its holder as a membership pass.
 ///
-///         If the mint does not sell out by the deadline, a pass is burned for its mint price. The refund goes
-///         to whoever holds the pass at that moment.
+///         If the cap is not reached by the deadline, an NFT is burned for its price. The refund goes to whoever
+///         holds the NFT at that moment.
 ///
 ///         Flap's bonding curve Portal is permissionless, so this works on BNB Chain without a factory approval.
 ///         Nobody can withdraw the raise: it leaves this contract only through the launch or through refunds.
+///         There is no mint fee and no commission.
 ///
 /// @dev Deployed by `RaidPassCurveFactory` as an immutable minimal clone. There is no owner and no upgrade path.
 contract RaidPassCurve is Initializable, ERC721 {
     using SafeTransferLib for address;
 
-    /// @notice Largest mint a contract can hold.
-    uint256 public constant MAX_PASSES = 10_000;
-    /// @notice Passes one `mint` call can buy. Bounds the gas of the mint that also runs the launch.
+    /// @notice The most BNB a mint can raise.
+    uint256 public constant MAX_CAP = 10 ether;
+    /// @notice The most NFTs a mint can hold.
+    uint256 public constant MAX_NFTS = 10_000;
+    /// @notice NFTs one `mint` call can buy. Bounds the gas of the mint that also runs the launch.
     uint256 public constant MAX_MINT_PER_TX = 50;
+    uint16 public constant MIN_TAX_BPS = 100;
+    uint16 public constant MAX_TAX_BPS = 1000;
     uint256 public constant MIN_SALE_DURATION = 10 minutes;
     uint256 public constant MAX_SALE_DURATION = 30 days;
     /// @dev Flap's TOKEN_TAXED_V3.
@@ -117,19 +129,25 @@ contract RaidPassCurve is Initializable, ERC721 {
     address public creator;
     bytes32 public launchSalt;
 
-    uint256 public mintPrice;
-    uint256 public maxPasses;
+    /// @notice BNB per NFT.
+    uint256 public nftPrice;
+    /// @notice BNB the mint raises, all of it spent on the curve at launch.
+    uint256 public cap;
+    /// @notice NFTs in the mint: `cap / nftPrice`.
+    uint256 public maxNFTs;
     uint256 public saleDeadline;
+    uint16 public buyTaxBps;
+    uint16 public sellTaxBps;
 
     string public tokenName;
     string public tokenSymbol;
     string public tokenMeta;
 
-    /// @notice Passes minted so far. Pass ids run from 1 to `minted`.
+    /// @notice NFTs minted so far. Token ids run from 1 to `minted`.
     uint256 public minted;
-    /// @notice Passes burned for a refund.
+    /// @notice NFTs burned for a refund.
     uint256 public burned;
-    /// @notice BNB held for the launch: `mintPrice` for every pass that has not been refunded.
+    /// @notice BNB held for the launch: `nftPrice` for every NFT that has not been refunded.
     uint256 public raised;
 
     bool public launched;
@@ -137,33 +155,33 @@ contract RaidPassCurve is Initializable, ERC721 {
     bool internal launching;
 
     address public token;
-    /// @notice Tokens each pass claims after the launch: the tokens bought on the curve, split equally.
-    uint256 public tokensPerPass;
-    /// @notice BNB each pass claims after the launch: any part of the raise the Portal did not spend.
-    uint256 public bnbPerPass;
-    mapping(uint256 tokenId => bool) public passClaimed;
+    /// @notice Tokens each NFT claims after the launch: the tokens bought on the curve, split equally.
+    uint256 public tokensPerNFT;
+    /// @notice BNB each NFT claims after the launch: any part of the raise the Portal did not spend.
+    uint256 public bnbPerNFT;
+    /// @notice Whether an NFT has claimed.
+    mapping(uint256 tokenId => bool) public claimed;
 
-    /// @dev Passes held by each account, and each pass's position in its holder's list.
+    /// @dev NFTs held by each account, and each NFT's position in its holder's list.
     mapping(address account => uint256[]) internal _owned;
     mapping(uint256 tokenId => uint256) internal _ownedIndex;
 
-    event PassesMinted(address indexed account, uint256 firstTokenId, uint256 quantity, uint256 paid);
-    event PassRefunded(address indexed account, uint256 indexed tokenId, uint256 amount);
-    event PassClaimed(address indexed account, uint256 indexed tokenId, uint256 tokens, uint256 bnb);
+    event Minted(address indexed to, uint256 firstId, uint256 qty, uint256 paid);
     event Launched(address indexed token, uint256 spent, uint256 tokensBought, uint256 unspent);
+    event Claimed(uint256 indexed tokenId, address indexed to, uint256 amount);
+    event Refunded(uint256 indexed tokenId, address indexed to, uint256 amount);
 
     error InvalidConfig();
     error SaleClosed();
     error ZeroQuantity();
     error MintTooLarge();
-    error SoldOut();
     error WrongPayment(uint256 sent, uint256 required);
     error LaunchInProgress();
     error NothingBought();
     error NotLaunched();
     error AlreadyLaunched();
-    error NotPassHolder(uint256 tokenId);
-    error PassAlreadyClaimed(uint256 tokenId);
+    error NotHolder(uint256 tokenId);
+    error AlreadyClaimed(uint256 tokenId);
     error RefundUnavailable();
     error NothingToRefund();
     error NothingToClaim();
@@ -179,18 +197,25 @@ contract RaidPassCurve is Initializable, ERC721 {
     /// @dev `msg.value` must be the Portal's salt-lock fee. This contract locks the salt itself, so only it can
     ///      launch a token at the reserved address.
     function initialize(address portal_, address creator_, RaidPassCurveConfig calldata c) external payable initializer {
-        if (portal_ == address(0) || creator_ == address(0)) revert InvalidConfig();
-        if (c.salt == bytes32(0) || c.mintPrice == 0) revert InvalidConfig();
-        if (c.maxPasses == 0 || c.maxPasses > MAX_PASSES) revert InvalidConfig();
-        if (c.saleDuration < MIN_SALE_DURATION || c.saleDuration > MAX_SALE_DURATION) revert InvalidConfig();
+        if (portal_ == address(0) || creator_ == address(0) || c.salt == bytes32(0)) revert InvalidConfig();
         if (bytes(c.name).length == 0 || bytes(c.symbol).length == 0) revert InvalidConfig();
+        // The cap is a whole number of NFTs, so the raise can land on it exactly.
+        if (c.nftPrice == 0 || c.cap == 0 || c.cap > MAX_CAP || c.cap % c.nftPrice != 0) revert InvalidConfig();
+        uint256 count = c.cap / c.nftPrice;
+        if (count > MAX_NFTS) revert InvalidConfig();
+        if (c.buyTaxBps < MIN_TAX_BPS || c.buyTaxBps > MAX_TAX_BPS) revert InvalidConfig();
+        if (c.sellTaxBps < MIN_TAX_BPS || c.sellTaxBps > MAX_TAX_BPS) revert InvalidConfig();
+        if (c.saleDuration < MIN_SALE_DURATION || c.saleDuration > MAX_SALE_DURATION) revert InvalidConfig();
 
         portal = portal_;
         creator = creator_;
         launchSalt = c.salt;
-        mintPrice = c.mintPrice;
-        maxPasses = c.maxPasses;
+        nftPrice = c.nftPrice;
+        cap = c.cap;
+        maxNFTs = count;
         saleDeadline = block.timestamp + c.saleDuration;
+        buyTaxBps = c.buyTaxBps;
+        sellTaxBps = c.sellTaxBps;
         tokenName = c.name;
         tokenSymbol = c.symbol;
         tokenMeta = c.meta;
@@ -200,9 +225,9 @@ contract RaidPassCurve is Initializable, ERC721 {
         IBondingCurvePortal(portal_).lockSalt{value: fee}(c.salt, TOKEN_VERSION);
     }
 
-    /// @notice BNB the mint raises when it sells out, all of it spent on the curve.
-    function targetRaise() public view returns (uint256) {
-        return mintPrice * maxPasses;
+    /// @notice The raise target: the same value as `cap`.
+    function targetRaise() external view returns (uint256) {
+        return cap;
     }
 
     /// @notice The mint's whole state, for a mint page.
@@ -211,15 +236,17 @@ contract RaidPassCurve is Initializable, ERC721 {
         i.tokenName = tokenName;
         i.tokenSymbol = tokenSymbol;
         i.tokenMeta = tokenMeta;
-        i.mintPrice = mintPrice;
-        i.maxPasses = maxPasses;
+        i.nftPrice = nftPrice;
+        i.cap = cap;
+        i.maxNFTs = maxNFTs;
         i.minted = minted;
         i.burned = burned;
         i.raised = raised;
-        i.targetRaise = targetRaise();
         i.saleDeadline = saleDeadline;
-        i.tokensPerPass = tokensPerPass;
-        i.bnbPerPass = bnbPerPass;
+        i.tokensPerNFT = tokensPerNFT;
+        i.bnbPerNFT = bnbPerNFT;
+        i.buyTaxBps = buyTaxBps;
+        i.sellTaxBps = sellTaxBps;
         i.launched = launched;
         i.token = token;
     }
@@ -228,69 +255,80 @@ contract RaidPassCurve is Initializable, ERC721 {
     // Mint
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// @notice Buy passes: send `mintPrice` for each one. The call that sells the last pass also launches.
+    /// @notice Buy NFTs: send `nftPrice` for each one. The call that reaches the cap also launches.
+    /// @dev The quantity is the value sent divided by `nftPrice`, and the value must be an exact multiple. A
+    ///      buyer who asks for more NFTs than are left gets what is left, and the BNB for the others back.
     function mint() external payable {
         if (launching) revert LaunchInProgress();
         if (launched) revert AlreadyLaunched();
         if (block.timestamp >= saleDeadline) revert SaleClosed();
 
-        uint256 quantity = msg.value / mintPrice;
+        uint256 price = nftPrice;
+        uint256 quantity = msg.value / price;
         if (quantity == 0) revert ZeroQuantity();
-        if (quantity * mintPrice != msg.value) revert WrongPayment(msg.value, quantity * mintPrice);
+        if (quantity * price != msg.value) revert WrongPayment(msg.value, quantity * price);
+
+        uint256 left = maxNFTs - minted;
+        if (quantity > left) quantity = left;
         if (quantity > MAX_MINT_PER_TX) revert MintTooLarge();
 
+        uint256 paid = quantity * price;
+        uint256 change = msg.value - paid;
         uint256 first = minted + 1;
         uint256 last = minted + quantity;
-        if (last > maxPasses) revert SoldOut();
-
         minted = last;
-        raised += msg.value;
+        raised += paid;
         for (uint256 id = first; id <= last; ++id) {
             _mint(msg.sender, id);
         }
-        emit PassesMinted(msg.sender, first, quantity, msg.value);
+        emit Minted(msg.sender, first, quantity, paid);
 
-        if (last == maxPasses) _launch();
+        // The buyer's change is still held here during the launch, so the launch must not count it.
+        if (last == maxNFTs) _launch(change);
+
+        // Overflow: return what the buyer sent for NFTs that were no longer available.
+        if (change > 0) _sendBnb(msg.sender, change);
     }
 
-    /// @notice Whether passes can be burned for a refund: the mint missed its deadline without selling out.
+    /// @notice Whether NFTs can be burned for a refund: the mint missed its deadline without reaching the cap.
     function refundAvailable() public view returns (bool) {
-        return !launched && !launching && block.timestamp >= saleDeadline && minted < maxPasses;
+        return !launched && !launching && block.timestamp >= saleDeadline && minted < maxNFTs;
     }
 
     /// @notice BNB `account` would get back from `refund()` right now.
     function refundableOf(address account) external view returns (uint256) {
-        return refundAvailable() ? _owned[account].length * mintPrice : 0;
+        return refundAvailable() ? _owned[account].length * nftPrice : 0;
     }
 
-    /// @notice Burn every pass the caller holds for its mint price.
+    /// @notice Burn every NFT the caller holds for its price.
     function refund() external {
         if (!refundAvailable()) revert RefundUnavailable();
 
         uint256[] storage list = _owned[msg.sender];
         uint256 count = list.length;
         if (count == 0) revert NothingToRefund();
-        uint256 price = mintPrice;
+        uint256 price = nftPrice;
         for (uint256 i = count; i > 0; --i) {
+            // Burning removes the NFT from the end of the list, so walk it backwards.
             uint256 id = list[i - 1];
             _burn(id);
-            emit PassRefunded(msg.sender, id, price);
+            emit Refunded(id, msg.sender, price);
         }
         _payRefund(count, price);
     }
 
-    /// @notice Burn the listed passes for their mint price. The caller must hold every pass.
-    function refundPasses(uint256[] calldata tokenIds) external {
+    /// @notice Burn the listed NFTs for their price. The caller must hold every one.
+    function refundNFTs(uint256[] calldata tokenIds) external {
         if (!refundAvailable()) revert RefundUnavailable();
 
         uint256 count = tokenIds.length;
         if (count == 0) revert NothingToRefund();
-        uint256 price = mintPrice;
+        uint256 price = nftPrice;
         for (uint256 i; i < count; ++i) {
             uint256 id = tokenIds[i];
-            if (_ownerOf(id) != msg.sender) revert NotPassHolder(id);
+            if (_ownerOf(id) != msg.sender) revert NotHolder(id);
             _burn(id);
-            emit PassRefunded(msg.sender, id, price);
+            emit Refunded(id, msg.sender, price);
         }
         _payRefund(count, price);
     }
@@ -311,8 +349,9 @@ contract RaidPassCurve is Initializable, ERC721 {
     // Launch
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// @dev Runs inside the mint that sells the last pass: creates the token and spends the raise on the curve.
-    function _launch() private {
+    /// @dev Runs inside the mint that reaches the cap: creates the token and spends the raise on the curve.
+    /// @param held BNB in this contract that is not part of the raise (the last buyer's change).
+    function _launch(uint256 held) private {
         uint256 spend = raised;
         IBondingCurvePortal.NewTokenV6Params memory p = _buildParams(spend);
 
@@ -322,13 +361,13 @@ contract RaidPassCurve is Initializable, ERC721 {
 
         uint256 bought = IERC20Balance(token_).balanceOf(address(this));
         if (bought == 0) revert NothingBought();
-        // The Portal returns any part of the first buy it could not spend; passes share it.
-        uint256 unspent = address(this).balance;
+        // The Portal returns any part of the first buy it could not spend; the NFTs share it.
+        uint256 unspent = address(this).balance - held;
 
         launched = true;
         token = token_;
-        tokensPerPass = bought / maxPasses;
-        bnbPerPass = unspent / maxPasses;
+        tokensPerNFT = bought / maxNFTs;
+        bnbPerNFT = unspent / maxNFTs;
         emit Launched(token_, spend - unspent, bought, unspent);
     }
 
@@ -337,8 +376,9 @@ contract RaidPassCurve is Initializable, ERC721 {
         if (!launching) revert UnexpectedPayment();
     }
 
-    /// @dev A tax token with 3% buy and 5% sell tax for 30 days. The tax goes to holders as BNB dividends (75%),
-    ///      to liquidity (15%) and to burning (10%); none of it goes to the creator and there is no commission.
+    /// @dev A tax token with the configured buy and sell tax for 30 days. The tax goes to holders as BNB
+    ///      dividends (75%), to liquidity (15%) and to burning (10%); none of it goes to the creator and there
+    ///      is no commission.
     function _buildParams(uint256 spend) private view returns (IBondingCurvePortal.NewTokenV6Params memory p) {
         p.name = tokenName;
         p.symbol = tokenSymbol;
@@ -351,8 +391,8 @@ contract RaidPassCurve is Initializable, ERC721 {
         p.beneficiary = creator;
         p.dexId = 0;
         p.lpFeeProfile = 0;
-        p.buyTaxRate = 300;
-        p.sellTaxRate = 500;
+        p.buyTaxRate = buyTaxBps;
+        p.sellTaxRate = sellTaxBps;
         p.taxDuration = 30 days;
         p.antiFarmerDuration = 1 days;
         p.mktBps = 0;
@@ -375,57 +415,59 @@ contract RaidPassCurve is Initializable, ERC721 {
         uint256[] storage list = _owned[account];
         uint256 unclaimed;
         for (uint256 i; i < list.length; ++i) {
-            if (!passClaimed[list[i]]) ++unclaimed;
+            if (!claimed[list[i]]) ++unclaimed;
         }
-        return unclaimed * tokensPerPass;
+        return unclaimed * tokensPerNFT;
     }
 
-    /// @notice Claim the share of every unclaimed pass the caller holds. Each pass claims once and stays with
-    ///         its holder.
+    /// @notice Claim the share of every unclaimed NFT the caller holds. Each NFT claims once and stays with its
+    ///         holder.
     function claim() external {
         if (!launched) revert NotLaunched();
 
         uint256[] storage list = _owned[msg.sender];
+        uint256 share = tokensPerNFT;
         uint256 count;
         for (uint256 i; i < list.length; ++i) {
             uint256 id = list[i];
-            if (passClaimed[id]) continue;
-            passClaimed[id] = true;
+            if (claimed[id]) continue;
+            claimed[id] = true;
             ++count;
-            emit PassClaimed(msg.sender, id, tokensPerPass, bnbPerPass);
+            emit Claimed(id, msg.sender, share);
         }
         if (count == 0) revert NothingToClaim();
         _payClaim(count);
     }
 
-    /// @notice Claim the share of each listed pass. The caller must hold every pass and none may have claimed.
-    function claimPasses(uint256[] calldata tokenIds) external {
+    /// @notice Claim the share of each listed NFT. The caller must hold every one and none may have claimed.
+    function claimNFTs(uint256[] calldata tokenIds) external {
         if (!launched) revert NotLaunched();
 
+        uint256 share = tokensPerNFT;
         uint256 count = tokenIds.length;
         if (count == 0) revert NothingToClaim();
         for (uint256 i; i < count; ++i) {
             uint256 id = tokenIds[i];
-            if (_ownerOf(id) != msg.sender) revert NotPassHolder(id);
-            if (passClaimed[id]) revert PassAlreadyClaimed(id);
-            passClaimed[id] = true;
-            emit PassClaimed(msg.sender, id, tokensPerPass, bnbPerPass);
+            if (_ownerOf(id) != msg.sender) revert NotHolder(id);
+            if (claimed[id]) revert AlreadyClaimed(id);
+            claimed[id] = true;
+            emit Claimed(id, msg.sender, share);
         }
         _payClaim(count);
     }
 
     function _payClaim(uint256 count) private {
-        token.safeTransfer(msg.sender, tokensPerPass * count);
-        uint256 bnb = bnbPerPass * count;
+        token.safeTransfer(msg.sender, tokensPerNFT * count);
+        uint256 bnb = bnbPerNFT * count;
         if (bnb > 0) _sendBnb(msg.sender, bnb);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Pass ownership index
+    // NFT ownership index
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// @notice The passes `account` holds, in no particular order.
-    function passesOf(address account) external view returns (uint256[] memory) {
+    /// @notice The NFTs `account` holds, in no particular order.
+    function nftsOf(address account) external view returns (uint256[] memory) {
         return _owned[account];
     }
 
@@ -467,7 +509,7 @@ contract RaidPassCurve is Initializable, ERC721 {
         if (!_exists(tokenId)) revert TokenDoesNotExist();
 
         string memory id = LibString.toString(tokenId);
-        string memory status = !launched ? "Minting" : passClaimed[tokenId] ? "Claimed" : "Unclaimed";
+        string memory status = !launched ? "Minting" : claimed[tokenId] ? "Claimed" : "Unclaimed";
         string memory image = Base64.encode(
             bytes(
                 string.concat(

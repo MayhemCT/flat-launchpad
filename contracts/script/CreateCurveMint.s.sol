@@ -14,9 +14,11 @@ import {RaidPassCurve, RaidPassCurveConfig, IBondingCurvePortal} from "src/raidp
 ///     TOKEN_NAME     token name
 ///     TOKEN_SYMBOL   token symbol
 ///     TOKEN_META     metadata CID from Flap's upload API (optional)
-///     MINT_PRICE     wei per pass
-///     MAX_PASSES     passes in the mint
+///     NFT_PRICE      wei per NFT
+///     CAP            wei to raise: at most 10 BNB and an exact multiple of NFT_PRICE
 ///     SALE_DURATION  mint window in seconds (600 to 2592000)
+///     BUY_TAX_BPS    buy tax, bps, 100 to 1000 (default 300)
+///     SELL_TAX_BPS   sell tax, bps, 100 to 1000 (default 500)
 ///
 ///   forge script script/CreateCurveMint.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
 contract CreateCurveMint is Script {
@@ -33,9 +35,11 @@ contract CreateCurveMint is Script {
         c.name = vm.envString("TOKEN_NAME");
         c.symbol = vm.envString("TOKEN_SYMBOL");
         c.meta = vm.envOr("TOKEN_META", string(""));
-        c.mintPrice = vm.envUint("MINT_PRICE");
-        c.maxPasses = vm.envUint("MAX_PASSES");
+        c.nftPrice = vm.envUint("NFT_PRICE");
+        c.cap = vm.envUint("CAP");
         c.saleDuration = vm.envUint("SALE_DURATION");
+        c.buyTaxBps = uint16(vm.envOr("BUY_TAX_BPS", uint256(300)));
+        c.sellTaxBps = uint16(vm.envOr("SELL_TAX_BPS", uint256(500)));
         c.salt = _mineSalt(portal, keccak256(abi.encode(address(factory), c.name, c.symbol, block.number)));
 
         uint256 fee = IBondingCurvePortal(portal).SALT_LOCK_FEE();
@@ -45,9 +49,9 @@ contract CreateCurveMint is Script {
 
         console.log("mint (send BNB to mint() here)", mint);
         console.log("token address after launch    ", ClonesUpgradeable.predictDeterministicAddress(TAX_TOKEN_V3_IMPL, c.salt, portal));
-        console.log("price per pass, wei           ", c.mintPrice);
-        console.log("passes                        ", c.maxPasses);
-        console.log("total to sell out, wei        ", RaidPassCurve(payable(mint)).targetRaise());
+        console.log("price per NFT, wei            ", c.nftPrice);
+        console.log("NFTs for sale                 ", RaidPassCurve(payable(mint)).maxNFTs());
+        console.log("cap (total to sell out), wei  ", c.cap);
         console.log("sale deadline, unix           ", RaidPassCurve(payable(mint)).saleDeadline());
     }
 

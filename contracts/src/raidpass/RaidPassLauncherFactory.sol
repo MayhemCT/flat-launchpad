@@ -25,7 +25,7 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
     address public immutable beacon;
 
     event RaidPassLauncherCreated(
-        address indexed launcher, address indexed creator, bytes32 launchSalt, uint256 mintPrice, uint256 maxPasses
+        address indexed launcher, address indexed creator, bytes32 launchSalt, uint256 nftPrice, uint256 cap
     );
     event FlapLauncherImplementationUpgraded(address implementation);
 
@@ -64,7 +64,7 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
         launcher = LibClone.deployDeterministicERC1967BeaconProxy(beacon, config.salt);
         RaidPassLauncher(launcher).initialize{value: msg.value}(_getHub(), creator, config);
 
-        emit RaidPassLauncherCreated(launcher, creator, config.salt, config.mintPrice, config.maxPasses);
+        emit RaidPassLauncherCreated(launcher, creator, config.salt, config.nftPrice, config.cap);
     }
 
     /// @inheritdoc LauncherFactoryBase
@@ -76,33 +76,20 @@ contract RaidPassLauncherFactory is LauncherFactoryBase {
     /// @inheritdoc LauncherFactoryBase
     function launcherDataSchema() external pure override returns (LauncherDataSchema memory schema) {
         schema.description =
-            "RaidPass NFT mint: passes are sold at a fixed BNB price. When every pass is minted, the raise and 50% of the supply seed the pool and each pass claims an equal share of the other 50%. If the mint does not sell out by the deadline, passes are burned for a refund.";
+            "RaidPass NFT mint: NFTs are sold at a flat BNB price until the raise reaches its cap. The raise and the pool share of the supply then seed the pool, and every NFT claims an equal share of the rest. If the cap is not reached by the deadline, NFTs are burned for a refund.";
         schema.isArray = false;
 
-        FieldDescriptor[] memory fields = new FieldDescriptor[](7);
+        FieldDescriptor[] memory fields = new FieldDescriptor[](10);
         fields[0] = FieldDescriptor({name: "name", fieldType: "string", description: "Token name", decimals: 0});
         fields[1] = FieldDescriptor({name: "symbol", fieldType: "string", description: "Token symbol", decimals: 0});
         fields[2] = FieldDescriptor({name: "meta", fieldType: "string", description: "Metadata CID", decimals: 0});
-        fields[3] = FieldDescriptor({
-            name: "salt",
-            fieldType: "bytes32",
-            description: "CREATE2 salt; vanity-mined so the token address ends in 0x7777",
-            decimals: 0
-        });
-        fields[4] =
-            FieldDescriptor({name: "mintPrice", fieldType: "uint256", description: "BNB per pass", decimals: 18});
-        fields[5] = FieldDescriptor({
-            name: "maxPasses",
-            fieldType: "uint256",
-            description: "Passes in the mint, 1 to 10000. mintPrice x maxPasses is the raise target and the pool quote",
-            decimals: 0
-        });
-        fields[6] = FieldDescriptor({
-            name: "saleDuration",
-            fieldType: "uint256",
-            description: "Mint window in seconds, 600 to 2592000",
-            decimals: 0
-        });
+        fields[3] = FieldDescriptor({name: "salt", fieldType: "bytes32", description: "CREATE2 salt; vanity-mined so the token address ends in 0x7777", decimals: 0});
+        fields[4] = FieldDescriptor({name: "nftPrice", fieldType: "uint256", description: "BNB per NFT; every NFT costs the same", decimals: 18});
+        fields[5] = FieldDescriptor({name: "cap", fieldType: "uint256", description: "BNB to raise: at most 10 BNB and an exact multiple of nftPrice. All of it goes into the pool", decimals: 18});
+        fields[6] = FieldDescriptor({name: "saleDuration", fieldType: "uint256", description: "Mint window in seconds, 600 to 2592000", decimals: 0});
+        fields[7] = FieldDescriptor({name: "poolShareBps", fieldType: "uint16", description: "Share of the supply that goes into the pool, in bps, 1000 to 9000", decimals: 0});
+        fields[8] = FieldDescriptor({name: "buyTaxBps", fieldType: "uint16", description: "Buy tax in bps, at most 1000", decimals: 0});
+        fields[9] = FieldDescriptor({name: "sellTaxBps", fieldType: "uint16", description: "Sell tax in bps, at most 1000", decimals: 0});
         schema.fields = fields;
     }
 }

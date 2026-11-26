@@ -1,125 +1,149 @@
 # RaidPass
 
-An NFT-mint Launcher for [Flap Pool Launch](https://docs.flap.sh/en/flap/v2/developers/pool-launch/basic-and-mechanism) on BNB Chain. Built for the Flap track of BNB Hack Bangkok 2026.
+An NFT mint that launches a token on [Flap](https://docs.flap.sh) on BNB Chain. Built for BNB Hack Bangkok 2026.
 
 ## The mechanism
 
-On Pool Launch there is no bonding curve: the builder decides how the pool's first liquidity is raised. RaidPass raises it with an NFT mint.
+The NFT mint replaces the bonding curve as the way a launch raises its first liquidity.
 
-1. A creator opens a mint: token name and symbol, a fixed BNB price per pass, the number of passes, and a deadline.
-2. Buyers mint RaidPass NFTs. The mint that sells the last pass launches the token in the same transaction: the whole raise and 50% of the supply go into the DEX pool and the LP is burned.
-3. Each pass then claims an equal share of the other 50%, once. The pass is not burned by the claim: it stays in the holder's wallet as a membership pass.
-4. If the mint does not sell out by the deadline, a pass is burned for its mint price. The refund goes to whoever holds the pass, so passes can change hands before the launch.
+1. A creator opens a mint: token name and symbol, a flat BNB price per NFT, a raise cap, and a deadline. The cap is at most 10 BNB and an exact multiple of the price, so `cap / price` NFTs are for sale.
+2. Buyers mint RaidPass NFTs. Every NFT costs the same. A buyer who sends more than the NFTs left gets what is left and the rest of the BNB back.
+3. The mint that brings the raise to its cap launches the token in the same transaction.
+4. Every NFT then claims an equal share of the tokens, once. The NFT is not burned by the claim: it stays in the holder's wallet as a membership pass.
+5. If the cap is not reached by the deadline, an NFT is burned for its price. The refund goes to whoever holds the NFT, so NFTs can change hands before the launch.
 
-What makes it different from a contribution round: the allocation is a transferable NFT rather than a ledger entry, so a position in the presale can be sold before the token exists and the refund right travels with it. Nobody can withdraw the raise. It leaves the Launcher only through the launch or through refunds, and the factory takes no fee or commission.
+Nobody can withdraw the raise. It leaves the mint only through the launch or through refunds. There is no mint fee, no commission receiver and no royalty.
 
 ## Two launch paths
 
-| | Where the token launches | Network | Permission |
+| | What the launch does with the raise | Network | Permission |
 | --- | --- | --- | --- |
-| `RaidPassLauncher` | Flap Pool Launch: straight into a DEX pool, LP burned | BNB Chain Testnet today | On BNB Chain, Flap must audit and enable the factory |
-| `RaidPassCurve` | Flap bonding curve: the raise is the launch's first buy | BNB Chain | None. The bonding curve Portal is permissionless |
+| `RaidPassLauncher` | Flap Pool Launch: the raise and the pool share of the supply go straight into a DEX pool, LP burned. The NFTs share the rest of the supply. | BNB Chain Testnet today | On BNB Chain, Flap must audit and enable the factory |
+| `RaidPassCurve` | Flap bonding curve: the raise is the launch's first buy. The NFTs share the tokens bought. | BNB Chain | None. The bonding curve Portal is permissionless |
 
-Both are the same NFT mint: fixed price, sold-out mint launches in the same transaction, one claim per pass, burn-to-refund if the mint fails. They differ only in what the launch does with the raise.
-
-### RaidPassCurve on BNB Chain
-
-The mint that sells the last pass calls `Portal.newTokenV6` on Flap's bonding curve Portal and sends the whole raise as the creator's first buy. The mint contract receives the tokens bought on the curve and each pass claims an equal share. There is no liquidity floor, so a mint can be small.
+Both are the same mint with the same rules. `RaidPassLauncher` is the design the Flap track asks for. `RaidPassCurve` exists because Pool Launch is permissioned on BNB Chain: it is the way to run the mint live on mainnet without waiting for an audit.
 
 ```
-RaidPassCurveFactory  0x9d23ADB812d708aD63327a3aB6f661Be2D93C5e8   (CREATE2, BNB Chain)
+RaidPassLauncherFactory  0x32dc29aAeA897380CA4b802ab41AD181F8845976   (CREATE2: same on BNB Chain and Testnet)
+RaidPassCurveFactory     0x4bb858A819Ac972b04B70f850271e6b322b461b2   (CREATE2: BNB Chain)
 ```
 
-```sh
-cd contracts
-cast wallet import raidpass --interactive
-forge script script/DeployCurve.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
+Neither is deployed yet. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change.
 
-export CURVE_FACTORY=0x9d23ADB812d708aD63327a3aB6f661Be2D93C5e8
-export TOKEN_NAME="RaidPass" TOKEN_SYMBOL=RAID
-export MINT_PRICE=10000000000000000 MAX_PASSES=5 SALE_DURATION=3600
-forge script script/CreateCurveMint.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
+## Status
 
-cast send <mint> "mint()" --value 0.05ether --rpc-url https://bsc-rpc.publicnode.com --account raidpass --legacy
-cast send <mint> "claim()" --rpc-url https://bsc-rpc.publicnode.com --account raidpass --legacy
-```
-
-Creating a mint costs the Portal's salt-lock fee (0.01 BNB) plus gas. `RaidPassCurveBSCForkTest` runs the flow against a fork of BNB Chain with nothing impersonated, and the commands above were rehearsed end to end on a local fork. The contracts are not audited.
+- `RaidPassLauncher`: 12 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
+- `RaidPassCurve`: 7 fork tests pass against Flap's bonding curve Portal on a fork of BNB Chain, with nothing impersonated. The deploy, create, mint and claim commands below were rehearsed end to end on a local fork.
+- Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. It has not been run inside Flap's host.
+- The contracts are not audited.
 
 ## What is in this repository
 
 | Path | What it is |
 | --- | --- |
 | `contracts/src/raidpass/` | `RaidPassLauncher` and `RaidPassLauncherFactory` (Pool Launch, on Flap's `LauncherBase` and `LauncherFactoryBase`), and `RaidPassCurve` and `RaidPassCurveFactory` (bonding curve). |
-| `contracts/test/raidpass/` | Fork tests that run the whole flow against the live Pool Launch Portal. |
-| `contracts/script/` | `Deploy.s.sol` (factory) and `CreateLauncher.s.sol` (one Launcher through the Portal). |
+| `contracts/test/raidpass/` | Fork tests that run the whole flow against Flap's live contracts. |
+| `contracts/script/` | Deploy and create scripts for both paths. |
 | `flap-ui/raidpass-launcher/` | The launch UI in Flap's Launcher UI template format: creation form and mint page. |
 | `packages/protocol/`, `scripts/pull-factories.ts`, `data/` | Pool Launch indexing: decodes Portal events and aggregates every factory, Launcher, token and deployer. |
 | `apps/worker/` | Cloudflare Worker + D1 indexer and read API for the same data. Written, not yet run. |
 
-## Status
+## Contract rules
 
-- Contracts: 10 fork tests pass against the live Portal on BNB Chain Testnet and against a fork of BNB Chain, covering create, mint, launch, claim, trading with tax dispatch, burn-to-refund, Guardian recovery, the factory's access rules and the gas cap.
-- Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. It has not been run inside Flap's host yet.
-- Not yet deployed to BNB Chain Testnet. The factory address below is where it will land.
+| Rule | `RaidPassLauncher` | `RaidPassCurve` |
+| --- | --- | --- |
+| Price | Flat `nftPrice` | Flat `nftPrice` |
+| Cap | At most 10 BNB, exact multiple of the price | Same |
+| NFTs | `cap / nftPrice`, at most 10,000; 50 per `mint()` call | Same |
+| Supply | 1,000,000,000 | 1,000,000,000 (Flap's curve) |
+| Pool share | `poolShareBps`, 1000 to 9000 | Not applicable: the raise buys on the curve |
+| Tax | `buyTaxBps`, `sellTaxBps`, each at most 1000, for 30 days | Each 100 to 1000 (Flap's range on the curve), for 30 days |
+| Tax split | 75% BNB dividends to holders, 15% liquidity, 10% burn | Same |
+| Per NFT | `(supply - pool share) / NFTs` | `tokens bought on the curve / NFTs` |
+| Upgrades | Beacon proxy, Flap Guardian only | None: immutable clone, no owner |
 
-## Contracts
+`mint()`, `claim()` and `refund()` take no arguments, because Flap's Launcher UI runtime only calls zero-argument methods: `mint()` sells one NFT per `nftPrice` sent, and `claim()` and `refund()` act on every NFT the caller holds. `claimNFTs(ids)` and `refundNFTs(ids)` take token ids, for holders with too many NFTs for one call.
 
-`RaidPassLauncherFactory` has no constructor arguments, owner, pause or fee. It reads the Portal and the Guardian from Flap's chain registry and is deployed with CREATE2, so it has the same address on BNB Chain and BNB Chain Testnet:
+Events: `Minted(to, firstId, qty, paid)`, `Launched(...)`, `Claimed(tokenId, to, amount)`, `Refunded(tokenId, to, amount)`.
 
-```
-RaidPassLauncherFactory  0x4F51d78a3Be8093aE11CB026D563C70c1B1e9e69
-```
+## Keys and secrets
 
-Each Launcher is a beacon proxy that only the Flap Guardian can upgrade. `mint()`, `claim()` and `refund()` take no arguments, because Flap's Launcher UI runtime calls zero-argument methods: `mint()` sells one pass per `mintPrice` sent, and `claim()` and `refund()` act on every pass the caller holds. `claimPasses(ids)` and `refundPasses(ids)` exist for holders with too many passes for one call.
+This repository is public. No key, keystore, mnemonic or password belongs in it, and none is needed in any file.
 
-Fixed launch shape: 1,000,000,000 supply, 50% in the pool, 3% buy and 5% sell tax for 30 days, split 75% BNB dividends to holders, 15% liquidity, 10% burn. No commission receiver.
+- **Where the deployer key lives.** In Foundry's encrypted keystore, outside this repository: `~/.foundry/keystores/<name>` (on Windows, `C:\Users\<you>\.foundry\keystores\<name>`). The file holds the key encrypted with your password (scrypt + AES-128-CTR); it never holds the key in plain text.
+- **Use a fresh deployer wallet.** `cast wallet new ~/.foundry/keystores raidpass` creates a new key straight into the keystore and prints only its address. The private key is never shown, typed or copied. Fund that address with what the deployment needs and nothing more. Do not import an operating key.
+- **Never pass a key on the command line.** `--private-key` puts the key in your shell history. The commands here use `--account raidpass`, which asks for the keystore password each time.
+- **Commit guard.** `.githooks/pre-commit` refuses commits that add a private key, a keystore, a mnemonic or an env file. Enable it once per clone:
 
-### Run the tests
+  ```sh
+  git config core.hooksPath .githooks
+  ```
+
+- `contracts/broadcast/` (Foundry's transaction logs) and `.env` files are git-ignored.
+
+## Run the tests
 
 Requires [Foundry](https://getfoundry.sh).
 
 ```sh
 git clone --recurse-submodules https://github.com/MayhemCT/flat-launchpad.git
 cd flat-launchpad/contracts
-BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com forge test --match-contract RaidPassBSCTestForkTest
+BSC_RPC_URL=https://bsc-rpc.publicnode.com forge test --match-contract RaidPassCurveBSCForkTest --isolate
+BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com forge test --match-contract RaidPassBSCTestForkTest --isolate
 ```
 
-### Deploy and launch on BNB Chain Testnet
+## Launch on BNB Chain (`RaidPassCurve`)
 
 ```sh
 cd contracts
-cast wallet import raidpass --interactive        # once; keeps the key out of files
-export BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com
+cast wallet new ~/.foundry/keystores raidpass      # prints the new address; fund it
+forge script script/DeployCurve.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
 
+export CURVE_FACTORY=0x4bb858A819Ac972b04B70f850271e6b322b461b2
+export TOKEN_NAME="RaidPass" TOKEN_SYMBOL=RAID
+export NFT_PRICE=10000000000000000 CAP=50000000000000000 SALE_DURATION=3600   # 0.01 BNB x 5 NFTs, 1 hour
+forge script script/CreateCurveMint.s.sol --rpc-url https://bsc-rpc.publicnode.com --account raidpass --broadcast --legacy
+
+cast send <mint> "mint()" --value 0.05ether --rpc-url https://bsc-rpc.publicnode.com --account raidpass --legacy
+cast send <mint> "claim()" --rpc-url https://bsc-rpc.publicnode.com --account raidpass --legacy
+```
+
+Creating a mint costs the Portal's salt-lock fee (0.01 BNB) plus gas. `BUY_TAX_BPS` and `SELL_TAX_BPS` default to 300 and 500. There is no liquidity floor on the curve, so a mint can be small.
+
+## Launch on BNB Chain Testnet (`RaidPassLauncher`)
+
+```sh
+cd contracts
+export BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com
 forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy
 
-export FACTORY=0x4F51d78a3Be8093aE11CB026D563C70c1B1e9e69
+export FACTORY=0x32dc29aAeA897380CA4b802ab41AD181F8845976
 export TOKEN_NAME="Raid Example" TOKEN_SYMBOL=RAIDX
-export MINT_PRICE=250000000000000000 MAX_PASSES=10 SALE_DURATION=86400
+export NFT_PRICE=250000000000000000 CAP=2500000000000000000 SALE_DURATION=86400   # 0.25 tBNB x 10 NFTs
 forge script script/CreateLauncher.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --broadcast --legacy
 
-# mint (repeat until sold out; the last mint launches the token), then claim
 cast send <launcher> "mint()" --value 0.25ether --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --legacy
 cast send <launcher> "claim()" --rpc-url $BSC_TESTNET_RPC_URL --account raidpass --legacy
 ```
 
-The Portal rejects a launch whose pool is below its liquidity floor. With half the supply in the pool the floor is 1,500 USD of BNB at the Portal's configured price (700 USD per BNB when this was written, so about 2.15 BNB), unless Flap sets a lower multiplier for the factory. A mint whose target is below the floor cannot sell out, and its passes are refunded after the deadline.
+`POOL_SHARE_BPS`, `BUY_TAX_BPS` and `SELL_TAX_BPS` default to 5000, 300 and 500.
 
-On BNB Chain Testnet the Portal accepts Launchers from any factory. On BNB Chain, Pool Launch is permissioned: token creation is paused and `Portal.newLauncher` reverts for any factory Flap has not audited and enabled, so RaidPass cannot launch there until Flap enables this factory. The same suite passes against a fork of BNB Chain with the factory enabled (`RaidPassBSCForkTest`, needs `BSC_RPC_URL`).
+The Portal rejects a launch whose pool is below its liquidity floor: 750 USD of BNB divided by the pool share, at the Portal's configured BNB price (700 USD when this was written). At a 50% pool share that is 1,500 USD, about 2.15 BNB, unless Flap sets a lower multiplier for the factory. A mint whose cap is below the floor cannot launch, and its NFTs are refunded after the deadline.
 
-### BNB Chain transaction rules this was checked against
+On BNB Chain Testnet the Portal accepts Launchers from any factory. On BNB Chain, Pool Launch is permissioned: token creation is paused and `Portal.newLauncher` reverts for any factory Flap has not audited and enabled.
 
-- **Send with `--legacy`.** BNB Chain's base fee is 0, and Foundry's EIP-1559 estimate on BNB Chain Testnet comes out at 1 wei, which the network does not accept. With `--legacy` Foundry uses the node's gas price (0.05 gwei on BNB Chain, the network minimum, and 0.1 gwei on Testnet when this was written).
-- **Per-transaction gas cap: 16,777,216** (BEP-652, live since the Mendel upgrade). The heaviest RaidPass transaction, a mint of the 50-pass per-call maximum that also runs the launch, uses about 9.2M gas. The factory deployment uses about 6.6M. `test_10` asserts the margin.
-- **Large holders.** `claim()` costs about 30,000 gas per pass, so one call covers roughly 500 passes; a wallet holding more uses `claimPasses(ids)` in batches. The same applies to `refund()` and `refundPasses(ids)`.
-- **Contract size.** `RaidPassLauncher` is 21.7 KB of runtime code, under the 24,576-byte limit.
+## BNB Chain transaction rules this was checked against
+
+- **Send with `--legacy`.** BNB Chain's base fee is 0, and Foundry's EIP-1559 estimate on BNB Chain Testnet comes out at 1 wei, far below the node's quoted gas price. With `--legacy` Foundry uses the node's gas price (0.05 gwei on BNB Chain, the network minimum, and 0.1 gwei on Testnet when this was written).
+- **Per-transaction gas cap: 16,777,216** (BEP-652, live since the Mendel upgrade). The heaviest RaidPass transaction, a mint of the 50-NFT per-call maximum that also runs the launch, uses about 9.3M gas on either path. Each suite asserts the margin.
+- **Large holders.** `claim()` costs about 30,000 gas per NFT, so one call covers roughly 500 NFTs; a wallet holding more uses `claimNFTs(ids)` in batches. The same applies to `refund()` and `refundNFTs(ids)`.
+- **Contract size.** `RaidPassLauncher` is 22.7 KB of runtime code and `RaidPassCurve` 18.2 KB, under the 24,576-byte limit.
 
 ## Launch UI
 
-`flap-ui/raidpass-launcher/` holds the three files Flap's Launcher runtime takes: `Component.tsx`, `manifest.json` and `i18n.json` (English, Chinese, Korean). It uses `launcher-config-preview/v1`:
+`flap-ui/raidpass-launcher/` holds the three files Flap's Launcher runtime takes: `Component.tsx`, `manifest.json` and `i18n.json` (English, Chinese, Korean). It targets `RaidPassLauncher` and uses `launcher-config-preview/v1`:
 
-- `LauncherConfig` is the creation form. It encodes `RaidPassConfig`, asks the host for a salt and the creation fee, and submits `Portal.newLauncher`.
+- `LauncherConfig` is the creation form: price, cap, mint window, pool share and taxes. It encodes `RaidPassConfig`, asks the host for a salt and the creation fee, and submits `Portal.newLauncher`.
 - `Launcher` is the mint page: progress, mint with a quantity, and claim or refund when they apply.
 
 Check it from a checkout of [flap-vault-component-template](https://github.com/flap-sh/flap-vault-component-template) (branch `test/pool-launch-developer-preview`):
@@ -135,7 +159,7 @@ npm install
 npm run pull          # writes data/bsc.json and data/bscTestnet.json
 ```
 
-`npm run pull` reads the Portal's events over public RPC endpoints and writes every Launcher factory, vault factory, Launcher, token and deployer it finds. Public BNB Chain endpoints keep about 31 days of logs; the Portal's first event is recent enough that the full history is still available.
+`npm run pull` reads the Pool Launch Portal's events over public RPC endpoints and writes every Launcher factory, vault factory, Launcher, token and deployer it finds. Public BNB Chain endpoints keep about 31 days of logs; the Portal's first event is recent enough that the full history is still available.
 
 ## Credits
 

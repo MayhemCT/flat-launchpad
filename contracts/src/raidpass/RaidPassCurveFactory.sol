@@ -19,7 +19,7 @@ contract RaidPassCurveFactory {
     address[] public mints;
 
     event RaidPassCurveCreated(
-        address indexed mint, address indexed creator, bytes32 launchSalt, uint256 mintPrice, uint256 maxPasses
+        address indexed mint, address indexed creator, bytes32 launchSalt, uint256 nftPrice, uint256 cap
     );
 
     error ZeroAddress();
@@ -37,7 +37,7 @@ contract RaidPassCurveFactory {
         mint = LibClone.cloneDeterministic(implementation, keccak256(abi.encode(msg.sender, config.salt)));
         RaidPassCurve(payable(mint)).initialize{value: msg.value}(portal, msg.sender, config);
         mints.push(mint);
-        emit RaidPassCurveCreated(mint, msg.sender, config.salt, config.mintPrice, config.maxPasses);
+        emit RaidPassCurveCreated(mint, msg.sender, config.salt, config.nftPrice, config.cap);
     }
 
     /// @notice The address a mint created by `creator` with `salt` will have.
