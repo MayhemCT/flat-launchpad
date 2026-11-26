@@ -13,6 +13,8 @@ import {
   ContractFunctionRevertedError,
   UserRejectedRequestError,
   createPublicClient,
+  createWalletClient,
+  custom,
   decodeEventLog,
   encodeAbiParameters,
   http,
@@ -21,14 +23,21 @@ import {
   type Abi,
   type AbiParameter,
   type Address,
+  type EIP1193Provider,
   type Hex,
+  type WalletClient,
 } from "viem";
 import manifest from "@launcher-ui/manifest.json";
 import { FACTORY, NETWORK, PORTAL, TOKEN_IMPLEMENTATION, portalAbi } from "./config";
 import { findVanitySalt } from "./salt";
-import { connect, getWallet, setPendingHash, switchChain, walletClient } from "./wallet";
+import { connect, getWallet, setPendingHash, switchChain } from "./wallet";
 
 export const publicClient = createPublicClient({ chain: NETWORK.chain, transport: http(NETWORK.rpcUrl) });
+
+function walletClient(): WalletClient | null {
+  const provider = window.ethereum;
+  return provider ? createWalletClient({ chain: NETWORK.chain, transport: custom(provider as EIP1193Provider) }) : null;
+}
 
 type ReadKind = "address" | "bool" | "uint256";
 interface ReadDeclaration {

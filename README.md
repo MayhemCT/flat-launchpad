@@ -1,6 +1,11 @@
 # RaidPass
 
-An NFT mint that launches a token on [Flap](https://docs.flap.sh) on BNB Chain. Built for BNB Hack Bangkok 2026.
+A board for every launch on [Flap](https://docs.flap.sh) Pool Launch, and RaidPass, a launchpad where the presale is an NFT mint. On BNB Chain. Built for BNB Hack Bangkok 2026.
+
+Live: https://raidpass.dry-dust-1399.workers.dev
+
+- **Aggregator.** Every Launcher, launched token, factory and deployer on Pool Launch, across all Launcher Factories, on BNB Chain and BNB Chain Testnet. Each launch opens on Flap, where its own factory's UI lives.
+- **RaidPass launchpad.** Our own Launcher Factory: create an NFT mint, mint, launch, claim.
 
 ## The mechanism
 
@@ -45,9 +50,9 @@ Neither is deployed yet. Each address depends only on the contract bytecode, so 
 | `contracts/test/raidpass/` | Fork tests that run the whole flow against Flap's live contracts. |
 | `contracts/script/` | Deploy and create scripts for both paths. |
 | `flap-ui/raidpass-launcher/` | The launch UI in Flap's Launcher UI template format: creation form and mint page. |
-| `apps/web/` | A site that hosts the launch UI package against the chain with a browser wallet. |
+| `apps/web/` | The site: the aggregator pages and the RaidPass launchpad, which hosts the launch UI package against the chain with a browser wallet. |
 | `packages/protocol/`, `scripts/pull-factories.ts`, `data/` | Pool Launch indexing: decodes Portal events and aggregates every factory, Launcher, token and deployer. |
-| `apps/worker/` | Cloudflare Worker + D1 indexer and read API for the same data. Written, not yet run. |
+| `apps/worker/` | The Worker behind the site: the Pool Launch indexer (cron + D1) and its read API. |
 
 ## Contract rules
 
@@ -173,20 +178,33 @@ npx vitest run apps/web/tests/salt.test.ts
 - **Network and factory** come from the package's `manifest.json` (BNB Chain Testnet).
 - **Launches** are listed from the factory's own `launchers` array, so no indexer is needed.
 - **Background.** The BNB mark in three.js, loaded after first paint. It drifts when idle and leans toward the pointer; with reduced motion it renders once and stays still.
-- **Phone layout.** Under 768 px the page renders a separate shell: compact top bar, cards in place of the table, and a tab bar at the bottom.
-- **Viewport tests.** 30 Playwright checks across ten screen sizes, from a folded Galaxy Fold to an ultrawide monitor, on every page: no sideways scroll, the right shell for the size, the canvas covering the viewport, every control on-screen and at least 44 px tall on touch screens, and the tab bar never covering content. They run in the Edge or Chrome already installed.
+- **Phone and tablet layout.** Under 1024 px the page renders a separate shell: compact top bar, cards in place of tables, and a tab bar at the bottom.
+- **Viewport tests.** 80 Playwright checks, eight pages at ten screen sizes from a folded Galaxy Fold to an ultrawide monitor, with live index data in them: no sideways scroll, the right shell for the size, the canvas covering the viewport, every control on-screen and at least 44 px tall on touch screens, and the tab bar never covering content. They run in the Edge or Chrome already installed.
 - **Salt test.** The token-address prediction is checked against every salt the live Portal has locked.
 - **Flow test.** `tests/flow.pw.ts` drives the whole launch through the page on a local fork of BNB Chain Testnet: deploy the factory, create a Launcher, mint every NFT, launch, claim. The contracts, the Portal and the page are the real ones; the fork's own account stands in for the wallet. The steps to run it are at the top of the file.
 - **Endpoint.** `VITE_RPC_URL` points the page at another RPC endpoint.
 
-## Pool Launch indexer
+## Aggregator and indexer
+
+The site and its indexer are one Cloudflare Worker (`apps/web/wrangler.jsonc`, code in `apps/worker/`):
+
+- **Pages.** Static files. `/` and `/launches`, `/tokens`, `/factories`, `/deployers` read the index; `/raidpass`, `/create` and `/launcher/<address>` are the launchpad and talk to the chain and the visitor's wallet.
+- **`/api/<chain>/<resource>`.** Read-only JSON: `overview`, `launchers`, `tokens`, `factories`, `deployers`, for `bsc` and `bscTestnet`.
+- **Cron, every minute.** Reads new Pool Launch Portal events into a D1 database (`apps/worker/migrations/`). It follows the head in steps of at most 2,000 blocks, stays 20 blocks behind it, and records its last error where `overview` shows it.
+- **No secrets.** The Worker holds no keys. Visitors sign with their own wallets.
+
+History is loaded once with `scripts/backfill-d1.ts`, from a machine whose RPC endpoint serves the whole log range, because public endpoints answer large history queries unreliably from Cloudflare's network (timeouts on BNB Chain, silently shortened results on Testnet). The script writes the same idempotent statements the Worker runs:
 
 ```sh
-npm install
-npm run pull          # writes data/bsc.json and data/bscTestnet.json
+npx tsx scripts/backfill-d1.ts > backfill.sql
+npx wrangler d1 execute raidpass-index --remote --file backfill.sql --config apps/web/wrangler.jsonc
 ```
 
-`npm run pull` reads the Pool Launch Portal's events over public RPC endpoints and writes every Launcher factory, vault factory, Launcher, token and deployer it finds. Public BNB Chain endpoints keep about 31 days of logs; the Portal's first event is recent enough that the full history is still available.
+For production, point the Worker at a private RPC endpoint: add `BSC_RPC_URL` and `BSC_TESTNET_RPC_URL` as Worker secrets in the Cloudflare dashboard. Nothing else changes.
+
+`npm run pull` is the same scan as a local command: it writes `data/bsc.json` and `data/bscTestnet.json`.
+
+**Loading.** The first page loads 76 KB of script (gzip). The launchpad's chain library (110 KB) and the three.js scene (141 KB) load only when they are needed.
 
 ## Credits
 

@@ -101,7 +101,7 @@ export function startScene(canvas: HTMLCanvasElement): SceneHandle {
     width = canvas.clientWidth;
     height = canvas.clientHeight;
     if (width === 0 || height === 0) return;
-    const narrow = width < 768;
+    const narrow = width < 1024;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, narrow ? 1.5 : 2));
     renderer.setSize(width, height, false);
     camera.aspect = width / height;

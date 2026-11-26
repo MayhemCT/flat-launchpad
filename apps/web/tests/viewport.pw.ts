@@ -14,17 +14,24 @@ const VIEWPORTS = [
   { name: "Ultrawide", width: 2560, height: 1080, touch: false },
 ] as const;
 
+// The aggregator pages read the live index, so they are checked with real rows in them.
 const PAGES = [
-  { name: "launches", hash: "#/", ready: "h1" },
+  { name: "home", hash: "#/", ready: "[data-testid=launch-card]" },
+  { name: "launches", hash: "#/launches", ready: "[data-testid=launch-card]" },
+  { name: "tokens", hash: "#/tokens", ready: "[data-testid=token-table], [data-testid=token-cards]" },
+  { name: "factories", hash: "#/factories", ready: "[data-testid=factory-table], [data-testid=factory-cards]" },
+  { name: "deployers", hash: "#/deployers", ready: "[data-testid=deployer-table], [data-testid=deployer-cards]" },
+  { name: "raidpass", hash: "#/raidpass", ready: "[data-testid=not-deployed], [data-testid=mint-table], [data-testid=mint-cards]" },
   { name: "create", hash: "#/create", ready: "input[name=name]" },
   // An address the Portal has no record of: the page must still lay out its message correctly.
   { name: "launcher", hash: "#/launcher/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-launcher]" },
 ] as const;
 
-const PHONE_MAX = 767;
+// Below this width the page uses its phone layout: cards and a tab bar in place of tables and a nav bar.
+const PHONE_MAX = 1023;
 const MIN_TOUCH_TARGET = 44;
 // Controls a finger has to hit. Links inside a sentence are text, not controls.
-const CONTROLS = "button, select, input, a.button, a.brand, a.card, .nav a, .tabbar a, .links a";
+const CONTROLS = "button, select, input, a.button, a.brand, a.card, a.launch-card, .nav a, .tabbar a, .links a, .section-head a";
 
 async function open(page: Page, hash: string, ready: string) {
   await page.goto(`/${hash}`);
@@ -36,7 +43,7 @@ for (const viewport of VIEWPORTS) {
     test.use({
       viewport: { width: viewport.width, height: viewport.height },
       hasTouch: viewport.touch,
-      isMobile: viewport.touch && viewport.width <= PHONE_MAX,
+      isMobile: viewport.touch && viewport.width <= 767,
     });
     const phone = viewport.width <= PHONE_MAX;
 

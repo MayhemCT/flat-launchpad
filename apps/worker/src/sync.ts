@@ -24,6 +24,11 @@ import {
 const CONFIRMATIONS = 20
 /** A factory's enabled flag is re-read from the Portal this often. */
 const FACTORY_STATUS_TTL_SECONDS = 3600
+/**
+ * Largest block span per log query from the Worker. The Worker only follows the head (history is loaded by
+ * scripts/backfill-d1.ts), and public endpoints time out on wide queries from Cloudflare's network.
+ */
+const MAX_LOG_SPAN = 2000
 
 /**
  * Counts outbound requests. A Worker invocation has a hard subrequest limit
@@ -107,7 +112,7 @@ export async function syncChain(
   const events: PortalEvent[] = []
   let nextBlock = fromBlock
   for (let i = 0; i < maxRanges && nextBlock <= safeHead && budget.remaining >= 2; i++) {
-    const toBlock = Math.min(nextBlock + chain.logRange - 1, safeHead)
+    const toBlock = Math.min(nextBlock + Math.min(chain.logRange, MAX_LOG_SPAN) - 1, safeHead)
     let logs: RawLog[]
     try {
       logs = await rpc<RawLog[]>('eth_getLogs', [

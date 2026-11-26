@@ -38,7 +38,20 @@ async function sync(env: Env): Promise<void> {
   )
   for (const [i, result] of results.entries()) {
     if (result.status === 'fulfilled') console.log(JSON.stringify({ sync: result.value }))
-    else console.error(JSON.stringify({ syncFailed: ORDER[i], error: String(result.reason) }))
+    else {
+      const chain = ORDER[i]!
+      const message = String(result.reason).slice(0, 500)
+      console.error(JSON.stringify({ syncFailed: chain, error: message }))
+      // Keep the failure where the API can show it. The row may not exist yet if the very first step failed.
+      const now = Math.floor(Date.now() / 1000)
+      const start = CHAINS[chain].poolLaunch.startBlock
+      await env.DB.batch([
+        env.DB.prepare(
+          'INSERT INTO sync_state (chain, next_block, head, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (chain) DO NOTHING',
+        ).bind(chain, start, start, now),
+        env.DB.prepare('UPDATE sync_state SET last_error = ?, last_error_at = ? WHERE chain = ?').bind(message, now, chain),
+      ]).catch(() => undefined)
+    }
   }
 }
 

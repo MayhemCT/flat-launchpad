@@ -36,8 +36,8 @@ function addressParam(url: URL, name: string): string | undefined | null {
 }
 
 async function overview(db: D1Database, chain: ChainKey): Promise<Response> {
-  const [sync, counts] = await db.batch<Record<string, number | null>>([
-    db.prepare('SELECT next_block, head, creation_paused, updated_at FROM sync_state WHERE chain = ?').bind(chain),
+  const [sync, counts] = await db.batch<Record<string, number | string | null>>([
+    db.prepare('SELECT next_block, head, creation_paused, updated_at, last_error, last_error_at FROM sync_state WHERE chain = ?').bind(chain),
     db
       .prepare(
         `SELECT
@@ -64,6 +64,8 @@ async function overview(db: D1Database, chain: ChainKey): Promise<Response> {
           head: state.head,
           updatedAt: state.updated_at,
           creationPaused: state.creation_paused === null ? null : state.creation_paused === 1,
+          lastError: state.last_error ?? null,
+          lastErrorAt: state.last_error_at ?? null,
         }
       : null,
     counts: {

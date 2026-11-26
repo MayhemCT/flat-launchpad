@@ -143,10 +143,83 @@ h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -0.01em; }
 }
 .shell-mobile ~ .backdrop, .backdrop { transition: opacity 0.3s; }
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .backdrop { opacity: 0.22; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
+}
+
+/* ── Aggregator ─────────────────────────────────────────────────────────── */
+
+.accent { color: var(--gold); }
+.page-head { display: grid; gap: 8px; max-width: 720px; }
+.page-title { font-size: clamp(28px, 5vw, 44px); }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.section-head h2 { margin: 0; }
+.section-head a { color: var(--dim); font-size: 14px; text-decoration: none; display: inline-flex; align-items: center; min-height: 44px; }
+h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
+
+/* Totals for the selected chain, in the manner of a market ticker. */
+.stats {
+  margin: 0; display: grid; gap: 1px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+}
+.stats > div { background: color-mix(in srgb, var(--panel) 92%, transparent); padding: 16px 18px; display: grid; gap: 4px; }
+.stats dt { color: var(--dim); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.stats dd { margin: 0; font-size: clamp(22px, 3vw, 30px); font-weight: 700; }
+.sync { margin: 10px 0 0; color: var(--dim); font-size: 13px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.live {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 60%, transparent);
+}
+.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
+
+/* Segmented control: launch filters and the network switch. */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--panel) 88%, transparent); justify-self: start; }
+.seg button {
+  min-height: 44px; padding: 0 18px; border: 0; border-radius: 999px; background: transparent; color: var(--dim);
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.seg button[aria-selected="true"], .seg button[aria-pressed="true"] { background: var(--gold); color: #181a20; }
+.seg-small button { padding: 0 14px; font-size: 13px; }
+
+/* Launch cards, after Flap's own launch board. */
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.launch-card {
+  display: grid; gap: 10px; align-content: start; padding: 16px; border: 1px solid var(--line); border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent); text-decoration: none; min-width: 0;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.launch-card:hover { border-color: color-mix(in srgb, var(--gold) 55%, var(--line)); transform: translateY(-1px); }
+.launch-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.avatar {
+  flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--gold); color: #181a20; font-weight: 800; font-size: 18px;
+}
+.launch-name { display: grid; min-width: 0; flex: 1; line-height: 1.25; }
+.launch-name strong, .launch-name .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.launch-name .dim { font-size: 13px; }
+.launch-title { font-size: 13px; font-weight: 600; color: var(--gold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.launch-summary {
+  color: var(--dim); font-size: 13.5px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+  line-clamp: 3; overflow: hidden; overflow-wrap: anywhere;
+}
+.launch-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.launch-stats > span { display: grid; gap: 2px; min-width: 0; }
+.launch-stats .num { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-label { color: var(--dim); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.launch-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 12.5px; }
+
+/* Five destinations fit the phone tab bar at a smaller label size. */
+.shell-mobile .tabbar { gap: 2px; padding-inline: 6px; }
+.shell-mobile .tabbar a { font-size: 12.5px; padding: 0 4px; }
+.shell-mobile .seg { width: 100%; justify-content: space-between; }
+.shell-mobile .seg button { flex: 1 1 auto; padding: 0 10px; }
+.shell-mobile .topbar-end .seg { width: auto; }
+.shell-mobile .stats dd { font-size: 22px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .launch-card:hover { transform: none; }
 }

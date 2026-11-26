@@ -11,6 +11,7 @@
     "test:viewport": "playwright test"
   },
   "dependencies": {
+    "@flat/protocol": "*",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "three": "^0.187.0",
