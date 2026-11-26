@@ -9,6 +9,10 @@
  *                                   { id, decision: 'reject', issuedAt, signature }
  *                                                                    the reviewer wallet's decision on one callout.
  *
+ * A callout is for a holder. When one is posted, the author's balance of the token and the token's market cap
+ * are read (apps/worker/src/market.ts) and stored with it; the market cap goes into the attestation, and the
+ * cron keeps reading the balance to say whether the author still holds: see `refreshPositions`.
+ *
  * Nobody logs in, and this Worker holds no key. A callout is accepted when its author's wallet signed its exact
  * text (EIP-191 `personal_sign`). An approval is accepted when it is the reviewer wallet's EIP-712 signature
  * over the very attestation the rewards vault checks: this Worker only stores it, the author's own wallet
@@ -20,6 +24,7 @@
  */
 import { keccak256, toBytes, verifyMessage, verifyTypedData, type Address, type Hex } from 'viem'
 import { canonicalSignature, cleanBody, containsLink, issuedAtInWindow } from './chat.js'
+import { balanceOf, balancesOf, bscRpc, marketCapUsd, positionClosed } from './market.js'
 
 /** The part of the Worker's environment callouts use. */
 export interface CalloutEnv {
@@ -28,6 +33,8 @@ export interface CalloutEnv {
   CALLOUT_ATTESTER?: string
   /** The rewards vault the attestations are for. A public address. */
   CALLZ_VAULT?: string
+  /** Optional private BNB Chain endpoint. Public ones are used when unset. */
+  BSC_RPC_URL?: string
 }
 
 export const CALLOUT_CHAIN = 'bsc'
@@ -56,6 +63,10 @@ const HOUR_SECONDS = 3600
 const MAX_PER_TOKEN_PER_DAY = 3
 /** Callouts one author may post in an hour, across every token. */
 const MAX_PER_HOUR = 10
+/** Open positions whose balance one cron run re-reads, in one Multicall3 request. */
+const POSITIONS_PER_RUN = 40
+/** Tokens one cron run asks DexScreener about, to put a market cap on positions that closed. */
+const CLOSURE_TOKENS_PER_RUN = 10
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/
 const ZERO_HASH: Hex = `0x${'00'.repeat(32)}`
@@ -272,6 +283,7 @@ export const SUBMISSION_TYPES = {
     { name: 'kind', type: 'uint8' },
     { name: 'linkHash', type: 'bytes32' },
     { name: 'profileHash', type: 'bytes32' },
+    { name: 'mcap', type: 'uint256' },
     { name: 'nonce', type: 'uint256' },
     { name: 'deadline', type: 'uint256' },
   ],
@@ -288,6 +300,8 @@ export interface Submission {
   kind: number
   linkHash: Hex
   profileHash: Hex
+  /** The token's market cap when the callout was posted, in whole US dollars. */
+  mcap: number
   /** The callout's id. */
   nonce: number
   deadline: number
@@ -308,6 +322,7 @@ export async function verifyAttestation(attester: string, vault: string, submiss
         kind: submission.kind,
         linkHash: submission.linkHash,
         profileHash: submission.profileHash,
+        mcap: BigInt(submission.mcap),
         nonce: BigInt(submission.nonce),
         deadline: BigInt(submission.deadline),
       },
@@ -353,7 +368,8 @@ const failure = (status: number, message: string, headers?: Record<string, strin
 
 type Row = Record<string, string | number | null>
 
-const COLUMNS = 'id, token, author, kind, url, link_hash, profile, note, status, created_at, epoch, deadline, attestation'
+const COLUMNS =
+  'id, token, author, kind, url, link_hash, profile, note, status, created_at, epoch, deadline, attestation, call_mcap, call_balance, held_balance, position, closed_at, closed_mcap'
 
 function toCallout(row: Row) {
   const approved = row.status === 'approved'
@@ -370,6 +386,12 @@ function toCallout(row: Row) {
     epoch: approved ? row.epoch : null,
     deadline: approved ? row.deadline : null,
     attestation: approved ? row.attestation : null,
+    callMcap: row.call_mcap ?? null,
+    callBalance: row.call_balance ?? null,
+    heldBalance: row.held_balance ?? null,
+    position: row.position === 'closed' ? 'closed' : 'open',
+    closedAt: row.closed_at ?? null,
+    closedMcap: row.closed_mcap ?? null,
   }
 }
 
@@ -425,7 +447,8 @@ async function list(db: D1Database, token: string, url: URL): Promise<Response> 
   return json({ callouts: rows.results.map(toCallout) })
 }
 
-async function post(request: Request, db: D1Database, token: string): Promise<Response> {
+async function post(request: Request, env: CalloutEnv, token: string): Promise<Response> {
+  const db = env.DB
   const body = await readJson(request)
   if ('response' in body) return body.response
 
@@ -439,6 +462,20 @@ async function post(request: Request, db: D1Database, token: string): Promise<Re
   if (!(await verifyCalloutSignature({ token, url, note, issuedAt, author, signature }))) {
     return failure(403, 'The signature does not match this wallet and callout.')
   }
+
+  // What the callout is weighed by, read now and stored with it. Neither is ever assumed: a balance or a
+  // market cap that could not be read turns the callout away instead.
+  const [callBalance, callMcap] = await Promise.all([
+    balanceOf(bscRpc(env), token, author).catch((error: unknown) => {
+      console.error(JSON.stringify({ calloutBalanceFailed: String(error).slice(0, 300) }))
+      return null
+    }),
+    marketCapUsd(token),
+  ])
+  if (callBalance === null) return failure(503, 'This wallet’s holdings could not be read right now. Try again in a moment.')
+  if (callBalance === 0n) return failure(403, 'Callouts are for holders: this wallet holds none of this token.')
+  if (callMcap === null) return failure(503, 'The token’s market cap could not be read right now. Try again in a moment.')
+  const held = callBalance.toString()
 
   const linkHash = linkHashOf(url)
   const samePost = samePostPattern(kind, url)
@@ -459,8 +496,8 @@ async function post(request: Request, db: D1Database, token: string): Promise<Re
       .bind(signature, linkHash, kind, samePost, author, CALLOUT_CHAIN, token, dayStart, now - HOUR_SECONDS),
     db
       .prepare(
-        `INSERT INTO callouts (chain, token, author, kind, url, link_hash, profile, note, signature, created_at)
-SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+        `INSERT INTO callouts (chain, token, author, kind, url, link_hash, profile, note, signature, created_at, call_mcap, call_balance, held_balance, checked_at)
+SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?16, ?17, ?17, ?10
 WHERE (SELECT COUNT(*) FROM callouts WHERE author = ?3 AND chain = ?1 AND token = ?2 AND created_at >= ?11) < ?12
   AND (SELECT COUNT(*) FROM callouts WHERE author = ?3 AND created_at > ?13) < ?14
   AND NOT EXISTS (SELECT 1 FROM callouts WHERE kind = ?4 AND url LIKE ?15)
@@ -469,7 +506,7 @@ RETURNING id`,
       )
       .bind(
         CALLOUT_CHAIN, token, author, kind, url, linkHash, profile, note, signature, now,
-        dayStart, MAX_PER_TOKEN_PER_DAY, now - HOUR_SECONDS, MAX_PER_HOUR, samePost,
+        dayStart, MAX_PER_TOKEN_PER_DAY, now - HOUR_SECONDS, MAX_PER_HOUR, samePost, callMcap, held,
       ),
   ])
 
@@ -480,6 +517,7 @@ RETURNING id`,
         callout: {
           id, author, kind, url, note, status: 'pending', createdAt: now, linkHash, profileHash: profileHashOf(profile),
           epoch: null, deadline: null, attestation: null,
+          callMcap, callBalance: held, heldBalance: held, position: 'open', closedAt: null, closedMcap: null,
         },
       },
       201,
@@ -550,6 +588,11 @@ async function review(request: Request, db: D1Database, attester: string, vault:
   const row = await db.prepare(`SELECT ${COLUMNS} FROM callouts WHERE id = ? AND chain = ?`).bind(id, CALLOUT_CHAIN).first<Row>()
   if (!row) return failure(404, 'There is no callout with this id.')
   if (row.status === 'rejected') return failure(409, 'This callout was rejected and cannot be approved.')
+  // The attestation carries the market cap at the call. A callout that has none cannot be attested.
+  const mcap = row.call_mcap
+  if (!isCount(mcap) || mcap === 0) {
+    return failure(409, 'This callout was posted before market caps were recorded. Ask the author to post it again.')
+  }
 
   const submission: Submission = {
     holder: String(row.author),
@@ -558,6 +601,7 @@ async function review(request: Request, db: D1Database, attester: string, vault:
     kind: Number(row.kind),
     linkHash: String(row.link_hash) as Hex,
     profileHash: profileHashOf(String(row.profile ?? '')),
+    mcap,
     nonce: id,
     deadline,
   }
@@ -576,6 +620,75 @@ RETURNING ${COLUMNS}`,
     .first<Row>()
   if (!approved) return failure(409, 'This callout was rejected and cannot be approved.')
   return json({ callout: { ...toCallout(approved), token: approved.token } })
+}
+
+// ── Positions ────────────────────────────────────────────────────────────
+
+export interface PositionsResult {
+  /** Open positions whose balance was read this run. */
+  checked: number
+  /** Positions whose balance the token did not answer for. */
+  unread: number
+  /** Positions found closed and stored as such. */
+  closed: number
+  /** Positions found closed whose market cap could not be read: left open, and read again on a later run. */
+  waiting: number
+}
+
+/**
+ * Re-reads what the authors of open callouts hold, the one checked longest ago first, in one request to the
+ * chain. A position whose balance has fallen below a tenth of the balance at the call is closed, with the
+ * token's market cap at that moment; a closed position stays closed. Where that market cap cannot be read
+ * the position is left open and comes round again, rather than being closed with a figure nobody read.
+ */
+export async function refreshPositions(env: CalloutEnv, fetcher: typeof fetch = fetch): Promise<PositionsResult> {
+  const db = env.DB
+  const open = await db
+    .prepare(
+      `SELECT id, token, author, call_balance FROM callouts
+WHERE position = 'open' AND status != 'rejected' AND chain = ? AND call_balance IS NOT NULL
+ORDER BY checked_at, id LIMIT ?`,
+    )
+    .bind(CALLOUT_CHAIN, POSITIONS_PER_RUN)
+    .all<Row>()
+  const rows = open.results
+  const result: PositionsResult = { checked: 0, unread: 0, closed: 0, waiting: 0 }
+  if (rows.length === 0) return result
+
+  const balances = await balancesOf(bscRpc(env, fetcher), rows.map((row) => ({ token: String(row.token), holder: String(row.author) })))
+  const now = Math.floor(Date.now() / 1000)
+
+  const readings = rows.map((row, index) => {
+    const held = balances[index] ?? null
+    const atCall = typeof row.call_balance === 'string' && /^[0-9]{1,78}$/.test(row.call_balance) ? BigInt(row.call_balance) : null
+    return { id: row.id, token: String(row.token), held, closing: held !== null && atCall !== null && positionClosed(atCall, held) }
+  })
+
+  // One market cap per token with a closure.
+  const closingTokens = [...new Set(readings.filter((reading) => reading.closing).map((reading) => reading.token))].slice(0, CLOSURE_TOKENS_PER_RUN)
+  const caps = new Map(await Promise.all(closingTokens.map(async (token) => [token, await marketCapUsd(token, fetcher)] as const)))
+
+  const statements = readings.map(({ id, token, held, closing }) => {
+    if (held === null) {
+      // Moved to the back of the queue all the same, so a token that never answers cannot hold up the rest.
+      result.unread++
+      return db.prepare(`UPDATE callouts SET checked_at = ? WHERE id = ? AND position = 'open'`).bind(now, id)
+    }
+    result.checked++
+    const closedMcap = closing ? (caps.get(token) ?? null) : null
+    if (closing && closedMcap !== null) {
+      result.closed++
+      return db
+        .prepare(
+          `UPDATE callouts SET held_balance = ?, checked_at = ?, position = 'closed', closed_at = ?, closed_mcap = ? WHERE id = ? AND position = 'open'`,
+        )
+        .bind(held.toString(), now, now, closedMcap, id)
+    }
+    if (closing) result.waiting++
+    return db.prepare(`UPDATE callouts SET held_balance = ?, checked_at = ? WHERE id = ? AND position = 'open'`).bind(held.toString(), now, id)
+  })
+  await db.batch(statements)
+  return result
 }
 
 /** Routes `/api/callouts/bsc/<token>` and `/api/callouts/bsc/review`. */
@@ -603,7 +716,7 @@ export async function handleCallouts(request: Request, env: CalloutEnv): Promise
     }
     if (!ADDRESS.test(target)) return failure(400, 'The token must be a 0x address.')
     const token = target.toLowerCase()
-    return reading ? await list(env.DB, token, url) : await post(request, env.DB, token)
+    return reading ? await list(env.DB, token, url) : await post(request, env, token)
   } catch (error) {
     console.error(JSON.stringify({ calloutsFailed: String(error).slice(0, 500) }))
     return failure(500, 'Callouts are unavailable right now. Try again in a moment.')

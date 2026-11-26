@@ -265,7 +265,7 @@ function LaunchHome() {
       </div>
       <ol className="steps">
         <li><strong>Mint a pass.</strong> Each pass is an NFT bought at the same BNB price, until the raise reaches its cap.</li>
-        <li><strong>The cap launches it.</strong> The final mint creates the token and its PancakeSwap pool in the same transaction. {feeText} of the raise goes to the CallZ vault, where it is shared with the token's holders and callers.</li>
+        <li><strong>The cap launches it.</strong> The final mint creates the token and its PancakeSwap pool in the same transaction. {feeText} of the raise goes to the CallZ vault, where it rewards the people who call the token out.</li>
         <li><strong>Claim, or get your BNB back.</strong> Each pass claims its tokens after launch. If the cap is not reached in time, burn the pass for a full refund.</li>
       </ol>
       <p className="note note-warn" data-testid="launch-risk">{RISK}</p>
@@ -570,7 +570,7 @@ function MintPage({ address }: { address: string }) {
           </>
         )}
         <TxNote tx={tx} />
-        <p className="trade-foot dim">{RISK} {data.launchFeeBps === 0 ? "This mint takes no launch fee: the whole raise goes into the pool." : `At launch, ${data.launchFeeBps / 100}% of the raise goes to the CallZ vault, where it is shared with the token's holders and callers, and the rest goes into the pool. A refund returns the full price.`} Contract <a href={`${SITE.explorer}/address/${mint}`} target="_blank" rel="noreferrer">{short(mint)} ↗</a></p>
+        <p className="trade-foot dim">{RISK} {data.launchFeeBps === 0 ? "This mint takes no launch fee: the whole raise goes into the pool." : `At launch, ${data.launchFeeBps / 100}% of the raise goes to the CallZ vault, where it rewards the people who call the token out, and the rest goes into the pool. A refund returns the full price.`} Contract <a href={`${SITE.explorer}/address/${mint}`} target="_blank" rel="noreferrer">{short(mint)} ↗</a></p>
       </section>
     </>
   );

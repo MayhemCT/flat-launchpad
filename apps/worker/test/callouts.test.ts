@@ -1,4 +1,4 @@
-import { keccak256, stringToHex, toBytes } from 'viem'
+import { encodeFunctionResult, keccak256, numberToHex, parseAbi, stringToHex, toBytes } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, it } from 'vitest'
 import {
@@ -13,6 +13,7 @@ import {
   parseCalloutLink,
   parseCalloutPost,
   profileHashOf,
+  refreshPositions,
   reviewRejectText,
   samePostPattern,
   submissionDomain,
@@ -20,6 +21,7 @@ import {
   verifyCalloutSignature,
   type Submission,
 } from '../src/callouts.js'
+import { pickMarketCap, positionClosed } from '../src/market.js'
 
 const TOKEN = '0xFe189E97832DA1573e4e4Ff034F4fFC3a15c7777'
 const OTHER = '0x000000000000000000000000000000000000dEaD'
@@ -393,6 +395,25 @@ describe('parseCalloutPost', () => {
   })
 })
 
+/** Signs the way the review page does: viem's signTypedData over the same domain and types. */
+const attest = (attester: ReturnType<typeof newAccount>, s: Submission, vault = VAULT) =>
+  attester.signTypedData({
+    domain: submissionDomain(vault),
+    types: SUBMISSION_TYPES,
+    primaryType: 'Submission',
+    message: {
+      holder: s.holder.toLowerCase() as `0x${string}`,
+      token: s.token.toLowerCase() as `0x${string}`,
+      epoch: BigInt(s.epoch),
+      kind: s.kind,
+      linkHash: s.linkHash,
+      profileHash: s.profileHash,
+      mcap: BigInt(s.mcap),
+      nonce: BigInt(s.nonce),
+      deadline: BigInt(s.deadline),
+    },
+  })
+
 describe('the reviewer’s attestation', () => {
   const url = 'https://x.com/someuser/status/1'
   const submission = (holder: string, overrides: Partial<Submission> = {}): Submission => ({
@@ -402,32 +423,17 @@ describe('the reviewer’s attestation', () => {
     kind: 0,
     linkHash: linkHashOf(url),
     profileHash: profileHashOf('x:someuser'),
+    mcap: 48_200,
     nonce: 7,
     deadline: (currentEpoch(NOW) + 1) * EPOCH_SECONDS,
     ...overrides,
   })
-  /** Signs the way the review page does: viem's signTypedData over the same domain and types. */
-  const sign = (attester: ReturnType<typeof newAccount>, s: Submission, vault = VAULT) =>
-    attester.signTypedData({
-      domain: submissionDomain(vault),
-      types: SUBMISSION_TYPES,
-      primaryType: 'Submission',
-      message: {
-        holder: s.holder.toLowerCase() as `0x${string}`,
-        token: s.token.toLowerCase() as `0x${string}`,
-        epoch: BigInt(s.epoch),
-        kind: s.kind,
-        linkHash: s.linkHash,
-        profileHash: s.profileHash,
-        nonce: BigInt(s.nonce),
-        deadline: BigInt(s.deadline),
-      },
-    })
+  const sign = attest
 
   it('has the domain and struct the vault checks', () => {
     expect(submissionDomain(VAULT)).toEqual({ name: 'CallZ Vault', version: '1', chainId: 56, verifyingContract: VAULT.toLowerCase() })
     expect(SUBMISSION_TYPES.Submission.map(({ name, type }) => `${type} ${name}`).join(',')).toBe(
-      'address holder,address token,uint256 epoch,uint8 kind,bytes32 linkHash,bytes32 profileHash,uint256 nonce,uint256 deadline',
+      'address holder,address token,uint256 epoch,uint8 kind,bytes32 linkHash,bytes32 profileHash,uint256 mcap,uint256 nonce,uint256 deadline',
     )
   })
 
@@ -468,6 +474,10 @@ describe('the reviewer’s attestation', () => {
     expect(await check({ kind: 1 })).toBe(false)
     expect(await check({ linkHash: linkHashOf('https://x.com/someuser/status/2') })).toBe(false)
     expect(await check({ profileHash: profileHashOf('x:other') })).toBe(false)
+    // The market cap at the call is part of what is attested: a dollar either way is another attestation.
+    expect(await check({ mcap: s.mcap + 1 })).toBe(false)
+    expect(await check({ mcap: s.mcap - 1 })).toBe(false)
+    expect(await check({ mcap: 0 })).toBe(false)
     expect(await check({ nonce: 8 })).toBe(false)
     expect(await check({ deadline: s.deadline - 1 })).toBe(false)
     expect(await check({}, OTHER)).toBe(false)
@@ -642,5 +652,324 @@ describe('handleCallouts, before the database', () => {
     expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(response.headers.get('access-control-allow-origin')).toBeNull()
+  })
+})
+
+describe('positionClosed', () => {
+  it('closes a position that has fallen below a tenth of the balance at the call', () => {
+    expect(positionClosed(1000n, 99n)).toBe(true)
+    expect(positionClosed(1000n, 0n)).toBe(true)
+    // Exactly a tenth is still open.
+    expect(positionClosed(1000n, 100n)).toBe(false)
+    expect(positionClosed(1000n, 101n)).toBe(false)
+    expect(positionClosed(1000n, 1000n)).toBe(false)
+    expect(positionClosed(1000n, 5000n)).toBe(false)
+  })
+
+  it('needs no rounding for a balance too small to divide by ten', () => {
+    expect(positionClosed(1n, 0n)).toBe(true)
+    expect(positionClosed(1n, 1n)).toBe(false)
+    expect(positionClosed(9n, 0n)).toBe(true)
+    expect(positionClosed(9n, 1n)).toBe(false)
+    expect(positionClosed(19n, 1n)).toBe(true)
+    expect(positionClosed(19n, 2n)).toBe(false)
+  })
+
+  it('is exact for balances far past what a double can hold', () => {
+    const atCall = 123_456_789_012_345_678_901_234_567_897n
+    expect(positionClosed(atCall, atCall / 10n)).toBe(true) // the division rounded down, so this is just under a tenth
+    expect(positionClosed(atCall, atCall / 10n + 1n)).toBe(false)
+    expect(positionClosed(2n ** 256n - 1n, 2n ** 252n)).toBe(true)
+  })
+})
+
+/** One pair as DexScreener's token-pairs endpoint returns it (the fields of a live answer, 27 Nov 2026). */
+const dexPair = (overrides: Record<string, unknown> = {}) => ({
+  chainId: 'bsc',
+  dexId: 'pancakeswap',
+  url: 'https://dexscreener.com/bsc/0x7f51c8aaa6b0599abd16674e2b17fec7a9f674a1',
+  pairAddress: '0x7f51c8AaA6B0599aBd16674e2b17FEc7a9f674A1',
+  labels: ['v2'],
+  baseToken: { address: TOKEN, name: 'Example Token', symbol: 'EXM' },
+  quoteToken: { address: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', name: 'Wrapped BNB', symbol: 'WBNB' },
+  priceNative: '0.00000007912',
+  priceUsd: '0.00004821',
+  txns: { m5: { buys: 0, sells: 1 }, h1: { buys: 2, sells: 3 }, h6: { buys: 73, sells: 96 }, h24: { buys: 336, sells: 369 } },
+  volume: { h24: 150323.46, h6: 38786.78, h1: 1422.68, m5: 8.52 },
+  priceChange: { h1: 0.11, h6: -0.26, h24: 0.61 },
+  liquidity: { base: 269620800, quote: 21.3, usd: 12950.4 },
+  fdv: 48210.49,
+  marketCap: 48210.49,
+  pairCreatedAt: 1795000000000,
+  ...overrides,
+})
+
+describe('pickMarketCap', () => {
+  it('reads the market cap of the token’s pair, in whole dollars', () => {
+    expect(pickMarketCap([dexPair()], TOKEN)).toBe(48_210)
+    expect(pickMarketCap([dexPair()], TOKEN.toLowerCase())).toBe(48_210)
+    expect(pickMarketCap([dexPair({ marketCap: 48_210.5 })], TOKEN)).toBe(48_211)
+    expect(pickMarketCap([dexPair({ marketCap: 526_542_302 })], TOKEN)).toBe(526_542_302)
+  })
+
+  it('takes the pair with the most liquidity', () => {
+    const pairs = [
+      dexPair({ liquidity: { usd: 900 }, marketCap: 41_000 }),
+      dexPair({ liquidity: { usd: 12_950.4 }, marketCap: 48_210 }),
+      dexPair({ liquidity: { usd: 3_000 }, marketCap: 52_000 }),
+      // A pair with no liquidity figure ranks last.
+      dexPair({ liquidity: undefined, marketCap: 99_000 }),
+    ]
+    expect(pickMarketCap(pairs, TOKEN)).toBe(48_210)
+    expect(pickMarketCap([...pairs].reverse(), TOKEN)).toBe(48_210)
+    expect(pickMarketCap([dexPair({ liquidity: undefined, marketCap: 99_000 })], TOKEN)).toBe(99_000)
+  })
+
+  it('falls back to the fully diluted value where there is no market cap', () => {
+    expect(pickMarketCap([dexPair({ marketCap: undefined, fdv: 61_000.2 })], TOKEN)).toBe(61_000)
+    expect(pickMarketCap([dexPair({ marketCap: 0, fdv: 61_000.2 })], TOKEN)).toBe(61_000)
+    expect(pickMarketCap([dexPair({ marketCap: null, fdv: 61_000.2 })], TOKEN)).toBe(61_000)
+  })
+
+  it('leaves out pairs that price another token in this one, and pairs on another chain', () => {
+    // Deep, and about another token: this one is only what it is priced in.
+    const priced = dexPair({
+      baseToken: { address: OTHER, name: 'Other', symbol: 'OTH' },
+      quoteToken: { address: TOKEN, name: 'Example Token', symbol: 'EXM' },
+      liquidity: { usd: 9_000_000 },
+      marketCap: 12,
+    })
+    const elsewhere = dexPair({ chainId: 'ethereum', liquidity: { usd: 9_000_000 }, marketCap: 7 })
+    expect(pickMarketCap([priced, elsewhere, dexPair()], TOKEN)).toBe(48_210)
+    expect(pickMarketCap([priced, elsewhere], TOKEN)).toBeNull()
+  })
+
+  it('gives nothing rather than a figure it did not read', () => {
+    expect(pickMarketCap([], TOKEN)).toBeNull()
+    expect(pickMarketCap(null, TOKEN)).toBeNull()
+    expect(pickMarketCap({ pairs: [dexPair()] }, TOKEN)).toBeNull()
+    expect(pickMarketCap('[]', TOKEN)).toBeNull()
+    expect(pickMarketCap([null, 'pair', 7], TOKEN)).toBeNull()
+    expect(pickMarketCap([dexPair({ marketCap: undefined, fdv: undefined })], TOKEN)).toBeNull()
+    expect(pickMarketCap([dexPair({ marketCap: 0, fdv: 0 })], TOKEN)).toBeNull()
+    expect(pickMarketCap([dexPair({ marketCap: -5, fdv: Number.NaN })], TOKEN)).toBeNull()
+    expect(pickMarketCap([dexPair({ marketCap: '48210', fdv: '48210' })], TOKEN)).toBeNull()
+    expect(pickMarketCap([dexPair({ marketCap: Number.POSITIVE_INFINITY, fdv: undefined })], TOKEN)).toBeNull()
+    // Under half a dollar rounds to nothing, and nothing is not a market cap.
+    expect(pickMarketCap([dexPair({ marketCap: 0.4, fdv: 0.4 })], TOKEN)).toBeNull()
+    expect(pickMarketCap([dexPair({ baseToken: undefined })], TOKEN)).toBeNull()
+  })
+
+  it('skips a pair without a figure for the next deepest one that has it', () => {
+    const pairs = [dexPair({ liquidity: { usd: 50_000 }, marketCap: undefined, fdv: undefined }), dexPair({ liquidity: { usd: 100 }, marketCap: 44_000 })]
+    expect(pickMarketCap(pairs, TOKEN)).toBe(44_000)
+  })
+})
+
+type CalloutDb = Parameters<typeof handleCallouts>[1]['DB']
+
+describe('approving a callout', () => {
+  const REVIEW = 'https://callz.test/api/callouts/bsc/review'
+  const url = 'https://x.com/someuser/status/1'
+  const attester = newAccount()
+  const author = newAccount().address.toLowerCase()
+  const stored = (callMcap: number | null) => ({
+    id: 7, token: TOKEN.toLowerCase(), author, kind: 0, url, link_hash: linkHashOf(url), profile: 'x:someuser', note: '', status: 'pending',
+    created_at: NOW, epoch: null, deadline: null, attestation: null,
+    call_mcap: callMcap, call_balance: callMcap === null ? null : '5000000000000000000000', held_balance: callMcap === null ? null : '5000000000000000000000',
+    position: 'open', closed_at: null, closed_mcap: null,
+  })
+  /** A database holding one callout: it answers the read of that row and applies the approval to it. */
+  const databaseWith = (row: ReturnType<typeof stored>) => {
+    const writes: unknown[][] = []
+    const db = {
+      prepare: (sql: string) => ({
+        bind: (...values: unknown[]) => ({
+          first: async () => {
+            if (sql.startsWith('SELECT')) return row
+            writes.push(values)
+            return { ...row, status: 'approved', epoch: values[2], deadline: values[3], attestation: values[4] }
+          },
+        }),
+      }),
+    } as unknown as CalloutDb
+    return { db, writes }
+  }
+  const approve = async (row: ReturnType<typeof stored>, signedMcap: number) => {
+    const epoch = currentEpoch(Math.floor(Date.now() / 1000))
+    const deadline = (epoch + 1) * EPOCH_SECONDS
+    const submission: Submission = {
+      holder: author, token: TOKEN.toLowerCase(), epoch, kind: 0, linkHash: linkHashOf(url), profileHash: profileHashOf('x:someuser'),
+      mcap: signedMcap, nonce: 7, deadline,
+    }
+    const signature = await attest(attester, submission)
+    const { db, writes } = databaseWith(row)
+    const response = await handleCallouts(
+      new Request(REVIEW, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 7, decision: 'approve', epoch, deadline, signature }) }),
+      { DB: db, CALLOUT_ATTESTER: attester.address, CALLZ_VAULT: VAULT },
+    )
+    return { response, writes, epoch, deadline, signature }
+  }
+
+  it('refuses one posted before market caps were recorded, whatever was signed', async () => {
+    const { response, writes } = await approve(stored(null), 48_200)
+    expect(response.status).toBe(409)
+    expect(((await response.json()) as { error: string }).error).toBe(
+      'This callout was posted before market caps were recorded. Ask the author to post it again.',
+    )
+    expect(writes).toEqual([])
+    expect((await approve(stored(null), 0)).response.status).toBe(409)
+  })
+
+  it('stores an attestation over the market cap recorded at the call', async () => {
+    const { response, writes, epoch, deadline, signature } = await approve(stored(48_200), 48_200)
+    expect(response.status).toBe(200)
+    expect(writes).toHaveLength(1)
+    expect(writes[0]?.slice(1)).toEqual([attester.address.toLowerCase(), epoch, deadline, signature, 7, 'bsc'])
+    expect(await response.json()).toMatchObject({
+      callout: {
+        id: 7, status: 'approved', epoch, deadline, attestation: signature, token: TOKEN.toLowerCase(),
+        callMcap: 48_200, callBalance: '5000000000000000000000', heldBalance: '5000000000000000000000', position: 'open', closedAt: null, closedMcap: null,
+      },
+    })
+  })
+
+  it('refuses an attestation over any other market cap', async () => {
+    for (const signedMcap of [48_199, 48_201, 1]) {
+      const { response, writes } = await approve(stored(48_200), signedMcap)
+      expect(response.status, String(signedMcap)).toBe(403)
+      expect(writes).toEqual([])
+    }
+  })
+})
+
+describe('refreshPositions', () => {
+  const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11'
+  const multicallAbi = parseAbi([
+    'struct Result { bool success; bytes returnData; }',
+    'struct Call3 { address target; bool allowFailure; bytes callData; }',
+    'function aggregate3(Call3[] calls) payable returns (Result[] returnData)',
+  ])
+  const holder = (n: number) => `0x${String(n).padStart(40, '0')}`
+  const TOKEN_A = TOKEN.toLowerCase()
+  const TOKEN_B = OTHER.toLowerCase()
+
+  /**
+   * Runs one refresh over `rows`, with the chain answering `balances` (null: that read reverts) and DexScreener
+   * answering `caps` (a token missing from it: the request fails).
+   */
+  const run = async (rows: Array<{ id: number; token: string; call_balance: string }>, balances: Array<bigint | null>, caps: Record<string, number>) => {
+    const requests = { rpc: 0, dexscreener: [] as string[] }
+    const batches: Array<Array<{ sql: string; values: unknown[] }>> = []
+    const db = {
+      prepare: (sql: string) => ({
+        bind: (...values: unknown[]) => ({
+          sql,
+          values,
+          all: async () => ({ results: rows.map((row) => ({ ...row, author: holder(row.id) })) }),
+        }),
+      }),
+      batch: async (statements: Array<{ sql: string; values: unknown[] }>) => {
+        batches.push(statements)
+        return []
+      },
+    } as unknown as CalloutDb
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const target = String(input)
+      if (target.startsWith('https://api.dexscreener.com/token-pairs/v1/bsc/')) {
+        const token = target.slice(target.lastIndexOf('/') + 1)
+        requests.dexscreener.push(token)
+        const cap = caps[token]
+        return cap === undefined ? new Response('unavailable', { status: 503 }) : Response.json([dexPair({ baseToken: { address: token }, marketCap: cap })])
+      }
+      expect(target).toBe('https://rpc.test/')
+      requests.rpc++
+      const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: [{ to: string; data: string }, string] }
+      expect(body.method).toBe('eth_call')
+      expect(body.params[0].to.toLowerCase()).toBe(MULTICALL3)
+      const result = encodeFunctionResult({
+        abi: multicallAbi,
+        functionName: 'aggregate3',
+        result: balances.map((balance) =>
+          balance === null ? { success: false, returnData: '0x' as const } : { success: true, returnData: numberToHex(balance, { size: 32 }) },
+        ),
+      })
+      return Response.json({ jsonrpc: '2.0', id: body.id, result })
+    }) as typeof fetch
+    const before = Math.floor(Date.now() / 1000)
+    const result = await refreshPositions({ DB: db, BSC_RPC_URL: 'https://rpc.test/' }, fetcher)
+    return { result, requests, writes: batches.flat(), before }
+  }
+
+  it('makes no request when no position is open', async () => {
+    const { result, requests, writes } = await run([], [], {})
+    expect(result).toEqual({ checked: 0, unread: 0, closed: 0, waiting: 0 })
+    expect(requests).toEqual({ rpc: 0, dexscreener: [] })
+    expect(writes).toEqual([])
+  })
+
+  it('reads every balance in one request, and stores what each wallet holds now', async () => {
+    const rows = [
+      { id: 1, token: TOKEN_A, call_balance: '1000' },
+      { id: 2, token: TOKEN_A, call_balance: '1000' },
+      { id: 3, token: TOKEN_B, call_balance: '123456789012345678901234567890' },
+    ]
+    const { result, requests, writes, before } = await run(rows, [1000n, 100n, 999_999_999_999_999_999_999_999_999_999n], {})
+    expect(result).toEqual({ checked: 3, unread: 0, closed: 0, waiting: 0 })
+    // Still holding, sold nine tenths (exactly a tenth left is still open), and bought more: none is closed.
+    expect(requests).toEqual({ rpc: 1, dexscreener: [] })
+    expect(writes.map(({ values }) => [values[0], values[2]])).toEqual([['1000', 1], ['100', 2], ['999999999999999999999999999999', 3]])
+    for (const { sql, values } of writes) {
+      expect(sql).toBe(`UPDATE callouts SET held_balance = ?, checked_at = ? WHERE id = ? AND position = 'open'`)
+      expect(values[1]).toBeGreaterThanOrEqual(before)
+    }
+  })
+
+  it('closes a position below a tenth of the call balance, at the market cap of that moment', async () => {
+    const rows = [
+      { id: 1, token: TOKEN_A, call_balance: '1000' },
+      { id: 2, token: TOKEN_A, call_balance: '5000' },
+      { id: 3, token: TOKEN_B, call_balance: '1000' },
+    ]
+    const { result, requests, writes } = await run(rows, [99n, 0n, 500n], { [TOKEN_A]: 131_000 })
+    expect(result).toEqual({ checked: 3, unread: 0, closed: 2, waiting: 0 })
+    // One market cap for the token, however many of its positions closed; none for a token with no closure.
+    expect(requests).toEqual({ rpc: 1, dexscreener: [TOKEN_A] })
+    const closing = `UPDATE callouts SET held_balance = ?, checked_at = ?, position = 'closed', closed_at = ?, closed_mcap = ? WHERE id = ? AND position = 'open'`
+    expect(writes.map(({ sql }) => sql === closing)).toEqual([true, true, false])
+    expect(writes[0]?.values.slice(3)).toEqual([131_000, 1])
+    expect(writes[0]?.values[0]).toBe('99')
+    expect(writes[0]?.values[2]).toBe(writes[0]?.values[1])
+    expect(writes[1]?.values.slice(3)).toEqual([131_000, 2])
+    expect(writes[2]?.values[0]).toBe('500')
+  })
+
+  it('leaves a position open when the market cap at its closing cannot be read', async () => {
+    const { result, requests, writes } = await run([{ id: 1, token: TOKEN_A, call_balance: '1000' }], [0n], {})
+    expect(result).toEqual({ checked: 1, unread: 0, closed: 0, waiting: 1 })
+    expect(requests.dexscreener).toEqual([TOKEN_A])
+    // What the wallet holds is stored; that the position closed, and at what, is not.
+    expect(writes).toHaveLength(1)
+    expect(writes[0]?.sql).toBe(`UPDATE callouts SET held_balance = ?, checked_at = ? WHERE id = ? AND position = 'open'`)
+    expect(writes[0]?.values[0]).toBe('0')
+  })
+
+  it('skips a balance the token did not answer for, without reading it as zero', async () => {
+    const rows = [{ id: 1, token: TOKEN_A, call_balance: '1000' }, { id: 2, token: TOKEN_B, call_balance: '1000' }]
+    const { result, requests, writes } = await run(rows, [null, 1000n], { [TOKEN_A]: 131_000 })
+    expect(result).toEqual({ checked: 1, unread: 1, closed: 0, waiting: 0 })
+    expect(requests.dexscreener).toEqual([])
+    expect(writes[0]?.sql).toBe(`UPDATE callouts SET checked_at = ? WHERE id = ? AND position = 'open'`)
+    expect(writes[0]?.values[1]).toBe(1)
+    expect(writes[1]?.values[0]).toBe('1000')
+  })
+
+  it('only ever writes to a position that is still open', async () => {
+    const { writes } = await run(
+      [{ id: 1, token: TOKEN_A, call_balance: '1000' }, { id: 2, token: TOKEN_A, call_balance: '1000' }, { id: 3, token: TOKEN_A, call_balance: '1000' }],
+      [0n, 1000n, null],
+      { [TOKEN_A]: 9 },
+    )
+    for (const { sql } of writes) expect(sql).toMatch(/ AND position = 'open'$/)
   })
 })

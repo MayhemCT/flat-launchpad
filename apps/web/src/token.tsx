@@ -295,7 +295,7 @@ function TradePanel({ market, error, loading, onTraded }: { market: Market | nul
         </p>
       )}
       <p className="trade-foot dim">
-        Swapped on PancakeSwap{market ? `, through the ${market.quote} pool` : ""}, by the CallZ router. The CallZ fee is taken on the BNB side and goes to the rewards vault, which pays it to the token's stakers and verified callers. CallZ never holds your funds. Anyone can launch a token: check it before you buy.
+        Swapped on PancakeSwap{market ? `, through the ${market.quote} pool` : ""}, by the CallZ router. The CallZ fee is taken on the BNB side and goes to the rewards vault, which pays it to the people who call this token out. CallZ never holds your funds. Anyone can launch a token: check it before you buy.
       </p>
     </section>
   );
@@ -491,7 +491,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
         <aside className="token-side">
           <TradePanel market={market} error={error} loading={loading} onTraded={reload} />
           <TokenChat chain="bsc" token={token} />
-          <Callouts token={token} />
+          <Callouts token={token} marketCap={pair?.marketCap ?? pair?.fdv ?? null} supply={market?.totalSupply ?? null} />
           <RewardsPanel token={token as Address} market={market} />
           {(meta?.description || links.length > 0) && (
             <section className="token-about" aria-label="About this token">

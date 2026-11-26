@@ -4,8 +4,9 @@ import deployment from "../src/callz-deployment.json" with { type: "json" };
 
 /**
  * CallZ's fees end to end, through the pages, on a local fork of BNB Chain: the 2% trading fee reaching the
- * vault, staking for the holder share, a callout going from posted, to approved by the reviewer wallet, to
- * recorded in the vault, and the single claim that pays it out once the round has ended.
+ * vault and the team wallet, a callout going from posted (with the wallet's holdings and the market cap recorded),
+ * to approved by the reviewer wallet, to recorded in the vault with its snapshot, and the single claim that pays
+ * it out once the round has ended. Nothing is staked anywhere.
  *
  * The contracts are deployed on the fork with the very transactions the site's Deploy button sends. PancakeSwap,
  * the Flap token and the pages are the real ones; the fork's own unlocked account stands in for a browser
@@ -14,7 +15,8 @@ import deployment from "../src/callz-deployment.json" with { type: "json" };
  *
  *   anvil --fork-url https://bsc-rpc.publicnode.com --port 8548
  *   npx wrangler d1 migrations apply raidpass-index --local
- *   npx wrangler dev --port 8788 --var CALLOUT_ATTESTER:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+ *   npx wrangler dev --port 8788 --var CALLOUT_ATTESTER:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 --var BSC_RPC_URL:http://127.0.0.1:8548
+ *   (the API reads the poster's holdings from the chain, so it has to read the fork too)
  *   VITE_BSC_RPC_URL=http://127.0.0.1:8548 TRADE_RPC_URL=http://127.0.0.1:8548 API_ORIGIN=http://localhost:8788 npx playwright test tests/fees.pw.ts --workers=1
  */
 const RPC = process.env.TRADE_RPC_URL;
@@ -129,23 +131,6 @@ test("a buy and a sell through the token page each pay 2% of the BNB to the vaul
   expect(errors).toEqual([]);
 });
 
-test("stake for the holder share, then take the stake back", async ({ page }) => {
-  await useForkWallet(page);
-  await page.goto(`/#/token/${TOKEN}`);
-  const rewards = page.getByTestId("rewards-panel");
-  await expect(rewards.getByTestId("rewards-mine")).toBeVisible({ timeout: 60_000 });
-
-  // The first test left this wallet holding some of the token.
-  await rewards.locator("input[name=stake]").fill("10");
-  await rewards.getByTestId("rewards-stake").click();
-  await expect(rewards.getByText("Staked.")).toBeVisible({ timeout: 120_000 });
-  await expect(rewards.getByTestId("rewards-mine").locator("div").first()).toContainText("10 ", { timeout: 30_000 });
-
-  await rewards.locator("input[name=stake]").fill("10");
-  await rewards.getByTestId("rewards-unstake").click();
-  await expect(rewards.getByText("Unstaked.")).toBeVisible({ timeout: 120_000 });
-});
-
 test("a callout for another contract is refused; a real one is posted, approved, and recorded in the vault", async ({ page }) => {
   await useForkWallet(page);
   const errors: string[] = [];
@@ -188,12 +173,16 @@ test("a callout for another contract is refused; a real one is posted, approved,
   await expect(verified).toContainText("Verified", { timeout: 30_000 });
   await verified.getByRole("button", { name: "Record on-chain" }).click();
   await expect(verified).toContainText("Counted on-chain", { timeout: 120_000 });
-  // It counts toward this round, and unlocks the holder share for this wallet.
-  await expect(page.getByTestId("rewards-mine")).toContainText("holder share unlocked", { timeout: 60_000 });
+  // It counts toward this round, and the vault has taken this wallet's snapshot. The tokens never left the wallet.
+  // (One on a fresh fork; a fork this test already ran on today has counted the earlier ones too.)
+  await expect(page.getByTestId("rewards-mine")).toContainText(/[1-3] of 3/, { timeout: 60_000 });
+  await expect(page.getByTestId("rewards-snapshot")).toContainText("still holding");
+  // The feed shows the market cap the call was made at.
+  await expect(verified).toContainText("Called at $");
   expect(errors).toEqual([]);
 });
 
-test("after the round ends, one claim pays the callout rewards and the holder share", async ({ page }) => {
+test("after the round ends, one claim pays the callout rewards", async ({ page }) => {
   // Move the fork to ten minutes into the next UTC day, and put it back afterwards.
   const snapshot = await rpc<string>("evm_snapshot");
   try {

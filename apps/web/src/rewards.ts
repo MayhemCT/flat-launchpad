@@ -1,12 +1,15 @@
 /**
- * The CallZ vault from the visitor's side: what a token's fees have collected, staking for the holder share,
- * recording a verified callout, and claiming.
+ * The CallZ vault from the visitor's side: what a token's fees have collected for its callers, recording a
+ * verified callout, and claiming.
  *
  * The vault (contracts/src/callz/CallZVault.sol) receives every CallZ fee in BNB and books it per token:
- * 35% streams to the token's stakers, 10% is shared between holders whose callouts were verified that round,
- * 30% is the callout reward pool of the round, and 25% is the platform's, sent to the team wallet as it arrives.
- * A round is one UTC day. Its 10% and 30% can be claimed during the 24 hours after it ends; what is not claimed
- * by then goes to the team wallet. One `claim` collects everything a token owes a wallet.
+ * 45% is the round's holder share, 30% its callout pool, and 25% is the platform's, sent to the team wallet as
+ * it arrives. Nothing is staked: tokens stay in the holder's wallet, and the vault reads the wallet's balance
+ * when their callout is recorded (the snapshot). A caller's weight in the holder share is that snapshot divided
+ * by the market cap they called at, and they earn from the fees that arrive after their callout.
+ *
+ * A round is one UTC day. Its rewards can be claimed during the 24 hours after it ends; what is not claimed by
+ * then goes to the team wallet. One `claim` collects everything a token owes a wallet.
  *
  * Nothing here holds a key. Every transaction is simulated first, so one the chain would reject never reaches
  * the wallet, and is then signed by the visitor's own wallet.
@@ -17,7 +20,7 @@ import deployment from "./callz-deployment.json";
 import { TradeError, client, explain, settle, wallet, withHeadroom } from "./trade";
 
 export const VAULT = deployment.vault.address as Address;
-/** The wallet that signs verified callouts at launch. The vault's guardian can replace it: `loadRewards` reads the one in force. */
+/** The wallet that signs verified callouts at launch. The vault's guardian can replace it. */
 export const ATTESTER = deployment.team as Address;
 export const EPOCH_SECONDS = 86_400;
 /** How long a round's rewards stay claimable after it ends. */
@@ -34,32 +37,25 @@ export function epochEnd(epoch: number): number {
 }
 
 export const vaultAbi = parseAbi([
-  "struct Submission { address holder; address token; uint256 epoch; uint8 kind; bytes32 linkHash; bytes32 profileHash; uint256 nonce; uint256 deadline; }",
+  "struct Submission { address holder; address token; uint256 epoch; uint8 kind; bytes32 linkHash; bytes32 profileHash; uint256 mcap; uint256 nonce; uint256 deadline; }",
   "function attester() view returns (address)",
   "function teamWallet() view returns (address)",
   "function holdersBps() view returns (uint16)",
-  "function unlockedBps() view returns (uint16)",
   "function calloutBps() view returns (uint16)",
   "function platformBps() view returns (uint16)",
   "function requiredLinks() view returns (uint8)",
   "function maxLinksPerEpoch() view returns (uint8)",
   "function minHoldPpm() view returns (uint32)",
   "function usedLink(bytes32 linkHash) view returns (bool)",
-  "function staked(address token, address holder) view returns (uint256)",
-  "function earned(address token, address holder) view returns (uint256)",
   "function holdingOf(address token, address holder) view returns (uint256)",
-  "function streamOf(address token) view returns (uint256 totalStaked, uint256 rate, uint256 periodFinish, uint256 queued)",
-  "function roundOf(address token, uint256 epoch) view returns (uint256 pot10, uint256 pool30, uint256 claimedPot, uint256 claimedPool, uint256 totalWeight, uint256 links, uint256 deadline, bool swept)",
-  "function progress(address token, uint256 epoch, address holder) view returns (uint256 links, bool unlocked, uint256 weight, bool claimedUnlocked, bool claimedCallout, uint256 unlockedPayout, uint256 calloutPayout)",
-  "function stake(address token, uint256 amount)",
-  "function unstake(address token, uint256 amount)",
+  "function roundOf(address token, uint256 epoch) view returns (uint256 holderShare, uint256 calloutPool, uint256 claimedHolderShare, uint256 claimedCalloutPool, uint256 totalWeight, uint256 links, uint256 deadline, bool swept)",
+  "function progress(address token, uint256 epoch, address holder) view returns (uint256 links, bool inHolderShare, uint256 snapshot, bool claimedHolder, bool claimedCallout, uint256 holderPayout, uint256 calloutPayout)",
   "function claim(address token, uint256[] epochs) returns (uint256 total)",
   "function submitAttested(Submission s, string link, bytes signature)",
-  "error ZeroAmount()",
-  "error InsufficientStake()",
   "error WrongEpoch()",
   "error Expired()",
   "error InvalidKind()",
+  "error ZeroMarketCap()",
   "error LinkTooLong()",
   "error LinkMismatch()",
   "error LinkUsed()",
@@ -68,17 +64,12 @@ export const vaultAbi = parseAbi([
   "error BelowMinHold()",
   "error NothingToClaim()",
   "error BnbTransferFailed()",
+  "error Insolvent()",
 ]);
-const tokenAbi = parseAbi([
-  "function balanceOf(address account) view returns (uint256)",
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-]);
+const tokenAbi = parseAbi(["function balanceOf(address account) view returns (uint256)"]);
 
 /** Why the vault refuses something, in words for the person asking. */
 const REFUSALS: Record<string, [title: string, text: string]> = {
-  ZeroAmount: ["Nothing to move", "The amount is zero."],
-  InsufficientStake: ["Not that much staked", "You have less staked than you are taking out."],
   WrongEpoch: ["Approval expired", "This callout was approved for a round that has ended. It has to be approved again for the running round."],
   Expired: ["Approval expired", "This approval has passed its deadline. It has to be approved again."],
   LinkUsed: ["Already counted", "This link has already been counted. Each link counts once."],
@@ -101,7 +92,7 @@ function explainVault(error: unknown, sent: boolean, hash?: Hex): TradeError {
   return explain(error, sent, hash);
 }
 
-export type RewardStep = "approving" | "checking" | "confirm" | "pending";
+export type RewardStep = "checking" | "confirm" | "pending";
 
 interface Call {
   address: Address;
@@ -140,6 +131,8 @@ export interface Submission {
   kind: number;
   linkHash: Hex;
   profileHash: Hex;
+  /** The token's market cap in whole US dollars when the callout was posted. */
+  mcap: bigint;
   nonce: bigint;
   deadline: bigint;
 }
@@ -156,6 +149,7 @@ export function submissionTypedData(message: Submission) {
         { name: "kind", type: "uint8" },
         { name: "linkHash", type: "bytes32" },
         { name: "profileHash", type: "bytes32" },
+        { name: "mcap", type: "uint256" },
         { name: "nonce", type: "uint256" },
         { name: "deadline", type: "uint256" },
       ],
@@ -176,19 +170,19 @@ export async function recordedLinks(linkHashes: Hex[]): Promise<boolean[]> {
 }
 
 /** Records an approved callout in the vault, from the holder's wallet. Resolves with the transaction hash once it has confirmed. */
-export function recordCallout(account: Address, submission: Submission, link: string, signature: Hex, onStep?: (step: "checking" | "confirm" | "pending") => void): Promise<Hex> {
-  return send(account, { address: VAULT, abi: vaultAbi, functionName: "submitAttested", args: [submission, link, signature] }, (step) => step !== "approving" && onStep?.(step));
+export function recordCallout(account: Address, submission: Submission, link: string, signature: Hex, onStep?: (step: RewardStep) => void): Promise<Hex> {
+  return send(account, { address: VAULT, abi: vaultAbi, functionName: "submitAttested", args: [submission, link, signature] }, onStep);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The rewards of one token
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The round that ended last: the only one whose callout rewards can still be claimed. */
+/** The round that ended last: the only one whose rewards can still be claimed. */
 export interface FinishedRound {
   epoch: number;
-  /** BNB the callout-unlocked holder share would pay this wallet now. */
-  unlockedPayout: bigint;
+  /** BNB the holder share would pay this wallet now. */
+  holderPayout: bigint;
   /** BNB the callout pool would pay this wallet now. */
   calloutPayout: bigint;
   /** Unix seconds the claim closes: 24 hours after the round ended. After that the rewards go to the team wallet. */
@@ -201,21 +195,18 @@ export interface Rewards {
   epoch: number;
   /** Unix seconds the running round ends. */
   epochEnds: number;
-  split: { holdersBps: number; unlockedBps: number; calloutBps: number; platformBps: number };
+  split: { holdersBps: number; calloutBps: number; platformBps: number };
   rules: { requiredLinks: number; maxLinksPerEpoch: number; minHoldPpm: number };
   /** The running round of this token. */
-  round: { pot10: bigint; pool30: bigint; links: number; totalWeight: bigint };
-  /** The holder stream of this token: BNB per second reaching stakers, when it ends, and BNB waiting to join it. */
-  stream: { totalStaked: bigint; rate: bigint; periodFinish: number; queued: bigint };
+  round: { holderShare: bigint; calloutPool: bigint; links: number };
   /** The connected wallet. Null when none is connected. */
   mine: {
-    wallet: bigint;
-    staked: bigint;
-    earned: bigint;
-    allowance: bigint;
-    /** Callouts counted for this wallet in the running round, and whether the 10% share is unlocked. */
+    /** Tokens in the wallet now. */
+    holding: bigint;
+    /** Callouts counted for this wallet in the running round. */
     links: number;
-    unlocked: boolean;
+    /** Tokens the vault recorded for this wallet when its callout was counted this round. Null before that. */
+    snapshot: bigint | null;
     /** What the round that just ended still owes this wallet. Null when it owes nothing. */
     finished: FinishedRound | null;
   } | null;
@@ -223,10 +214,9 @@ export interface Rewards {
 
 const EMPTY: Omit<Rewards, "epoch" | "epochEnds"> = {
   deployed: false,
-  split: { holdersBps: 3500, unlockedBps: 1000, calloutBps: 3000, platformBps: 2500 },
+  split: { holdersBps: 4500, calloutBps: 3000, platformBps: 2500 },
   rules: { requiredLinks: 1, maxLinksPerEpoch: 3, minHoldPpm: 100 },
-  round: { pot10: 0n, pool30: 0n, links: 0, totalWeight: 0n },
-  stream: { totalStaked: 0n, rate: 0n, periodFinish: 0, queued: 0n },
+  round: { holderShare: 0n, calloutPool: 0n, links: 0 },
   mine: null,
 };
 
@@ -238,77 +228,38 @@ export async function loadRewards(token: Address, account: Address | null): Prom
   if (!code || code === "0x") return { ...EMPTY, epoch, epochEnds: epochEnd(epoch) };
 
   const at = { address: VAULT, abi: vaultAbi } as const;
-  const [holdersBps, unlockedBps, calloutBps, platformBps, requiredLinks, maxLinksPerEpoch, minHoldPpm, round, stream] = await client.multicall({
+  const holder = account ?? "0x0000000000000000000000000000000000000000";
+  // Only the round that ended last can still be claimed: its window is the day that is running now.
+  const last = epoch - 1;
+  const [holdersBps, calloutBps, platformBps, requiredLinks, maxLinksPerEpoch, minHoldPpm, round, holding, now, before] = await client.multicall({
     allowFailure: false,
     contracts: [
       { ...at, functionName: "holdersBps" },
-      { ...at, functionName: "unlockedBps" },
       { ...at, functionName: "calloutBps" },
       { ...at, functionName: "platformBps" },
       { ...at, functionName: "requiredLinks" },
       { ...at, functionName: "maxLinksPerEpoch" },
       { ...at, functionName: "minHoldPpm" },
       { ...at, functionName: "roundOf", args: [token, BigInt(epoch)] },
-      { ...at, functionName: "streamOf", args: [token] },
+      { address: token, abi: tokenAbi, functionName: "balanceOf", args: [holder] },
+      { ...at, functionName: "progress", args: [token, BigInt(epoch), holder] },
+      { ...at, functionName: "progress", args: [token, BigInt(last), holder] },
     ],
   });
 
-  let mine: Rewards["mine"] = null;
-  if (account) {
-    // Only the round that ended last can still be claimed: its window is the day that is running now.
-    const last = epoch - 1;
-    const [walletBalance, staked, earned, allowance, now, before] = await client.multicall({
-      allowFailure: false,
-      contracts: [
-        { address: token, abi: tokenAbi, functionName: "balanceOf", args: [account] },
-        { ...at, functionName: "staked", args: [token, account] },
-        { ...at, functionName: "earned", args: [token, account] },
-        { address: token, abi: tokenAbi, functionName: "allowance", args: [account, VAULT] },
-        { ...at, functionName: "progress", args: [token, BigInt(epoch), account] },
-        { ...at, functionName: "progress", args: [token, BigInt(last), account] },
-      ],
-    });
-    const finished = before[5] > 0n || before[6] > 0n ? { epoch: last, unlockedPayout: before[5], calloutPayout: before[6], deadline: epochEnd(last) + CLAIM_WINDOW_SECONDS } : null;
-    mine = { wallet: walletBalance, staked, earned, allowance, links: Number(now[0]), unlocked: now[1], finished };
-  }
-
+  const finished = before[5] > 0n || before[6] > 0n ? { epoch: last, holderPayout: before[5], calloutPayout: before[6], deadline: epochEnd(last) + CLAIM_WINDOW_SECONDS } : null;
   return {
     deployed: true,
     epoch,
     epochEnds: epochEnd(epoch),
-    split: { holdersBps, unlockedBps, calloutBps, platformBps },
+    split: { holdersBps, calloutBps, platformBps },
     rules: { requiredLinks, maxLinksPerEpoch, minHoldPpm },
-    round: { pot10: round[0], pool30: round[1], links: Number(round[5]), totalWeight: round[4] },
-    stream: { totalStaked: stream[0], rate: stream[1], periodFinish: Number(stream[2]), queued: stream[3] },
-    mine,
+    round: { holderShare: round[0], calloutPool: round[1], links: Number(round[5]) },
+    mine: account ? { holding, links: Number(now[0]), snapshot: now[1] ? now[2] : null, finished } : null,
   };
 }
 
-/** Stakes `amount` of `token` in the vault. Approves the vault for exactly that amount when it is not already allowed. */
-export async function stake(account: Address, token: Address, amount: bigint, onStep?: (step: RewardStep, hash?: Hex) => void): Promise<Hex> {
-  try {
-    const allowance = await client.readContract({ address: token, abi: tokenAbi, functionName: "allowance", args: [account, VAULT] });
-    if (allowance < amount) {
-      onStep?.("approving");
-      const { request } = await client.simulateContract({ account, address: token, abi: tokenAbi, functionName: "approve", args: [VAULT, amount] });
-      const approval = await wallet().writeContract(request);
-      const receipt = await client.waitForTransactionReceipt({ hash: approval, timeout: 120_000 });
-      if (receipt.status !== "success") throw new TradeError("REVERTED", "Approval reverted", "The token rejected the approval. Only the network fee was spent.", approval);
-    }
-  } catch (error) {
-    throw explainVault(error, false);
-  }
-  return send(account, { address: VAULT, abi: vaultAbi, functionName: "stake", args: [token, amount] }, onStep);
-}
-
-export function unstake(account: Address, token: Address, amount: bigint, onStep?: (step: RewardStep, hash?: Hex) => void): Promise<Hex> {
-  return send(account, { address: VAULT, abi: vaultAbi, functionName: "unstake", args: [token, amount] }, onStep);
-}
-
-/**
- * Collects everything `token` owes the wallet in one transaction: what its stake has earned, and the callout
- * rewards and holder share of the listed finished rounds.
- */
+/** Collects everything `token` owes the wallet for the listed finished rounds, in one transaction. */
 export function claim(account: Address, token: Address, epochs: number[], onStep?: (step: RewardStep, hash?: Hex) => void): Promise<Hex> {
   return send(account, { address: VAULT, abi: vaultAbi, functionName: "claim", args: [token, epochs.map(BigInt)] }, onStep);
 }

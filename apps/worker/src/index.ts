@@ -1,6 +1,6 @@
 import { CHAINS, type ChainKey } from '@flat/protocol'
 import { handleApi } from './api.js'
-import { handleCallouts } from './callouts.js'
+import { handleCallouts, refreshPositions } from './callouts.js'
 import { handleChat } from './chat.js'
 import { handleImage, handleMeta } from './image.js'
 import { Budget, syncChain } from './sync.js'
@@ -62,6 +62,15 @@ async function sync(env: Env): Promise<void> {
   }
 }
 
+/** Re-reads what the authors of open callouts hold. A failure here is logged and never reaches the sync. */
+async function positions(env: Env): Promise<void> {
+  try {
+    console.log(JSON.stringify({ positions: await refreshPositions(env) }))
+  } catch (error) {
+    console.error(JSON.stringify({ positionsFailed: String(error).slice(0, 500) }))
+  }
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url)
@@ -74,6 +83,7 @@ export default {
   },
 
   async scheduled(_controller, env, ctx): Promise<void> {
-    ctx.waitUntil(sync(env))
+    // The positions are read after the sync, whether or not it succeeded; the sync's own outcome is kept.
+    ctx.waitUntil(sync(env).finally(() => positions(env)))
   },
 } satisfies ExportedHandler<Env>

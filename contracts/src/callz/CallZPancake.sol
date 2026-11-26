@@ -65,8 +65,8 @@ struct CallZPancakeConfig {
 ///         Nobody can withdraw the raise: it leaves this contract only through the launch or through refunds.
 ///         The launch fee is a share of the raise, fixed when the mint is created (`launchFeeBps`, at most 10%)
 ///         and taken only if the mint launches: a refund returns the full price. It goes to the CallZ vault,
-///         booked under the new token, where it is shared with the token's holders and callers. The token itself
-///         has no tax.
+///         booked under the new token, where it rewards the people who call the token out. The token itself has
+///         no tax.
 ///
 /// @dev Deployed by `CallZPancakeFactory` as an immutable minimal clone. There is no owner, no admin function and
 ///      no upgrade path.

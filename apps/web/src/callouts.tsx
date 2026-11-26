@@ -3,16 +3,20 @@
 // personal_sign. A reviewer wallet approves a callout by signing the attestation the rewards vault checks,
 // and the author's own wallet then takes that attestation to the vault.
 //
+// A callout is a holder's. The Worker records what the wallet held and the token's market cap when it was
+// posted, and keeps reading the balance: each card says whether the wallet still holds, has sold part, or
+// has closed the position, and at what market cap.
+//
 // A link on this page is never the text somebody typed. The Worker rebuilds every link in one canonical
 // spelling, and this page runs the same rules over what the Worker returns before it becomes an address to
 // click: a link that does not come out identical is not shown as a link at all.
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
-import { createWalletClient, custom, keccak256, toBytes, type Address, type Hex } from "viem";
+import { createWalletClient, custom, keccak256, parseAbi, toBytes, type Address, type Hex } from "viem";
 import { bsc } from "viem/chains";
-import { ago, short } from "./format";
+import { ago, amount, short, usd } from "./format";
 import { VAULT, currentEpoch, epochEnd, recordCallout, recordedLinks, submissionTypedData, type Submission } from "./rewards";
 import { SITES } from "./site";
-import { TradeError } from "./trade";
+import { TradeError, client } from "./trade";
 import { connect, switchChain, useWallet } from "./wallet";
 import "./callouts.css";
 
@@ -208,6 +212,16 @@ interface Callout {
   epoch: number | null;
   deadline: number | null;
   attestation: string | null;
+  /** The token's market cap when the callout was posted, in whole US dollars. Null for one posted before it was recorded. */
+  callMcap: number | null;
+  /** What the author held when the callout was posted, and at the latest reading: token base units, as decimal strings. */
+  callBalance: string | null;
+  heldBalance: string | null;
+  /** Closed once the author holds less than a tenth of what they held at the call. A closed position stays closed. */
+  position: "open" | "closed";
+  /** When the position was found closed (unix seconds), and the token's market cap then. */
+  closedAt: number | null;
+  closedMcap: number | null;
 }
 
 interface ReviewCallout extends Callout {
@@ -218,15 +232,20 @@ interface ReviewCallout extends Callout {
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const ATTESTATION = /^0x[0-9a-f]{130}$/;
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+/** A uint256 as a decimal string. */
+const isUnits = (value: unknown): value is string => typeof value === "string" && /^[0-9]{1,78}$/.test(value);
 
 function isCallout(value: unknown): value is Callout {
   if (typeof value !== "object" || value === null) return false;
-  const { id, author, kind, url, note, status, createdAt, epoch, deadline, attestation } = value as Record<string, unknown>;
+  const { id, author, kind, url, note, status, createdAt, epoch, deadline, attestation, callMcap, callBalance, heldBalance, position, closedAt, closedMcap } =
+    value as Record<string, unknown>;
   return (
     isCount(id) && typeof author === "string" && ADDRESS.test(author) && isCount(kind) && typeof url === "string" && typeof note === "string" &&
     (status === "pending" || status === "approved") && isCount(createdAt) &&
     (epoch === null || isCount(epoch)) && (deadline === null || isCount(deadline)) &&
-    (attestation === null || (typeof attestation === "string" && ATTESTATION.test(attestation)))
+    (attestation === null || (typeof attestation === "string" && ATTESTATION.test(attestation))) &&
+    (callMcap === null || isCount(callMcap)) && (callBalance === null || isUnits(callBalance)) && (heldBalance === null || isUnits(heldBalance)) &&
+    (position === "open" || position === "closed") && (closedAt === null || isCount(closedAt)) && (closedMcap === null || isCount(closedMcap))
   );
 }
 
@@ -249,8 +268,11 @@ function checkedLink(callout: Pick<Callout, "url" | "kind">, token: string): Cal
 /** keccak256 of the canonical link's UTF-8 bytes: what the vault knows a link by. */
 const linkHashOf = (link: CalloutLink): Hex => keccak256(toBytes(link.url));
 
-/** What the reviewer attests and the vault checks, built from the checked link rather than from hashes handed over. */
-function submissionOf(callout: Pick<Callout, "id" | "author">, token: string, link: CalloutLink, epoch: number, deadline: number): Submission {
+/**
+ * What the reviewer attests and the vault checks, built from the checked link rather than from hashes handed
+ * over. `mcap` is the market cap recorded when the callout was posted: a callout without one cannot be attested.
+ */
+function submissionOf(callout: Pick<Callout, "id" | "author">, token: string, link: CalloutLink, mcap: number, epoch: number, deadline: number): Submission {
   return {
     holder: callout.author as Address,
     token: token.toLowerCase() as Address,
@@ -258,6 +280,7 @@ function submissionOf(callout: Pick<Callout, "id" | "author">, token: string, li
     kind: link.kind,
     linkHash: linkHashOf(link),
     profileHash: link.profile === "" ? ZERO_HASH : keccak256(toBytes(link.profile)),
+    mcap: BigInt(mcap),
     nonce: BigInt(callout.id),
     deadline: BigInt(deadline),
   };
@@ -305,11 +328,116 @@ function OpenLink({ link }: { link: CalloutLink | null }) {
   );
 }
 
+const balanceAbi = parseAbi(["function balanceOf(address account) view returns (uint256)"]);
+/** Ratios of base-unit amounts are taken to nine decimal places before they become a number. */
+const RATIO_SCALE = 1_000_000_000n;
+
+/** `part / whole` as a number, from whole-number maths: a balance does not fit a double. Null when it cannot be said. */
+function ratio(part: bigint, whole: bigint): number | null {
+  if (whole <= 0n || part < 0n) return null;
+  const value = Number((part * RATIO_SCALE) / whole) / Number(RATIO_SCALE);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** A dollar amount that is not negative, short enough for a narrow column: "$0", "<$0.01", "$841.25", "$8.41K", "$48.2K". */
+function dollars(value: number): string {
+  if (value === 0) return "$0";
+  if (value < 0.01) return "<$0.01";
+  if (value < 1000) return `$${value.toLocaleString("en", { maximumFractionDigits: 2 })}`;
+  return `$${new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(value)}`;
+}
+
+/** A change as a percentage with its sign: "+8.3%", "-12.4%". Null when it is not a number to show. */
+function signedPercent(change: number): string | null {
+  if (!Number.isFinite(change)) return null;
+  const rounded = Math.round(change * 1000) / 10;
+  return `${rounded < 0 ? "-" : "+"}${Math.abs(rounded).toFixed(1)}%`;
+}
+
+interface PositionStat {
+  label: string;
+  value: string;
+  /** A second, smaller line under the value. */
+  detail?: string;
+  tone?: "good" | "warn";
+}
+
+const UNKNOWN = "—";
+
+/**
+ * The four figures of the position behind a callout. `held` is what the author holds now (read live from the
+ * token where that worked, else the Worker's latest reading), `supply` the token's total supply, `cap` its
+ * market cap now. Null for a callout posted before market caps were recorded. A figure that cannot be worked
+ * out from what is known is a dash, never a guess.
+ */
+function positionStats(callout: Callout, held: bigint | null, liveClosed: boolean, supply: bigint | null, cap: number | null, now: number): PositionStat[] | null {
+  const called = callout.callMcap;
+  if (called === null || called <= 0) return null;
+  const calledAt: PositionStat = { label: "Called at", value: `${usd(called)} MC` };
+
+  if (callout.position === "closed" || liveClosed) {
+    // Until the Worker has stored the market cap of the closing, the one the page has now stands in for it.
+    const closedCap = callout.closedMcap !== null && callout.closedMcap > 0 ? callout.closedMcap : cap;
+    const result = closedCap === null ? null : signedPercent(closedCap / called - 1);
+    const when = callout.closedAt !== null ? ago(callout.closedAt, now) : callout.position === "closed" ? undefined : "now";
+    return [
+      { label: "Position", value: "Closed" },
+      { label: "Closed at", value: closedCap === null ? UNKNOWN : `${usd(closedCap)} MC`, ...(closedCap !== null && when ? { detail: when } : {}) },
+      calledAt,
+      result === null || closedCap === null ? { label: "Result", value: UNKNOWN } : { label: "Result", value: result, tone: closedCap >= called ? "good" : "warn" },
+    ];
+  }
+
+  const share = held !== null && supply !== null ? ratio(held, supply) : null;
+  const worth = share !== null && cap !== null ? share * cap : null;
+  const profit = share !== null && cap !== null ? share * (cap - called) : null;
+  const change = cap !== null ? signedPercent(cap / called - 1) : null;
+  const percentHeld = share === null ? null : share * 100;
+  return [
+    { label: "Position", value: worth !== null && Number.isFinite(worth) ? dollars(worth) : UNKNOWN },
+    profit !== null && change !== null && Number.isFinite(profit)
+      ? {
+          label: "Profit since call",
+          value: `${profit < 0 ? "-" : "+"}${Math.abs(profit) < 0.01 ? "$0" : dollars(Math.abs(profit))}`,
+          // The gain is written without its plus, as in "+$22.1K (8.3%)".
+          detail: `(${change.replace(/^\+/, "")})`,
+          tone: profit < 0 ? "warn" : "good",
+        }
+      : { label: "Profit since call", value: UNKNOWN },
+    calledAt,
+    {
+      label: "Supply held",
+      value: percentHeld === null ? UNKNOWN : held === 0n ? "0%" : percentHeld < 0.01 ? "<0.01%" : `${percentHeld.toFixed(2)}%`,
+    },
+  ];
+}
+
+/** The box of figures on a card. Each label is followed by a space, so the card reads "Called at $26.5M MC" as text too. */
+function PositionStats({ stats }: { stats: PositionStat[] }) {
+  return (
+    <dl className="callout-stats" data-testid="callout-position">
+      {stats.map((stat) => (
+        <div key={stat.label} className="callout-stat">
+          <dt>{stat.label}{" "}</dt>
+          <dd className="num" data-tone={stat.tone}>
+            {stat.value}
+            {stat.detail && <>{" "}<span className="callout-stat-detail">{stat.detail}</span></>}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 // ── The feed on a token's page ───────────────────────────────────────────
 
 const RECORD_STEPS = { checking: "Checking…", confirm: "Confirm in wallet…", pending: "Recording…" } as const;
 
-export function Callouts({ token }: { token: Address }) {
+/**
+ * `marketCap` is the token's market cap now, in US dollars, and `supply` its total supply in base units,
+ * where the page showing the feed knows them: with both, each card values the position behind it.
+ */
+export function Callouts({ token, marketCap, supply }: { token: Address; marketCap?: number | null; supply?: bigint | null }) {
   const wallet = useWallet();
   const feed = `${API}/${token.toLowerCase()}`;
   const titleId = useId();
@@ -319,6 +447,8 @@ export function Callouts({ token }: { token: Address }) {
   const [now, setNow] = useState(() => Date.now());
   /** Counts the feed's successful loads: what was read from the vault is read again with each. */
   const [loads, setLoads] = useState(0);
+  /** Author to the balance of the token read from the chain just now. An author is absent until that read succeeds. */
+  const [heldNow, setHeldNow] = useState<Record<string, bigint>>({});
   const [link, setLink] = useState("");
   const [note, setNote] = useState("");
   const [step, setStep] = useState<"idle" | "signing" | "sending">("idle");
@@ -382,6 +512,42 @@ export function Callouts({ token }: { token: Address }) {
 
   const me = wallet.account?.toLowerCase();
   const cards = useMemo(() => callouts.map((callout) => ({ callout, link: checkedLink(callout, token) })), [callouts, token]);
+
+  // What each author in the feed holds right now, read from the token itself in one request: the Worker's
+  // own reading can be a few minutes old. Read when the authors change, and again with every poll.
+  const authors = useMemo(() => [...new Set(callouts.map((callout) => callout.author))].sort(), [callouts]);
+  const authorsKey = authors.join(",");
+  // Another token's balances say nothing about this one.
+  useEffect(() => setHeldNow({}), [token]);
+  useEffect(() => {
+    if (authors.length === 0) return;
+    let current = true;
+    const read = () => {
+      if (document.visibilityState !== "visible") return;
+      client
+        .multicall({
+          allowFailure: true,
+          // No size limit on the batch: every balance travels in the one call.
+          batchSize: 0,
+          contracts: authors.map((author) => ({ address: token, abi: balanceAbi, functionName: "balanceOf" as const, args: [author as Address] as const })),
+        })
+        .then(
+          (results) =>
+            current &&
+            // An author whose balance the token did not answer for falls back to the Worker's reading.
+            setHeldNow(Object.fromEntries(authors.flatMap((author, index) => (results[index]?.status === "success" ? [[author, results[index].result]] : [])))),
+          // The chain could not be reached: the readings already on the page stand until the next poll.
+          () => undefined,
+        );
+    };
+    read();
+    const timer = window.setInterval(read, POLL_MS);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+    // `authorsKey` is the content of `authors`.
+  }, [authorsKey, token]);
 
   // The connected wallet's approved callouts: has the vault counted them yet?
   const ownHashes = useMemo(
@@ -466,11 +632,11 @@ export function Callouts({ token }: { token: Address }) {
 
   const record = async (callout: Callout, checked: CalloutLink) => {
     const account = wallet.account;
-    if (!account || recording || callout.epoch === null || callout.deadline === null || callout.attestation === null) return;
+    if (!account || recording || callout.epoch === null || callout.deadline === null || callout.attestation === null || callout.callMcap === null) return;
     setRecordError(null);
     setRecording({ id: callout.id, step: "checking" });
     try {
-      await recordCallout(account, submissionOf(callout, token, checked, callout.epoch, callout.deadline), checked.url, callout.attestation as Hex, (next) =>
+      await recordCallout(account, submissionOf(callout, token, checked, callout.callMcap, callout.epoch, callout.deadline), checked.url, callout.attestation as Hex, (next) =>
         setRecording({ id: callout.id, step: next }),
       );
       setRecorded((previous) => ({ ...previous, [linkHashOf(checked)]: true }));
@@ -489,12 +655,17 @@ export function Callouts({ token }: { token: Address }) {
   };
 
   const nowSeconds = Math.floor(now / 1000);
+  const cap = typeof marketCap === "number" && Number.isFinite(marketCap) && marketCap > 0 ? marketCap : null;
+  const totalSupply = typeof supply === "bigint" && supply > 0n ? supply : null;
 
   return (
     <section className="callouts-panel" data-testid="token-callouts" aria-labelledby={titleId}>
       <header className="callouts-head">
         <h2 id={titleId}>Callouts</h2>
-        <p className="callouts-help">Post your X, pump.fun or fomo.family callout for this token. Verified callouts earn from the reward pool.</p>
+        <p className="callouts-help">
+          Post your X, pump.fun or fomo.family callout for this token. Your holdings and the market cap are recorded when you post. Verified callouts earn
+          from the token's trading fees: the earlier the call and the longer you hold, the more.
+        </p>
       </header>
 
       {wallet.account ? (
@@ -546,8 +717,14 @@ export function Callouts({ token }: { token: Address }) {
           {cards.map(({ callout, link: checked }) => {
             const mine = callout.status === "approved" && callout.author === me;
             const counted = mine && checked ? recorded[linkHashOf(checked)] : undefined;
-            const live = callout.epoch === currentEpoch() && callout.deadline !== null && callout.deadline > nowSeconds && callout.attestation !== null;
+            const recordable =
+              callout.epoch === currentEpoch() && callout.deadline !== null && callout.deadline > nowSeconds && callout.attestation !== null && callout.callMcap !== null;
             const busy = recording?.id === callout.id ? recording.step : null;
+            const live = heldNow[callout.author];
+            const held = live ?? (callout.heldBalance !== null ? BigInt(callout.heldBalance) : null);
+            // Closed the moment the chain shows under a tenth of the call balance, ahead of the Worker noticing.
+            const liveClosed = live !== undefined && callout.callBalance !== null && live * 10n < BigInt(callout.callBalance);
+            const stats = positionStats(callout, held, liveClosed, totalSupply, cap, now);
             return (
               <li key={callout.id} className="callout-card" data-own={callout.author === me}>
                 <div className="callout-meta">
@@ -561,15 +738,17 @@ export function Callouts({ token }: { token: Address }) {
                   )}
                 </div>
                 {callout.note && <p className="callout-note">{callout.note}</p>}
+                {stats && <PositionStats stats={stats} />}
                 <div className="callout-actions">
                   <OpenLink link={checked} />
-                  {mine && checked && counted === false && live && (
+                  {cap !== null && <span className="callout-cap num" title="The token's market cap now">◎ {usd(cap)} MC</span>}
+                  {mine && checked && counted === false && recordable && (
                     <button type="button" className="button callout-record" disabled={recording !== null} onClick={() => void record(callout, checked)}>
                       {busy ? RECORD_STEPS[busy] : "Record on-chain"}
                     </button>
                   )}
                 </div>
-                {mine && checked && counted === false && !live && (
+                {mine && checked && counted === false && !recordable && (
                   <p className="callout-hint">Approval expired. It will be re-approved for the current round.</p>
                 )}
                 {recordError?.id === callout.id && (
@@ -602,6 +781,13 @@ interface ReviewQueue {
   callouts: ReviewCallout[];
 }
 
+const decimalsAbi = parseAbi(["function decimals() view returns (uint8)"]);
+
+/** A balance at the call for the reviewer: in whole tokens where the token's decimals are known, in base units otherwise. */
+function heldAtCall(balance: string, tokenDecimals: number | undefined): string {
+  return tokenDecimals === undefined ? `${balance} base units` : `${amount(balance, 4, tokenDecimals)} tokens`;
+}
+
 export function ReviewPage() {
   const wallet = useWallet();
   const [queue, setQueue] = useState<ReviewQueue | null>(null);
@@ -610,6 +796,8 @@ export function ReviewPage() {
   /** Link hash to whether the vault has counted it, for approvals whose round has passed. */
   const [recorded, setRecorded] = useState<Record<string, boolean> | null>(null);
   const [vaultUnread, setVaultUnread] = useState(false);
+  /** Token address to its decimals, for the tokens whose contract answered. */
+  const [decimals, setDecimals] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState<{ id: number; decision: "approve" | "reject" } | null>(null);
   const [error, setError] = useState<{ id: number; text: string } | null>(null);
   const clockAhead = useRef(0);
@@ -651,6 +839,24 @@ export function ReviewPage() {
     () => (queue?.callouts ?? []).map((callout) => ({ callout, link: checkedLink(callout, callout.token) })),
     [queue],
   );
+  // How many decimals each token in the queue has, to show what was held at the call in whole tokens.
+  const tokens = useMemo(() => [...new Set((queue?.callouts ?? []).map((callout) => callout.token))], [queue]);
+  useEffect(() => {
+    if (tokens.length === 0) return;
+    let current = true;
+    client
+      .multicall({ allowFailure: true, contracts: tokens.map((token) => ({ address: token as Address, abi: decimalsAbi, functionName: "decimals" as const })) })
+      .then(
+        (results) =>
+          current && setDecimals(Object.fromEntries(tokens.flatMap((token, index) => (results[index]?.status === "success" ? [[token, Number(results[index].result)]] : [])))),
+        // Without the decimals the balance is shown in the token's base units, and says so.
+        () => undefined,
+      );
+    return () => {
+      current = false;
+    };
+  }, [tokens]);
+
   const epoch = currentEpoch();
   /** Approvals whose round has passed: they come back for approval unless the vault already counted them. */
   const expired = useMemo(
@@ -705,7 +911,8 @@ export function ReviewPage() {
 
   const approve = async (callout: ReviewCallout, link: CalloutLink) => {
     const provider = window.ethereum;
-    if (!provider || !account || busy) return;
+    const mcap = callout.callMcap;
+    if (!provider || !account || busy || mcap === null) return;
     setError(null);
     setBusy({ id: callout.id, decision: "approve" });
     try {
@@ -715,7 +922,7 @@ export function ReviewPage() {
       try {
         signature = await createWalletClient({ chain: bsc, transport: custom(provider) }).signTypedData({
           account,
-          ...submissionTypedData(submissionOf(callout, callout.token, link, round, deadline)),
+          ...submissionTypedData(submissionOf(callout, callout.token, link, mcap, round, deadline)),
         });
       } catch (cause) {
         // 4001: the reviewer closed the wallet's prompt. The chain library hands it on under its own error.
@@ -797,13 +1004,15 @@ export function ReviewPage() {
                   <div><dt>Posted by</dt><dd className="num">{callout.author}</dd></div>
                   <div><dt>Link</dt><dd className="num">{callout.url}</dd></div>
                   {link?.profile && <div><dt>Profile</dt><dd className="num">{link.profile}</dd></div>}
+                  {callout.callMcap !== null && <div><dt>Market cap at the call</dt><dd className="num">{usd(callout.callMcap)}</dd></div>}
+                  {callout.callBalance !== null && <div><dt>Held at the call</dt><dd className="num">{heldAtCall(callout.callBalance, decimals[callout.token])}</dd></div>}
                   {callout.note && <div><dt>Note</dt><dd>{callout.note}</dd></div>}
                 </dl>
                 <div className="callout-actions">
                   <OpenLink link={link} />
                   {isReviewer && (
                     <span className="review-buttons">
-                      {link && sameVault && onChain && (
+                      {link && sameVault && onChain && callout.callMcap !== null && (
                         <button type="button" className="button" disabled={busy !== null} onClick={() => void approve(callout, link)}>
                           {working === "approve" ? "Sign in wallet…" : "Approve"}
                         </button>
@@ -814,6 +1023,7 @@ export function ReviewPage() {
                     </span>
                   )}
                 </div>
+                {callout.callMcap === null && <p className="callout-hint">Posted before market caps were recorded: ask the author to post it again.</p>}
                 {error?.id === callout.id && <p className="callouts-error" role="alert">{error.text}</p>}
               </li>
             );

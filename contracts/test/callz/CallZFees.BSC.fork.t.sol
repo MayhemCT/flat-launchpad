@@ -22,8 +22,8 @@ interface IPancakeRouterView {
 
 /// @notice CallZ's fees on a fork of BNB Chain: the 10% launch fee, the 2% trading fee through the CallZ router
 ///         (on a CallZ token and on two live Flap tax tokens, one pooled against BNB and one against USDT), and the
-///         vault that splits and pays them: the holder stream, callout rounds, the 24-hour claim window, and the
-///         team wallet being paid without sending a transaction.
+///         vault that splits and pays them: callout rounds, the snapshot of each caller's holdings, the 24-hour
+///         claim window, and the team wallet being paid without sending a transaction.
 ///
 ///         Nothing is mocked: PancakeSwap, WBNB, USDT and the Flap tokens are the deployed ones.
 ///         Needs BSC_RPC_URL.
@@ -109,6 +109,9 @@ contract CallZFeesBSCForkTest is Test {
         path[2] = c;
     }
 
+    /// @dev The market cap callouts are attested at unless a test says otherwise, in US dollars.
+    uint256 internal mcap = 100_000;
+
     function _attest(address holder, address token, uint8 kind, string memory link, uint256 key)
         internal
         returns (Submission memory s, bytes memory signature)
@@ -120,6 +123,7 @@ contract CallZFeesBSCForkTest is Test {
             kind: kind,
             linkHash: keccak256(bytes(link)),
             profileHash: bytes32(0),
+            mcap: mcap,
             nonce: ++nonce,
             deadline: (vault.currentEpoch() + 1) * DAY
         });
@@ -162,16 +166,13 @@ contract CallZFeesBSCForkTest is Test {
         assertEq(address(mint).balance, 0, "the mint keeps nothing");
         assertEq(IERC20(WBNB).balanceOf(mint.pair()), 0.9 ether, "the rest is the pool's BNB side");
 
-        // The split of the passdown: 35% holders, 10% callout-unlocked, 30% callout pool, 25% platform.
+        // The split: 45% to the round's holder share, 30% to its callout pool, 25% to the team wallet.
         (uint256 pot, uint256 pool,,) = _round(token, epoch);
-        assertEq(pot, 0.01 ether);
-        assertEq(pool, 0.03 ether);
+        assertEq(pot, 0, "nobody has called the token out yet, so the holder share joins the pool");
+        assertEq(pool, 0.075 ether);
         assertEq(team.balance - teamBefore, 0.025 ether, "the platform share went straight to the team wallet");
         assertEq(vault.platformAccrued(), 0);
-        (uint256 totalStaked, uint256 rate, uint256 finish, uint256 queued) = vault.streamOf(token);
-        assertEq(totalStaked, 0);
-        assertEq(rate * 3 days + queued, 0.035 ether, "the holder share is streaming or waiting, to the wei");
-        assertEq(finish, block.timestamp + 3 days);
+        assertEq(address(vault).balance, 0.075 ether);
 
         // A mint that misses its cap refunds the full price: the fee is only taken at launch.
         CallZPancakeConfig memory c = CallZPancakeConfig("Miss", "MISS", "", 0.1 ether, 1 ether, 1 hours, 5000);
@@ -344,15 +345,13 @@ contract CallZFeesBSCForkTest is Test {
         vault.deposit{value: value}(token);
 
         (uint256 pot, uint256 pool,,) = _round(token, vault.currentEpoch());
-        (, uint256 rate,, uint256 queued) = vault.streamOf(token);
         uint256 toTeam = team.balance - teamBefore;
-        assertEq(pot, uint256(value) * 1000 / 10_000);
-        assertEq(pool, uint256(value) * 3000 / 10_000);
-        assertEq(rate * 3 days + queued, uint256(value) * 3500 / 10_000);
-        assertEq(rate * 3 days + queued + pot + pool + toTeam, value);
+        assertEq(pot, 0);
+        assertEq(pool, uint256(value) * 4500 / 10_000 + uint256(value) * 3000 / 10_000);
+        assertEq(pot + pool + toTeam, value);
         assertEq(vault.platformAccrued(), 0);
         (uint256 received, uint256 paid) = vault.ledgerOf(token);
-        assertEq(received, uint256(value) - toTeam, "the token's ledger holds everything but the platform share");
+        assertEq(received, pot + pool, "the token's ledger holds everything but the platform share");
         assertEq(paid, 0);
         assertEq(address(vault).balance, received);
     }
@@ -389,13 +388,13 @@ contract CallZFeesBSCForkTest is Test {
         vault.collect(10);
 
         vm.expectRevert(CallZVault.NotGuardian.selector);
-        vault.setSplit(3500, 1000, 3000, 2500);
+        vault.setSplit(4500, 3000, 2500);
         vm.startPrank(guardian);
         vm.expectRevert(CallZVault.InvalidSplit.selector);
-        vault.setSplit(3000, 1000, 3000, 3000); // platform above 25%
+        vault.setSplit(4500, 2500, 3000); // platform above 25%
         vm.expectRevert(CallZVault.InvalidSplit.selector);
-        vault.setSplit(3500, 1000, 3000, 2000); // does not add up
-        vault.setSplit(4500, 1500, 4000, 0);
+        vault.setSplit(4500, 3000, 2000); // does not add up
+        vault.setSplit(6000, 4000, 0);
         vm.expectRevert(CallZVault.InvalidRules.selector);
         vault.setRules(0, 3, 100);
         vm.expectRevert(CallZVault.InvalidRules.selector);
@@ -416,89 +415,54 @@ contract CallZFeesBSCForkTest is Test {
         vm.prank(bob);
         vault.deposit{value: 1 ether}(other);
         (uint256 pot, uint256 pool,,) = _round(other, vault.currentEpoch());
-        assertEq(pot, 0.15 ether);
-        assertEq(pool, 0.4 ether);
+        assertEq(pot + pool, 1 ether);
         assertEq(team.balance, before, "platform share is 0 after the change");
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Vault: holders by weight
-    // ─────────────────────────────────────────────────────────────────────────
-
-    function test_08_stakersShareTheHolderStreamByWeight() public {
-        (, address token) = _launch();
-        IERC20 erc = IERC20(token);
-        uint256[] memory none = new uint256[](0);
-        vm.prank(alice);
-        erc.transfer(bob, 100e18);
-
-        // A day passes with nobody staked. That day's stream is not lost: it goes back to the queue.
-        vm.warp(block.timestamp + 1 days);
-        vm.startPrank(alice);
-        erc.approve(address(vault), 300e18);
-        vault.stake(token, 300e18);
-        vm.stopPrank();
-        vm.startPrank(bob);
-        erc.approve(address(vault), 100e18);
-        vault.stake(token, 100e18);
-        vm.stopPrank();
-        assertEq(erc.balanceOf(address(vault)), 400e18);
-        assertEq(vault.staked(token, alice), 300e18);
-
-        // The whole 0.035 BNB holder share streams over the next 3 days, 3:1.
-        vm.warp(block.timestamp + 1 days);
-        assertApproxEqRel(vault.earned(token, alice), uint256(0.035 ether) * 3 / 4 / 3, 1e12);
-        assertApproxEqRel(vault.earned(token, bob), uint256(0.035 ether) / 4 / 3, 1e12);
-        vm.warp(block.timestamp + 5 days);
-        assertApproxEqRel(vault.earned(token, alice), uint256(0.035 ether) * 3 / 4, 1e12);
-        assertApproxEqRel(vault.earned(token, bob), uint256(0.035 ether) / 4, 1e12);
-
-        uint256 before = alice.balance;
-        uint256 owed = vault.earned(token, alice);
-        vm.prank(alice);
-        assertEq(vault.claim(token, none), owed);
-        assertEq(alice.balance - before, owed);
-        vm.expectRevert(CallZVault.NothingToClaim.selector);
-        vm.prank(alice);
-        vault.claim(token, none);
-
-        // New fees join the stream; a stake comes back in full at any time and keeps what it earned.
-        vm.prank(carol);
-        vault.deposit{value: 4 ether}(token);
-        vm.warp(block.timestamp + 3 days);
-        assertApproxEqRel(vault.earned(token, alice), uint256(1.4 ether) * 3 / 4, 1e12);
-        vm.startPrank(bob);
-        vm.expectRevert(CallZVault.InsufficientStake.selector);
-        vault.unstake(token, 100e18 + 1);
-        vault.unstake(token, 100e18);
-        vm.stopPrank();
-        assertEq(erc.balanceOf(bob), 100e18);
-        uint256 bobOwed = vault.earned(token, bob);
-        assertApproxEqRel(bobOwed, uint256(0.035 ether) / 4 + uint256(1.4 ether) / 4, 1e12);
-        before = bob.balance;
-        vm.prank(bob);
-        vault.claim(token, none);
-        assertEq(bob.balance - before, bobOwed);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Vault: callouts
     // ─────────────────────────────────────────────────────────────────────────
 
-    function test_09_verifiedCalloutsUnlockTheHolderShareAndEarnFromThePool() public {
+    /// @dev Nothing is staked: the vault reads the caller's wallet when their first callout of the round is
+    ///      recorded, and that reading is their weight for the round.
+    function test_08_theSnapshotIsTheWalletBalanceAndNothingLeavesTheWallet() public {
+        (, address token) = _launch();
+        IERC20 erc = IERC20(token);
+        vm.prank(alice);
+        erc.transfer(bob, 100_000_000e18); // alice 400M, bob 100M
+        uint256 epoch = vault.currentEpoch();
+
+        (, bool inShare, uint256 snapshot,,,,) = vault.progress(token, epoch, alice);
+        assertFalse(inShare);
+        assertEq(snapshot, 0);
+
+        _submit(alice, token, 0, "https://x.com/alice/status/8");
+        (uint256 links, bool nowIn, uint256 taken,,,,) = vault.progress(token, epoch, alice);
+        assertEq(links, 1);
+        assertTrue(nowIn);
+        assertEq(taken, 400_000_000e18, "the snapshot is what her wallet held");
+        assertEq(erc.balanceOf(alice), 400_000_000e18, "her tokens never left her wallet");
+        assertEq(erc.balanceOf(address(vault)), 0, "the vault holds no tokens");
+        assertEq(erc.allowance(alice, address(vault)), 0, "and was never approved to move any");
+
+        // A snapshot is taken once a round: more tokens and more callouts afterwards do not change it.
+        vm.prank(bob);
+        erc.transfer(alice, 50_000_000e18);
+        _submit(alice, token, 0, "https://x.com/alice/status/8b");
+        (links,, taken,,,,) = vault.progress(token, epoch, alice);
+        assertEq(links, 2);
+        assertEq(taken, 400_000_000e18);
+        (,, uint256 totalWeight,) = _round(token, epoch);
+        assertEq(totalWeight, 400_000_000e18 * 10, "holdings times 1e6, over the 100,000 dollar market cap");
+    }
+
+    function test_09_verifiedCalloutsShareTheHolderShareAndEarnFromThePool() public {
         (, address token) = _launch();
         IERC20 erc = IERC20(token);
         vm.prank(alice);
         erc.transfer(bob, 100_000_000e18); // alice 400M, bob 100M
         vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours); // a fresh round
         uint256 epoch = vault.currentEpoch();
-
-        // Trading fees fill the round: a 5 BNB buy pays 0.1 BNB, so 0.01 to the pot and 0.03 to the pool.
-        vm.prank(carol);
-        router.buy{value: 5 ether}(token, _path(WBNB, token), 1, block.timestamp);
-        (uint256 pot, uint256 pool,,) = _round(token, epoch);
-        assertEq(pot, 0.01 ether);
-        assertEq(pool, 0.03 ether);
 
         // Alice records one verified link, bob two.
         _submit(alice, token, 0, "https://x.com/alice/status/1");
@@ -508,8 +472,16 @@ contract CallZFeesBSCForkTest is Test {
         uint256 links;
         (,, totalWeight, links) = _round(token, epoch);
         assertEq(links, 3);
-        assertEq(totalWeight, 500_000_000e18, "both unlocked with what they hold");
+        assertEq(totalWeight, 500_000_000e18 * 10, "both called at the same market cap: weight follows holdings");
         assertTrue(vault.usedLink(keccak256("https://x.com/alice/status/1")));
+
+        // Trading after their callouts fills the round: a 5 BNB buy pays 0.1 BNB, so 0.045 to the holder share and
+        // 0.03 to the pool.
+        vm.prank(carol);
+        router.buy{value: 5 ether}(token, _path(WBNB, token), 1, block.timestamp);
+        (uint256 pot, uint256 pool,,) = _round(token, epoch);
+        assertEq(pot, 0.045 ether);
+        assertEq(pool, 0.03 ether);
 
         _refusals(token, epoch);
         _claimsAndSweep(token, epoch);
@@ -557,38 +529,38 @@ contract CallZFeesBSCForkTest is Test {
     }
 
     function _claimsAndSweep(address token, uint256 epoch) internal {
-        // The round is over. One transaction pays alice both her buckets: four fifths of the 10% share (she holds
-        // 400M of the 500M that unlocked) and one of the four links' worth of the pool.
-        (,,,,, uint256 aliceUnlocked, uint256 aliceCallout) = vault.progress(token, epoch, alice);
-        assertEq(aliceUnlocked, 0.01 ether * 4 / 5);
+        // The round is over. One transaction pays alice both her buckets: four fifths of the holder share (her
+        // snapshot is 400M of the 500M) and one of the four links' worth of the pool.
+        (,,,,, uint256 aliceHolder, uint256 aliceCallout) = vault.progress(token, epoch, alice);
+        assertEq(aliceHolder, 0.045 ether * 4 / 5);
         assertEq(aliceCallout, 0.03 ether / 4);
         uint256 before = alice.balance;
         vm.startPrank(alice);
-        assertEq(vault.claim(token, _epochs(epoch)), 0.0155 ether);
+        assertEq(vault.claim(token, _epochs(epoch)), 0.0435 ether);
         vm.expectRevert(CallZVault.NothingToClaim.selector);
         vault.claim(token, _epochs(epoch));
         vm.stopPrank();
-        assertEq(alice.balance - before, 0.0155 ether);
+        assertEq(alice.balance - before, 0.0435 ether);
 
         // 24 hours after the round ended, the claim window shuts. Bob never claimed.
         (,,,,,, uint256 deadline,) = vault.roundOf(token, epoch);
         assertEq(deadline, (epoch + 1) * DAY + 24 hours);
         vm.warp(deadline + 1);
-        (,,,,, uint256 bobUnlocked, uint256 bobCallout) = vault.progress(token, epoch, bob);
-        assertEq(bobUnlocked + bobCallout, 0);
+        (,,,,, uint256 bobHolder, uint256 bobCallout) = vault.progress(token, epoch, bob);
+        assertEq(bobHolder + bobCallout, 0);
         vm.expectRevert(CallZVault.NothingToClaim.selector);
         vm.prank(bob);
         vault.claim(token, _epochs(epoch));
 
-        // Everything unclaimed goes to the team wallet: the launch round nobody called out in (0.01 + 0.03), and
-        // what bob left in this one (0.002 of the 10% share, 0.0225 of the pool).
+        // Everything unclaimed goes to the team wallet: the launch round nobody called out in (0.045 + 0.03),
+        // and what bob left in this one (0.009 of the holder share, 0.0225 of the pool).
         (uint256 rounds, uint256 pending) = vault.pendingSweep(10);
         assertEq(rounds, 2);
-        assertEq(pending, 0.04 ether + 0.0245 ether);
+        assertEq(pending, 0.075 ether + 0.0315 ether);
         before = team.balance;
         vm.prank(carol);
-        assertEq(vault.collect(10), 0.0645 ether);
-        assertEq(team.balance - before, 0.0645 ether);
+        assertEq(vault.collect(10), 0.1065 ether);
+        assertEq(team.balance - before, 0.1065 ether);
         assertEq(vault.sweepCursor(), vault.roundCount());
         vm.expectRevert(CallZVault.NothingToClaim.selector);
         vault.collect(10);
@@ -599,7 +571,7 @@ contract CallZFeesBSCForkTest is Test {
         (, address token) = _launch();
         uint256 epoch = vault.currentEpoch();
         (uint256 pot, uint256 pool,,) = _round(token, epoch);
-        assertEq(pot + pool, 0.04 ether);
+        assertEq(pot + pool, 0.075 ether);
 
         // While the claim window is open, a deposit sweeps nothing.
         vm.warp(vault.claimDeadline(epoch));
@@ -614,29 +586,29 @@ contract CallZFeesBSCForkTest is Test {
         before = team.balance;
         vm.prank(carol);
         vault.deposit{value: 1 ether}(address(0xBEEF)); // a fee on any token does it
-        assertEq(team.balance - before, 0.25 ether + 0.04 ether);
+        assertEq(team.balance - before, 0.25 ether + 0.075 ether);
         assertEq(vault.sweepCursor(), 1);
         (,,,,,,, bool swept) = vault.roundOf(token, epoch);
         assertTrue(swept);
         (uint256 received, uint256 paid) = vault.ledgerOf(token);
-        assertEq(paid, 0.04 ether);
+        assertEq(paid, 0.075 ether);
         assertLe(paid, received);
     }
 
-    /// @dev Buying, unlocking and selling earns nothing from the 10% share: it is paid on what is still held.
-    function test_11_unlockingAndSellingEarnsNothing() public {
+    /// @dev Buying, calling out and selling earns nothing from the holder share: it is paid on what is still held.
+    function test_11_callingOutAndSellingEarnsNothingFromTheHolderShare() public {
         (, address token) = _launch();
         IERC20 erc = IERC20(token);
         vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
         uint256 epoch = vault.currentEpoch();
-        vm.prank(carol);
-        vault.deposit{value: 1 ether}(token);
 
         _submit(alice, token, 0, "https://x.com/alice/status/9");
         vm.startPrank(alice);
-        erc.transfer(bob, erc.balanceOf(alice)); // moves everything out after unlocking
+        erc.transfer(bob, erc.balanceOf(alice)); // moves everything out after her snapshot
         vm.stopPrank();
-        _submit(bob, token, 0, "https://x.com/bob/status/9"); // the same tokens unlock again from another wallet
+        _submit(bob, token, 0, "https://x.com/bob/status/9"); // the same tokens are snapshotted again in another wallet
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token);
 
         vm.warp((epoch + 1) * DAY + 1);
         // Alice holds nothing now: she is paid for her link, and nothing from the holder share.
@@ -644,59 +616,101 @@ contract CallZFeesBSCForkTest is Test {
         assertEq(vault.claim(token, _epochs(epoch)), 0.15 ether);
         // Bob is paid his half of the holder share and his link. Alice's half stays in the round.
         vm.prank(bob);
-        assertEq(vault.claim(token, _epochs(epoch)), 0.05 ether + 0.15 ether);
+        assertEq(vault.claim(token, _epochs(epoch)), 0.225 ether + 0.15 ether);
         (uint256 pot,, uint256 claimedPot,,,,,) = vault.roundOf(token, epoch);
-        assertEq(pot - claimedPot, 0.05 ether);
+        assertEq(pot - claimedPot, 0.225 ether);
 
-        // After the window it goes to the team wallet, with the launch round's unclaimed 0.04.
+        // After the window it goes to the team wallet, with the launch round's unclaimed 0.075.
         vm.warp(vault.claimDeadline(epoch) + 1);
         uint256 before = team.balance;
         vault.collect(10);
-        assertEq(team.balance - before, 0.05 ether + 0.04 ether);
+        assertEq(team.balance - before, 0.225 ether + 0.075 ether);
     }
 
     /// @dev Two tokens share the vault. Everything one token can pay out, claimed or swept in full, never passes
-    ///      what its own fees brought in, and the other token's money is still there afterwards.
+    ///      what its own fees brought in, and the other token's money is untouched by it.
     function test_12_aTokenCanNeverPayOutMoreThanItsFeesBroughtIn() public {
         (, address a) = _launch();
         address b = FLAP_BNB_TOKEN;
+        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
+        uint256 epoch = vault.currentEpoch();
         vm.prank(carol);
         router.buy{value: 10 ether}(b, _path(WBNB, b), 1, block.timestamp); // 0.2 BNB of fees booked under b
         (uint256 receivedB,) = vault.ledgerOf(b);
-        assertEq(receivedB, 0.2 ether * 75 / 100);
+        assertEq(receivedB, 0.15 ether);
         (uint256 receivedA, uint256 paidA) = vault.ledgerOf(a);
         assertEq(receivedA, 0.075 ether, "the launch fee, less the platform share");
         assertEq(paidA, 0);
 
-        // Drain everything token a can pay: the callout share and pool, the whole stream, and the sweeps.
-        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
-        uint256 epoch = vault.currentEpoch();
+        // Pay out everything token a can pay: its callers claim the running round, the launch round is swept.
+        _submit(alice, a, 0, "https://x.com/alice/status/12");
         vm.prank(carol);
         vault.deposit{value: 1 ether}(a);
-        vm.startPrank(alice);
-        IERC20(a).approve(address(vault), 1000e18);
-        vault.stake(a, 1000e18);
-        vm.stopPrank();
-        _submit(alice, a, 0, "https://x.com/alice/status/12");
         vm.warp((epoch + 1) * DAY + 1 hours);
         vm.prank(alice);
-        vault.claim(a, _epochs(epoch));
-        vm.warp(block.timestamp + 5 days);
-        vm.prank(alice);
-        vault.claim(a, new uint256[](0));
-        vault.collect(10);
+        assertEq(vault.claim(a, _epochs(epoch)), 0.75 ether);
+        assertEq(vault.collect(1), 0.075 ether); // the launch round of a, the oldest in the queue
 
         (receivedA, paidA) = vault.ledgerOf(a);
-        assertEq(receivedA, 0.075 ether + 0.75 ether);
-        assertLe(paidA, receivedA, "never more out than its fees brought in");
-        assertApproxEqAbs(paidA, receivedA, 1e6, "and all of it was payable, to the last dust");
+        assertEq(receivedA, 0.825 ether);
+        assertEq(paidA, receivedA, "all of it was payable, and not a wei more");
 
-        // Token b paid only its own swept round (its 10% and 30% of 0.2 BNB): its holder stream is still there,
-        // and so is every wei the two ledgers say is left.
+        // Token b's fees are all still there: its round is still open for its own callers.
         (, uint256 paidB) = vault.ledgerOf(b);
-        assertEq(paidB, 0.08 ether);
+        assertEq(paidB, 0);
         assertEq(vault.platformAccrued(), 0);
-        assertEq(address(vault).balance, (receivedB - paidB) + (receivedA - paidA));
+        assertEq(address(vault).balance, receivedB, "what is left in the vault is exactly token b's");
+    }
+
+    /// @dev The earlier call earns more: it is weighted by the market cap it was made at, and it earns from the
+    ///      trading that comes after it. A caller who sold part of their position is paid on what they still hold.
+    function test_14_earlierCallsAtLowerMarketCapsEarnMoreAndSellingCutsThePayout() public {
+        (, address token) = _launch();
+        IERC20 erc = IERC20(token);
+        vm.prank(alice);
+        erc.transfer(bob, 250_000_000e18); // 250M each
+        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
+        uint256 epoch = vault.currentEpoch();
+
+        // Alice calls it at a 50,000 dollar market cap. The trading that follows is hers alone.
+        mcap = 50_000;
+        _submit(alice, token, 0, "https://x.com/alice/status/14");
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token);
+
+        // Bob calls it at 100,000 with the same holdings: half her weight, and only for trading from here on.
+        mcap = 100_000;
+        _submit(bob, token, 0, "https://x.com/bob/status/14");
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token);
+
+        // A zero market cap is refused.
+        mcap = 0;
+        (Submission memory s, bytes memory signature) = _attest(alice, token, 0, "https://x.com/alice/status/14b", ATTESTER_KEY);
+        vm.expectRevert(CallZVault.ZeroMarketCap.selector);
+        vault.submitAttested(s, "https://x.com/alice/status/14b", signature);
+
+        // Bob sells half of his position before the round ends.
+        vm.prank(bob);
+        erc.transfer(address(0xdead), 125_000_000e18);
+
+        vm.warp((epoch + 1) * DAY + 1);
+        (,,,,, uint256 aliceHolder, uint256 aliceCallout) = vault.progress(token, epoch, alice);
+        (,,,,, uint256 bobHolder, uint256 bobCallout) = vault.progress(token, epoch, bob);
+        // Holder share: all 0.45 of the first BNB, and two thirds of the second.
+        assertApproxEqAbs(aliceHolder, 0.45 ether + 0.3 ether, 10);
+        // A third of the second BNB, halved because he holds half of his snapshot.
+        assertApproxEqAbs(bobHolder, 0.075 ether, 10);
+        // The pool is per callout, whoever made it: 0.3 a BNB, two callouts.
+        assertEq(aliceCallout, 0.3 ether);
+        assertEq(bobCallout, 0.3 ether);
+
+        vm.prank(alice);
+        assertEq(vault.claim(token, _epochs(epoch)), aliceHolder + aliceCallout);
+        vm.prank(bob);
+        assertEq(vault.claim(token, _epochs(epoch)), bobHolder + bobCallout);
+        (uint256 received, uint256 paid) = vault.ledgerOf(token);
+        assertLe(paid, received);
     }
 
     /// @dev Wallets can carry delegated code (EIP-7702). The attester's plain signature still counts then, and a
