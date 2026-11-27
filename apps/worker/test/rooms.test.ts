@@ -965,3 +965,36 @@ describe('sending an application again', () => {
     expect((await call(`/api/rooms/${ROOM}/application`, other, { role: 'Coder again' })).status).toBe(409)
   })
 })
+
+describe('the verdict on an application', () => {
+  it('says passes, not acceptable with what is not met, or not checked', async () => {
+    const { verdictOf } = await import('../src/rooms.js')
+    const room = { want_post: 1, gate_token: GATE, want_role: 1 }
+    const ok = { post_url: post('a', '1'), post_state: 'ok', hold_state: 'ok', role: 'Designer' }
+    expect(verdictOf(room, ok)).toEqual({ verdict: 'passes', failing: [], unchecked: [] })
+    expect(verdictOf(room, { ...ok, hold_state: 'short' })).toEqual({ verdict: 'fails', failing: ['holdings'], unchecked: [] })
+    expect(verdictOf(room, { ...ok, post_state: 'nocode', role: null })).toMatchObject({ verdict: 'fails', failing: ['post', 'role'] })
+    expect(verdictOf(room, { ...ok, post_state: 'missing' }).verdict).toBe('fails')
+    expect(verdictOf(room, { ...ok, post_url: null, post_state: null }).failing).toEqual(['post'])
+    // Nothing failed, but X or the chain could not be asked: neither a pass nor a fail.
+    expect(verdictOf(room, { ...ok, post_state: 'unreachable' })).toEqual({ verdict: 'unchecked', failing: [], unchecked: ['post'] })
+    expect(verdictOf(room, { ...ok, hold_state: 'unreadable' }).verdict).toBe('unchecked')
+    // A failure outweighs something unread.
+    expect(verdictOf(room, { ...ok, post_state: 'unreachable', hold_state: 'short' }).verdict).toBe('fails')
+    // A room that asks for nothing is passed by everyone.
+    expect(verdictOf({ want_post: 0, gate_token: null, want_role: 0 }, { post_state: null, hold_state: null, role: null }).verdict).toBe('passes')
+  })
+
+  it('is on every applicant the dev lists, and follows a new check', async () => {
+    const { call, dev, state } = setup({ gate: true })
+    await call('/api/rooms', dev, { room: ROOM, about: '', wantPost: false, postBrief: '', wantRole: false, roleBrief: '' })
+    const applicant = newAccount()
+    const wallet = applicant.address.toLowerCase()
+    state.balances.set(wallet, 2000n * 10n ** 18n)
+    await call(`/api/rooms/${ROOM}/application`, applicant, {})
+    expect((await call(`/api/rooms/${ROOM}/applications`, dev)).body.applications[0]).toMatchObject({ wallet, verdict: 'passes', failing: [] })
+    state.balances.set(wallet, 1n)
+    expect((await call(`/api/rooms/${ROOM}/applications/${wallet}`, dev, { action: 'check' })).body.application).toMatchObject({ verdict: 'fails', failing: ['holdings'] })
+    expect((await call(`/api/rooms/${ROOM}/applications`, dev)).body.applications[0].verdict).toBe('fails')
+  })
+})

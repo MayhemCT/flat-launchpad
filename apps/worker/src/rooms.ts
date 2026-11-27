@@ -24,7 +24,8 @@
  * The room's dev (the wallet that created the contract):
  *   POST /api/rooms                         { room, about, wantPost, postBrief, postPhrase, wantRole, roleBrief } list the
  *                                           room, or change those settings.
- *   GET  /api/rooms/<room>/applications     every applicant with what each requirement reads.
+ *   GET  /api/rooms/<room>/applications     every applicant with what each requirement reads, and a verdict:
+ *                                           `passes`, `fails` (with which parts) or `unchecked`.
  *   POST /api/rooms/<room>/applications/<wallet>  { action: 'check' | 'decline' | 'reopen' }. 'check' reads every
  *                                           requirement again, now: the page does it right before the dev lets
  *                                           the wallet in.
@@ -718,6 +719,33 @@ const toApplication = (row: Row, standing: Standing | null | undefined) => ({
   standing: standing ?? null,
 })
 
+export type Verdict = 'passes' | 'fails' | 'unchecked'
+
+/**
+ * Whether an application meets everything its room asks for, by what each requirement read the last time it
+ * was checked (when the applicant sent it, or when the dev last pressed check): `passes` when all of it is met,
+ * `fails` when any part is not, with which parts in `failing`, and `unchecked` when nothing failed but X or the
+ * chain could not be asked about some part. A requirement the room does not have counts for nothing.
+ */
+export function verdictOf(room: Row, application: Row): { verdict: Verdict; failing: string[]; unchecked: string[] } {
+  const failing: string[] = []
+  const unchecked: string[] = []
+  if (room.want_post === 1) {
+    if (application.post_state === 'ok') {
+      // Met.
+    } else if (application.post_state === 'missing' || application.post_state === 'nocode' || !text(application.post_url)) failing.push('post')
+    else unchecked.push('post')
+  }
+  if (text(room.gate_token)) {
+    if (application.hold_state === 'ok') {
+      // Met.
+    } else if (application.hold_state === 'short') failing.push('holdings')
+    else unchecked.push('holdings')
+  }
+  if (room.want_role === 1 && !text(application.role)) failing.push('role')
+  return { verdict: failing.length > 0 ? 'fails' : unchecked.length > 0 ? 'unchecked' : 'passes', failing, unchecked }
+}
+
 const APPLICATION = `SELECT a.*, n.name, c.tag AS clan FROM room_applications a ${identity('a.wallet', '')}`
 
 /** What each of the room's requirements reads for `wallet` right now. */
@@ -856,7 +884,7 @@ async function applications(request: Request, env: RoomsEnv, fetcher: typeof fet
   } catch {
     read = []
   }
-  return json({ applications: rows.results.map((row, index) => toApplication(row, read[index])) })
+  return json({ applications: rows.results.map((row, index) => ({ ...toApplication(row, read[index]), ...verdictOf(room, row) })) })
 }
 
 async function review(request: Request, env: RoomsEnv, fetcher: typeof fetch, address: string, applicant: string): Promise<Response> {
@@ -896,7 +924,7 @@ async function review(request: Request, env: RoomsEnv, fetcher: typeof fetch, ad
   } catch {
     standing = null
   }
-  return json({ application: row ? toApplication(row, standing) : null, ...(ready === undefined ? {} : { ready }), ...said })
+  return json({ application: row ? { ...toApplication(row, standing), ...verdictOf(room, row) } : null, ...(ready === undefined ? {} : { ready }), ...said })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

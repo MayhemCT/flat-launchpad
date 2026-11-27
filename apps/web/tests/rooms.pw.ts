@@ -220,6 +220,11 @@ test("a room: created, applied to, joined, talked in, a member removed, launched
   await board.getByTestId("applicants-search").fill(aliceAccount.slice(2, 12).toUpperCase());
   await expect(board.getByTestId("applicant-card")).toHaveCount(1, { timeout: 15_000 });
   await expect(board.getByTestId("applicant-card")).toHaveAttribute("data-wallet", aliceAccount);
+  // She holds the token and stated a role: the card says she passes, and the "Not acceptable" filter leaves her out.
+  await expect(board.getByTestId("applicant-card").getByTestId("applicant-verdict")).toHaveAttribute("data-verdict", "passes");
+  await board.locator("[data-testid=applicants-verdict][data-verdict=fails]").click();
+  await expect(board.getByTestId("applicant-card")).toHaveCount(0, { timeout: 15_000 });
+  await board.locator("[data-testid=applicants-verdict][data-verdict=any]").click();
   // The website in her portfolio is a link there.
   await expect(board.getByTestId("applicant-card").locator('a[href="https://example.com/alice"]')).toBeVisible();
   await board.getByTestId("applicants-search").fill("nobody-by-this-name");

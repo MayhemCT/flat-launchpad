@@ -236,6 +236,12 @@ interface Application {
   wallet: string;
   /** How many more times the applicant can send the application again. Absent from an older answer. */
   resubmitsLeft?: number;
+  /** Whether the application meets everything the room asks for, by the last check. Only the dev's list carries it. */
+  verdict?: "passes" | "fails" | "unchecked";
+  /** The parts that are not met: "post", "holdings", "role". */
+  failing?: string[];
+  /** The parts X or the chain could not be asked about. */
+  unchecked?: string[];
   name: string | null;
   clan: string | null;
   postUrl: string | null;
@@ -2692,6 +2698,24 @@ function standingWords(standing: ApiStanding | null): { key: string; text: strin
 /** Where an application is, as the dev sorts them: each one is in exactly one of these. */
 type ApplicantKind = "waiting" | "admitted" | "member" | "declined" | "barred";
 
+type Verdict = "passes" | "fails" | "unchecked";
+const VERDICT_PARTS: Record<string, string> = { post: "the post on X", holdings: "the token holding", role: "the role" };
+const partsOf = (parts: string[] | undefined): string => (parts ?? []).map((part) => VERDICT_PARTS[part] ?? part).join(", ");
+
+/**
+ * The dev's first look at an applicant: does what they handed in meet what the room asks for. Worked out by the
+ * API from the last check of each requirement; "Check now" on the card reads everything again.
+ */
+function VerdictTag({ application }: { application: Application }) {
+  const verdict = application.verdict;
+  if (verdict === undefined) return null;
+  if (verdict === "passes") return <span className="verdict verdict-passes" data-testid="applicant-verdict" data-verdict="passes" title="Everything this room asks for was met at the last check.">Passes</span>;
+  if (verdict === "fails") {
+    return <span className="verdict verdict-fails" data-testid="applicant-verdict" data-verdict="fails" title={`Not met: ${partsOf(application.failing)}.`}>Not acceptable<span className="verdict-why">: {partsOf(application.failing)}</span></span>;
+  }
+  return <span className="verdict verdict-unchecked" data-testid="applicant-verdict" data-verdict="unchecked" title={`Could not be read: ${partsOf(application.unchecked)}. Check again.`}>Not checked<span className="verdict-why">: {partsOf(application.unchecked)}</span></span>;
+}
+
 function kindOf(application: Application): ApplicantKind {
   const standing = application.standing;
   if (standing?.banned) return "barred";
@@ -2863,6 +2887,7 @@ function ApplicantCard({ context, review, application, now, ready, open, full }:
       data-status={full ? kind : application.status}
       data-standing={standing.key}
       data-application={application.status}
+      data-verdict={application.verdict}
       tabIndex={full ? 0 : undefined}
       aria-label={full ? `Application from ${short(wallet)}, ${standing.text}${pending ? "" : ", declined"}` : undefined}
     >
@@ -2870,6 +2895,7 @@ function ApplicantCard({ context, review, application, now, ready, open, full }:
         <a className="room-profile" href={`#/u/${wallet}`}><AuthorName className="room-author" address={wallet} name={application.name} clan={application.clan} /></a>
         <span className={`tag tag-${standing.key === "member" ? "good" : standing.key === "admitted" ? "gold" : "muted"}`} data-testid="room-application-standing">{standing.text}</span>
         {!pending && <span className="tag tag-muted">declined</span>}
+        <VerdictTag application={application} />
         <time className="dim room-app-time" data-testid="room-application-time" dateTime={applied.toISOString()} title={applied.toLocaleString()}>applied {ago(application.createdAt, now)}</time>
       </div>
       <dl className="trade-quote room-app-facts">
@@ -3062,17 +3088,23 @@ function ApplicantsBoard(context: RoomContext & { name: string; back: string }) 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ApplicantFilter>("all");
   const [order, setOrder] = useState<"newest" | "oldest">("newest");
+  const [verdict, setVerdict] = useState<Verdict | "any">("any");
+  const verdicts = useMemo(() => {
+    const tally: Record<Verdict, number> = { passes: 0, fails: 0, unchecked: 0 };
+    for (const application of applications) if (application.verdict) tally[application.verdict]++;
+    return tally;
+  }, [applications]);
 
   const rows = useMemo(() => applications.map((application) => ({ application, kind: kindOf(application), text: searchedBy(application) })), [applications]);
   const counts = useMemo(() => countKinds(applications), [applications]);
   const asked = search.replace(REMOVED, "").trim().toLowerCase();
   const shown = useMemo(() => {
-    const matching = rows.filter((row) => (filter === "all" || row.kind === filter) && (asked === "" || row.text.includes(asked)));
+    const matching = rows.filter((row) => (filter === "all" || row.kind === filter) && (verdict === "any" || row.application.verdict === verdict) && (asked === "" || row.text.includes(asked)));
     matching.sort((a, b) => (order === "newest" ? newestFirst(a.application, b.application) : newestFirst(b.application, a.application)));
     return matching;
-  }, [rows, filter, asked, order]);
+  }, [rows, filter, verdict, asked, order]);
   const actingShown = acting !== null && shown.some((row) => row.application.wallet.toLowerCase() === acting);
-  const narrowed = filter !== "all" || asked !== "";
+  const narrowed = filter !== "all" || verdict !== "any" || asked !== "";
 
   return (
     <div className="rooms-page" data-testid="applicants-page">
@@ -3090,6 +3122,16 @@ function ApplicantsBoard(context: RoomContext & { name: string; back: string }) 
           <span className="visually-hidden">Search the applicants</span>
           <input type="search" name="search" data-testid="applicants-search" value={search} maxLength={80} placeholder="Search by name or wallet" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} enterKeyHint="search" onChange={(event) => setSearch(event.target.value)} />
         </label>
+        <div className="applicants-row">
+          <div className="applicants-chips" role="group" aria-label="Meets what the room asks for">
+            {([["any", "Any result", applications.length], ["passes", "Passes", verdicts.passes], ["fails", "Not acceptable", verdicts.fails], ["unchecked", "Not checked", verdicts.unchecked]] as const).map(([key, label, count]) => (
+              <button key={key} type="button" className={`applicants-chip verdict-chip verdict-chip-${key}`} data-testid="applicants-verdict" data-verdict={key} aria-pressed={verdict === key} onClick={() => setVerdict(key)}>
+                {label} <span className="num">{count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="dim applicants-verdict-note">Passes: the post, the holding and the role this room asks for were all met at the last check. Open a card and press "Check now" to read them again.</p>
         <div className="applicants-row">
           <div className="applicants-chips" role="group" aria-label="Show">
             {APPLICANT_FILTERS.map((entry) => (
@@ -3117,7 +3159,7 @@ function ApplicantsBoard(context: RoomContext & { name: string; back: string }) 
           <div className="note" data-testid="applicants-none">
             <p>No applicant matches.</p>
             <div className="actions">
-              <button type="button" className="button button-quiet" data-testid="applicants-clear" onClick={() => { setSearch(""); setFilter("all"); }}>Show all applicants</button>
+              <button type="button" className="button button-quiet" data-testid="applicants-clear" onClick={() => { setSearch(""); setFilter("all"); setVerdict("any"); }}>Show all applicants</button>
             </div>
           </div>
         )}
