@@ -307,6 +307,7 @@ test("a room: created, applied to, joined, talked in, a member removed, launched
   const mine = alice.page.getByTestId("my-clan");
   await expect(mine).toBeVisible({ timeout: 30_000 });
   const tag = `F${stamp.slice(0, 4)}`;
+  await expect(mine.getByTestId("clan-found").or(mine.getByTestId("my-clan-name")).first()).toBeVisible({ timeout: 60_000 });
   if (await mine.getByTestId("clan-found").isVisible().catch(() => false)) {
     await mine.locator("[name=clan-name]").fill(`Flow ${stamp}`);
     await mine.locator("[name=clan-tag]").fill(tag);
@@ -321,6 +322,11 @@ test("a room: created, applied to, joined, talked in, a member removed, launched
   await alice.page.goto("/#/leaderboard");
   const row = alice.page.getByTestId("board-row").filter({ hasText: aliceAccount.slice(-4) });
   await expect(row.first()).toContainText(`[${shownTag}]`, { timeout: 30_000 });
+  // The launched room is on the Launches page, with the way to its token.
+  await alice.page.goto("/#/launched");
+  const launchedCard = alice.page.locator(`[data-testid=launched-card][data-room="${room}"]`);
+  await expect(launchedCard).toContainText(roomName, { timeout: 30_000 });
+  await expect(launchedCard.getByTestId("launched-token")).toHaveAttribute("href", `#/token/${token.toLowerCase()}`);
   await alice.page.goto(`/#/u/${aliceAccount}`);
   await expect(alice.page.getByTestId("profile-tags")).toContainText("Designer", { timeout: 30_000 });
   await expect(alice.page.getByTestId("profile-points")).toContainText("80");

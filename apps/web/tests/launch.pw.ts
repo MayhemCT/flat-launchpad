@@ -50,11 +50,12 @@ test("deploy the factory, create a mint, mint to the cap, launch, claim and trad
   // On a fresh fork CallZ's contracts do not exist: the page deploys the vault, the router and the factory.
   await page.goto("/#/launch");
   const deploy = page.getByRole("button", { name: /^Deploy \d contracts?$/ });
-  const create = page.getByRole("link", { name: "Create a mint" });
-  await expect(deploy.or(create)).toBeVisible({ timeout: 30_000 });
+  // New launches are Cook Rooms: the page of the open mints points there, and no longer links to their form.
+  const create = page.getByTestId("pancake-to-cook-rooms");
+  await expect(deploy.or(create).first()).toBeVisible({ timeout: 30_000 });
   if (await deploy.isVisible()) {
     await deploy.click();
-    await expect(create).toBeVisible({ timeout: 240_000 });
+    await expect(deploy).toHaveCount(0, { timeout: 240_000 });
   }
 
   // The Flap Pool Launch factory is deployed from the same page, at the address it has on BNB Chain Testnet.

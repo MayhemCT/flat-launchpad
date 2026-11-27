@@ -34,6 +34,7 @@ import { AuthorName } from "./display-name";
 import { ago, short } from "./format";
 import { api, apiBlob, ApiError, signIn, useSignedIn } from "./session";
 import { SITES } from "./site";
+import { CALLZ_FACTORIES } from "./trade";
 import { connect, switchChain, useWallet } from "./wallet";
 // The room's chat is drawn like a token's: the same list, message and composer classes.
 import "./chat.css";
@@ -132,7 +133,7 @@ const tokenAbi = parseAbi([
 // VITE_BSC_RPC_URL points the pages at another endpoint: a private one, or a local fork in the tests.
 const client = createPublicClient({ chain: bsc, transport: http(import.meta.env.VITE_BSC_RPC_URL ?? SITE.rpcUrl), batch: { multicall: true } });
 
-export type RoomsRoute = { name: "rooms" } | { name: "room-create" } | { name: "room"; address: string };
+export type RoomsRoute = { name: "rooms" } | { name: "room-create" } | { name: "launched" } | { name: "room"; address: string };
 
 const RISK = "These contracts are new and have not been audited. Use only what you can afford to lose.";
 
@@ -710,7 +711,7 @@ function useRoomAction(room: Address, account: Address | null, onDone: () => Pro
 /** The button a page needs before it can send anything: connect, then be on BNB Chain. Null when ready. */
 function WalletGate(): ReactNode {
   const wallet = useWallet();
-  if (!wallet.available) return <p className="trade-note">No browser wallet found. Install MetaMask, Rabby or another wallet to use rooms.</p>;
+  if (!wallet.available) return <p className="trade-note">No browser wallet found. Install MetaMask, Rabby or another wallet to use Cook Rooms.</p>;
   if (!wallet.account) return <button type="button" className="button" onClick={connect}>Connect wallet</button>;
   if (wallet.chainId !== SITE.id) return <button type="button" className="button button-warn" onClick={() => void switchChain(SITE).catch(() => undefined)}>Switch to BNB Chain</button>;
   return null;
@@ -950,7 +951,7 @@ function RoomsHome() {
     if (!wallet.account) return;
     // The salt and the creation code, to the deterministic CREATE2 deployer: the factory lands at the same
     // address whoever sends this.
-    await send("Deploying the room factory", { to: deployment.deployer as Address, data: `${deployment.factory.salt}${deployment.factory.initCode.slice(2)}` as Hex }, wallet.account);
+    await send("Deploying the Cook Room factory", { to: deployment.deployer as Address, data: `${deployment.factory.salt}${deployment.factory.initCode.slice(2)}` as Hex }, wallet.account);
     factory.reload();
   };
 
@@ -958,41 +959,44 @@ function RoomsHome() {
   return (
     <div className="rooms-page">
       <div className="page-head">
-        <h1 className="page-title">Rooms</h1>
+        <h1 className="page-title">Cook Rooms</h1>
         <p className="lede">
-          A dev opens a room and picks who gets in, and each member buys one pass at the same flat price. When every pass is sold the dev
-          launches the token, and every pass claims an equal share of it.
+          This is how a token is launched on CallZ. A dev opens a Cook Room and picks who gets in; each member buys one pass at the same
+          flat price and joins the room's private chat. When every pass is sold the dev launches the token, and every pass claims an
+          equal share of it.
         </p>
         <p className="links">
+          <a href="#/launched">Launches</a>
           <a href="#/leaderboard">Leaderboard</a>
           <a href="#/clans">Clans</a>
+          <a href="#/launch" data-testid="rooms-earlier-mints">Mints from before Cook Rooms</a>
         </p>
-        {deployed && <div className="actions"><a className="button" href="#/rooms/create" data-testid="room-create-link">Create a room</a></div>}
+        {deployed && <div className="actions"><a className="button" href="#/rooms/create" data-testid="room-create-link">Open a Cook Room</a></div>}
       </div>
       <p className="note note-warn" data-testid="rooms-risk">{RISK}</p>
 
       {factory.state === "error" && <p className="note" role="alert">BNB Chain could not be reached. Reload to try again.</p>}
       {factory.state === "ready" && !factory.data.deployed && (
         <section className="note" data-testid="room-factory-not-deployed">
-          <h2>The room factory is not on BNB Chain yet</h2>
+          <h2>The Cook Room factory is not on BNB Chain yet</h2>
           <p>
             It is one transaction from any wallet, paid in BNB network fees only, and it lands at a fixed address, <code>{FACTORY}</code>.
             Whoever sends it gets no rights over the factory or over any room: the guardian, who can change the launch fee of rooms created
-            later and nothing else, is <code>{deployment.guardian}</code> either way. Until the factory is there, rooms cannot be created.
+            later and nothing else, is <code>{deployment.guardian}</code> either way. Until the factory is there, Cook Rooms cannot be opened.
           </p>
-          <div className="actions">{gate ?? <button type="button" className="button" data-testid="room-factory-deploy" disabled={tx.kind === "working"} onClick={() => void deploy()}>Deploy the room factory</button>}</div>
+          <div className="actions">{gate ?? <button type="button" className="button" data-testid="room-factory-deploy" disabled={tx.kind === "working"} onClick={() => void deploy()}>Deploy the Cook Room factory</button>}</div>
           <TxNote tx={tx} />
         </section>
       )}
 
       <section>
         <div className="section-head">
-          <h2>Rooms {list.state === "ready" && <span className="dim">{rooms.length}</span>}</h2>
+          <h2>Cook Rooms {list.state === "ready" && <span className="dim">{rooms.length}</span>}</h2>
         </div>
-        {list.state === "loading" && <p className="note" role="status">Loading the rooms…</p>}
+        {list.state === "loading" && <p className="note" role="status">Loading the Cook Rooms…</p>}
         {list.state === "error" && <p className="note" role="alert">{list.error.message}</p>}
         {list.state === "ready" && rooms.length === 0 && (
-          <p className="note" data-testid="rooms-empty">No rooms yet.{deployed ? " Create the first one." : ""}</p>
+          <p className="note" data-testid="rooms-empty">No Cook Rooms yet.{deployed ? " Open the first one." : ""}</p>
         )}
         {rooms.length > 0 && (
           <ul className="cards grid" data-testid="rooms-list">
@@ -1035,6 +1039,160 @@ function RoomCard({ room, now }: { room: ApiRoom; now: number }) {
       )}
       {!launched && waiting > 0 && <span className="room-card-line dim">{plural(waiting, "applicant", "applicants")} waiting</span>}
     </a>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #/launched: the projects that launched
+// ─────────────────────────────────────────────────────────────────────────────
+
+const mintFactoryAbi = parseAbi(["function mintCount() view returns (uint256)", "function mints(uint256 index) view returns (address)"]);
+const mintAbi = parseAbi([
+  "function tokenName() view returns (string)",
+  "function tokenSymbol() view returns (string)",
+  "function launched() view returns (bool)",
+  "function token() view returns (address)",
+]);
+/** The most mints of one factory that are read: the newest ones. */
+const EARLIER_MINTS = 100;
+
+/** A token launched by one of CallZ's open pass mints, the way of launching there was before Cook Rooms. */
+interface EarlierLaunch {
+  mint: Address;
+  token: Address;
+  name: string;
+  symbol: string;
+}
+
+/** The open pass mints that launched, newest first, read from the mint factories themselves. */
+async function readEarlierLaunches(): Promise<EarlierLaunch[]> {
+  const launches: EarlierLaunch[] = [];
+  for (const factory of CALLZ_FACTORIES) {
+    let count: bigint;
+    try {
+      count = await client.readContract({ address: factory, abi: mintFactoryAbi, functionName: "mintCount" });
+    } catch {
+      // A factory that is not on BNB Chain has made nothing.
+      continue;
+    }
+    const total = Number(count);
+    const shown = Math.min(total, EARLIER_MINTS);
+    if (shown === 0) continue;
+    const mints = await client.multicall({
+      allowFailure: false,
+      contracts: Array.from({ length: shown }, (_, index) => ({ address: factory, abi: mintFactoryAbi, functionName: "mints" as const, args: [BigInt(total - 1 - index)] as const })),
+    });
+    const facts = await Promise.all(
+      mints.map((mint) =>
+        client.multicall({
+          allowFailure: false,
+          contracts: [
+            { address: mint, abi: mintAbi, functionName: "tokenName" },
+            { address: mint, abi: mintAbi, functionName: "tokenSymbol" },
+            { address: mint, abi: mintAbi, functionName: "launched" },
+            { address: mint, abi: mintAbi, functionName: "token" },
+          ],
+        }),
+      ),
+    );
+    facts.forEach(([name, symbol, launched, token], index) => {
+      if (launched) launches.push({ mint: mints[index]!, token, name, symbol });
+    });
+  }
+  return launches;
+}
+
+function LaunchedPage() {
+  const list = useApi("/api/rooms", 15_000, isRoomList);
+  const earlier = useChain(readEarlierLaunches, 60_000);
+  const launched = list.state === "ready" ? list.data.rooms.filter((room) => room.launched === true) : [];
+  const before = earlier.state === "ready" ? earlier.data : [];
+  return (
+    <div className="rooms-page" data-testid="launched-page">
+      <div className="page-head">
+        <h1 className="page-title">Launches</h1>
+        <p className="lede">
+          The projects that launched on CallZ. Each one filled its Cook Room: every pass was bought by a member the dev chose, the dev
+          launched, and the token trades on PancakeSwap with its liquidity locked for good.
+        </p>
+        <p className="links">
+          <a href="#/rooms">Cook Rooms</a>
+          <a href="#/leaderboard">Leaderboard</a>
+          <a href="#/clans">Clans</a>
+        </p>
+      </div>
+      <section>
+        <div className="section-head">
+          <h2>From Cook Rooms {list.state === "ready" && <span className="dim">{launched.length}</span>}</h2>
+        </div>
+        {list.state === "loading" && <p className="note" role="status">Loading the launches…</p>}
+        {list.state === "error" && <p className="note" role="alert">{list.error.message}</p>}
+        {list.state === "ready" && launched.length === 0 && (
+          <p className="note" data-testid="launched-empty">No Cook Room has launched yet. <a href="#/rooms">See the ones that are filling up.</a></p>
+        )}
+        {launched.length > 0 && (
+          <ul className="cards grid" data-testid="launched-list">
+            {launched.map((room) => <li key={room.address}><LaunchedCard room={room} /></li>)}
+          </ul>
+        )}
+      </section>
+      {before.length > 0 && (
+        <section>
+          <div className="section-head">
+            <h2>Before Cook Rooms <span className="dim">{before.length}</span></h2>
+          </div>
+          <p className="trade-note dim">Launched by an open pass mint, where anyone could buy a pass.</p>
+          <ul className="cards grid" data-testid="launched-earlier">
+            {before.map((launch) => (
+              <li key={launch.mint}>
+                <div className="launch-card room-card" data-testid="launched-earlier-card">
+                  <span className="launch-head">
+                    <RoomArt picture={null} symbol={launch.symbol} />
+                    <span className="launch-name">
+                      <strong>{launch.name}</strong>
+                      <span className="dim">{launch.symbol}</span>
+                    </span>
+                    <span className="tag tag-good">Launched</span>
+                  </span>
+                  <span className="actions">
+                    <a className="button" href={`#/token/${launch.token.toLowerCase()}`}>Chart and trading</a>
+                    <a className="button button-quiet" href={`#/mint/${launch.mint.toLowerCase()}`}>The mint</a>
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** A Cook Room that launched: who cooked it, how many were in it, what it raised, and where its token trades. */
+function LaunchedCard({ room }: { room: ApiRoom }) {
+  const seats = Number(room.seats) || 0;
+  const price = toBig(room.seatPrice);
+  const token = typeof room.token === "string" && isAddress(room.token) ? room.token.toLowerCase() : null;
+  return (
+    <div className="launch-card room-card" data-testid="launched-card" data-room={room.address.toLowerCase()}>
+      <span className="launch-head">
+        <RoomArt picture={room.picture} symbol={String(room.symbol)} />
+        <span className="launch-name">
+          <strong>{String(room.name)}</strong>
+          <span className="dim">{String(room.symbol)}</span>
+        </span>
+        <span className="tag tag-good">Launched</span>
+      </span>
+      <span className="room-card-line dim">Dev <AuthorName className="room-author" address={room.creator} name={room.creatorName} clan={room.creatorClan} /></span>
+      <span className="room-card-line">
+        <span className="num">{plural(seats, "member", "members")}</span>
+        <span className="num">{price === null ? "—" : `${bnb(price * BigInt(seats))} raised`}</span>
+      </span>
+      <span className="actions">
+        {token !== null && <a className="button" href={`#/token/${token}`} data-testid="launched-token">Chart and trading</a>}
+        <a className="button button-quiet" href={`#/room/${room.address.toLowerCase()}`}>The Cook Room</a>
+      </span>
+    </div>
   );
 }
 
@@ -1153,7 +1311,7 @@ function CreatePage() {
         image = url;
       }
 
-      setStep("Step 3 of 4. Creating the room on BNB Chain…");
+      setStep("Step 3 of 4. Opening the Cook Room on BNB Chain…");
       const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
       const predicted = await client.readContract({ address: FACTORY, abi: factoryAbi, functionName: "predict", args: [account, salt] });
       const config = {
@@ -1167,7 +1325,7 @@ function CreatePage() {
         gateToken: form.wantHold && gateAddress ? gateAddress : ZERO,
         gateAmount: form.wantHold ? parsed.gateAmount : 0n,
       };
-      const receipt = await send("Creating the room", { to: FACTORY, data: encodeFunctionData({ abi: factoryAbi, functionName: "create", args: [config, salt] }) }, account);
+      const receipt = await send("Opening the Cook Room", { to: FACTORY, data: encodeFunctionData({ abi: factoryAbi, functionName: "create", args: [config, salt] }) }, account);
       if (!receipt) {
         setStep(null);
         return;
@@ -1211,8 +1369,8 @@ function CreatePage() {
   if (factory.state === "ready" && !factory.data.deployed) {
     return (
       <div className="rooms-page">
-        <div className="page-head"><h1 className="page-title">Create a room</h1></div>
-        <p className="note" data-testid="room-create-unavailable">The room factory is not on BNB Chain yet, so rooms cannot be created. <a href="#/rooms">It can be deployed from the rooms page.</a></p>
+        <div className="page-head"><h1 className="page-title">Open a Cook Room</h1></div>
+        <p className="note" data-testid="room-create-unavailable">The Cook Room factory is not on BNB Chain yet, so Cook Rooms cannot be opened. <a href="#/rooms">It can be deployed from the rooms page.</a></p>
       </div>
     );
   }
@@ -1220,7 +1378,7 @@ function CreatePage() {
   return (
     <div className="rooms-page">
       <div className="page-head">
-        <h1 className="page-title">Create a room</h1>
+        <h1 className="page-title">Open a Cook Room</h1>
         <p className="lede">
           On BNB Chain. You let wallets in, each buys one pass, and when every pass is sold you launch the token into a PancakeSwap pool.
           The name, symbol, picture, price, number of passes, deadline, pool share and holding requirement cannot be changed after you create the room.
@@ -1327,7 +1485,7 @@ function CreatePage() {
 
         {parsed.problems.length > 0 && <ul className="form-problems form-wide" data-testid="room-problems">{parsed.problems.map((problem) => <li key={problem}>{problem}</li>)}</ul>}
         <div className="actions form-wide">
-          {gate ?? <button type="submit" className="button" data-testid="room-create-submit" disabled={parsed.problems.length > 0 || busy || picture.busy || tx.kind === "working"}>Create the room</button>}
+          {gate ?? <button type="submit" className="button" data-testid="room-create-submit" disabled={parsed.problems.length > 0 || busy || picture.busy || tx.kind === "working"}>Open the Cook Room</button>}
           <a className="button button-quiet" href="#/rooms">Back</a>
         </div>
         {!signedIn && account && <p className="trade-note dim form-wide">Creating a room first asks your wallet to sign a sign-in message, so the site knows the description comes from the room's dev.</p>}
@@ -1460,7 +1618,7 @@ function RoomPage({ address, mobile }: { address: string; mobile: boolean }) {
   if (chain.state === "loading") return <p className="note" role="status">Reading the room from BNB Chain…</p>;
   if (chain.state === "error") return <p className="note" role="alert">BNB Chain could not be reached. Reload to try again.</p>;
   if (!chain.data) {
-    return <p className="note" role="alert" data-testid="unknown-room"><code>{short(room)}</code> is not a room made by the CallZ room factory on BNB Chain. <a href="#/rooms">Back to the rooms.</a></p>;
+    return <p className="note" role="alert" data-testid="unknown-room"><code>{short(room)}</code> is not a Cook Room made by the CallZ factory on BNB Chain. <a href="#/rooms">Back to the rooms.</a></p>;
   }
   return (
     <RoomView
@@ -1588,7 +1746,7 @@ function RoomView({ mobile, notListed, listingError, ...given }: Omit<RoomContex
 
         <aside className="room-side">
           <section className="chat-panel room-chat" data-testid="room-chat" aria-label="Room chat">
-            <header className="chat-head"><h2>Room chat</h2></header>
+            <header className="chat-head"><h2>Cook Room chat</h2></header>
             {!mayChat && <p className="chat-room-note" data-testid="room-chat-closed">This chat is private: only the room's dev and the wallets holding its pass can read and write here.{account ? "" : " Connect the wallet that holds a pass."}</p>}
             {mayChat && account && !signedIn && (
               <>
@@ -2625,5 +2783,6 @@ function Settings(context: RoomContext) {
 export default function RoomsSection({ route, mobile }: { route: RoomsRoute; mobile: boolean }) {
   if (route.name === "room-create") return <CreatePage />;
   if (route.name === "room") return <RoomPage key={route.address} address={route.address} mobile={mobile} />;
+  if (route.name === "launched") return <LaunchedPage />;
   return <RoomsHome />;
 }

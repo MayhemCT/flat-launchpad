@@ -323,7 +323,7 @@ function LaunchHome() {
         <section>
           <div className="section-head">
             <h2>CallZ mints <span className="dim">{list.data.mints.length}</span></h2>
-            {list.data.deployed && <a className="button" href="#/launch/create">Create a mint</a>}
+            <a className="button" href="#/rooms/create" data-testid="pancake-to-cook-rooms">Launch in a Cook Room</a>
           </div>
           {list.data.mints.length === 0 ? (
             <p className="note" data-testid="pancake-empty">No mints yet. Create the first one.</p>

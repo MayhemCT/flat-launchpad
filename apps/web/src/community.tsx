@@ -274,7 +274,8 @@ function CommunityNav({ route, me }: { route: CommunityRoute; me: string | null 
   const current = (on: boolean) => (on ? ("page" as const) : undefined);
   return (
     <nav className="seg board-nav" aria-label="Community" data-testid="community-nav">
-      <a href="#/rooms">Rooms</a>
+      <a href="#/rooms">Cook Rooms</a>
+      <a href="#/launched">Launches</a>
       <a href="#/leaderboard" aria-current={current(route.name === "leaderboard")}>Leaderboard</a>
       <a href="#/clans" aria-current={current(route.name === "clans" || route.name === "clan")}>Clans</a>
       {me !== null && <a href={profileHref(me)} aria-current={current(route.name === "profile" && route.address === me)}>My profile</a>}
@@ -404,7 +405,7 @@ function LeaderboardPage({ mobile, me }: { mobile: boolean; me: string | null })
     <>
       <div className="page-head">
         <h1 className="page-title">Leaderboard</h1>
-        <p className="lede">Who has earned the most on CallZ: in the rooms they worked in, and with the calls they made.</p>
+        <p className="lede">Who has earned the most on CallZ: in the Cook Rooms they worked in, and with the calls they made.</p>
       </div>
       <div className="seg" role="tablist" aria-label="Which board" data-testid="board-switch">
         {BOARDS.map(({ id, label }) => (
@@ -1109,7 +1110,7 @@ function ProfilePage({ address, account }: { address: string; account: string | 
             </div>
             <dl className="stats" data-testid="profile-stats">
               <div><dt>Points</dt><dd className="num">{count(data.points)}</dd></div>
-              <div><dt>Rooms</dt><dd className="num">{count(data.rooms.length)}</dd></div>
+              <div><dt>Cook Rooms</dt><dd className="num">{count(data.rooms.length)}</dd></div>
               <div><dt>Approved calls</dt><dd className="num">{count(data.calls)}</dd></div>
               <div><dt>Tokens called</dt><dd className="num">{count(data.tokensCalled)}</dd></div>
             </dl>
@@ -1149,9 +1150,9 @@ function ProfilePage({ address, account }: { address: string; account: string | 
                 )}
               </section>
               <section className="profile-panel" data-testid="profile-rooms">
-                <h2>Rooms <span className="dim">{data.rooms.length}</span></h2>
+                <h2>Cook Rooms <span className="dim">{data.rooms.length}</span></h2>
                 {data.rooms.length === 0 ? (
-                  <p className="clan-note">In no room yet. <a href="#/rooms">See the rooms.</a></p>
+                  <p className="clan-note">In no Cook Room yet. <a href="#/rooms">See the Cook Rooms.</a></p>
                 ) : (
                   <ul className="cards">
                     {data.rooms.map((room) => (

@@ -36,6 +36,7 @@ const PAGES = [
   { name: "launcher", hash: "#/launcher/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-launcher]" },
   // The social pages: rooms, the boards, clans and a wallet's profile, as a visitor without a wallet sees them.
   { name: "social rooms", hash: "#/rooms", ready: "[data-testid=rooms-list], [data-testid=rooms-empty], [data-testid=room-factory-not-deployed]" },
+  { name: "social launches", hash: "#/launched", ready: "[data-testid=launched-list], [data-testid=launched-empty]" },
   { name: "social room create", hash: "#/rooms/create", ready: "[data-testid=room-form], [data-testid=room-create-unavailable]" },
   { name: "social room", hash: "#/room/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-room]" },
   { name: "social leaderboard", hash: "#/leaderboard", ready: "[data-testid=board-table], [data-testid=board-cards], [data-testid=board-empty]" },

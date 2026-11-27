@@ -134,7 +134,7 @@ export function HomePage({ site, mobile }: PageProps) {
         </p>
         <div className="actions">
           <a className="button" href="#/scope">Open Memescope</a>
-          <a className="button button-quiet" href="#/launch">Launch a pass mint</a>
+          <a className="button button-quiet" href="#/rooms">Cook Rooms</a>
           <a className="button button-quiet" href="https://flap.sh" target="_blank" rel="noreferrer">Flap ↗</a>
         </div>
       </section>

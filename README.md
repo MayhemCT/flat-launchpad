@@ -60,11 +60,14 @@ CallZPancakeFactory v1   0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (BNB Chain
 
 The three CallZ fee contracts listed first were deployed on BNB Chain on 27 Nov 2026 from the site's Launch page, one transaction each, and the site trades and launches through them. The earlier three were deployed the same day, before the review fixes, and are no longer used. The sources of the deployed contracts must not change now: a change would move their addresses. `CallZLauncherFactory` deploys with one transaction from the testnet launch page, and on BNB Chain from the Launch page, to the same address on both. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
 
-## Rooms (not deployed yet)
+## Cook Rooms
 
-A room is the social way to launch: its creator (the dev) chooses who gets in, the members buy one pass each,
-and when every pass is sold the dev launches the token into PancakeSwap V2. The contracts are `CallZRoom`,
-`CallZRoomFactory` and `CallZRoomArt` in `contracts/src/callz`; the pages are at `#/rooms`.
+A Cook Room is how a token is launched on the site: its creator (the dev) chooses who gets in, the members buy
+one pass each, and when every pass is sold the dev launches the token into PancakeSwap V2. The contracts are
+`CallZRoom`, `CallZRoomFactory` and `CallZRoomArt` in `contracts/src/callz`; the pages are "Cook Rooms" at
+`#/rooms` and "Launches" at `#/launched`, which lists the projects that launched. The open pass mints made
+before Cook Rooms keep their pages (`#/launch`, `#/mint/<address>`) so their passes can still claim; the site
+no longer links to the form that creates one.
 
 - **Getting in.** The dev switches on any of three requirements: a post on X, holding an amount of a token, a
   role and portfolio. An applicant gets a personal code to put in their post; the API asks X's public embed

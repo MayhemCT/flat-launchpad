@@ -20,7 +20,7 @@ const PopPage = lazy(() => import("./token").then((module) => ({ default: module
 const PancakeSection = lazy(() => import("./pancake"));
 // Pools: Flap's graduated pairs on PancakeSwap, with adding and removing liquidity.
 const PoolsSection = lazy(() => import("./pools"));
-// Rooms: a dev picks who gets in, the members buy a pass each, and the passes launch a token.
+// Cook Rooms: a dev picks who gets in, the members buy a pass each, and the passes launch a token.
 const RoomsSection = lazy(() => import("./rooms"));
 // Clans, the leaderboards and a wallet's profile.
 const CommunitySection = lazy(() => import("./community"));
@@ -53,6 +53,7 @@ function parseRoute(hash: string): Route {
   if (mint?.[1]) return { name: "mint", address: mint[1].toLowerCase() };
   if (path === "/rooms") return { name: "rooms" };
   if (path === "/rooms/create") return { name: "room-create" };
+  if (path === "/launched") return { name: "launched" };
   const room = /^\/room\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (room?.[1]) return { name: "room", address: room[1].toLowerCase() };
   if (path === "/leaderboard") return { name: "leaderboard" };
@@ -213,12 +214,14 @@ function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange(next: Loc
 const NAV: ReadonlyArray<{ href: string; label: string; short?: string; wide?: boolean; routes: ReadonlyArray<Route["name"]> }> = [
   { href: "#/scope", label: "Memescope", short: "Scope", routes: ["scope", "launches"] },
   { href: "#/tokens", label: "Tokens", routes: ["tokens", "token"] },
-  { href: "#/rooms", label: "Rooms", routes: ["rooms", "room-create", "room"] },
+  // Cook Rooms are how a token is launched here: a dev picks the members, they buy a pass each, the dev launches.
+  { href: "#/rooms", label: "Cook Rooms", short: "Cook", routes: ["rooms", "room-create", "room"] },
+  // The projects that launched: every Cook Room that filled up and went to PancakeSwap.
+  { href: "#/launched", label: "Launches", routes: ["launched"] },
   { href: "#/leaderboard", label: "Leaderboard", short: "Top", routes: ["leaderboard", "clans", "clan", "profile"] },
   { href: "#/pools", label: "Pools", routes: ["pools", "pool"], wide: true },
   { href: "#/factories", label: "Factories", routes: ["factories"], wide: true },
   { href: "#/deployers", label: "Deployers", routes: ["deployers"], wide: true },
-  { href: "#/launch", label: "Launch", routes: ["launch", "launch-create", "mint", "flaplaunch", "create", "launcher"] },
 ];
 
 /** What a page works with: the index, the unlinked testnet launchpad's own network, or the chain itself. All but that one are on BNB Chain. */
@@ -372,8 +375,8 @@ export function App() {
             <PancakeSection route={route} />
           </Suspense>
         )}
-        {(route.name === "rooms" || route.name === "room-create" || route.name === "room") && (
-          <Suspense fallback={<p className="note" role="status">Loading the rooms…</p>}>
+        {(route.name === "rooms" || route.name === "room-create" || route.name === "room" || route.name === "launched") && (
+          <Suspense fallback={<p className="note" role="status">Loading the Cook Rooms…</p>}>
             <RoomsSection route={route} mobile={mobile} />
           </Suspense>
         )}
