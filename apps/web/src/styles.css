@@ -519,6 +519,8 @@ h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
 }
 .positions-sell:hover:not(:disabled) { background: var(--warn); color: #fff; }
 .positions-sell:disabled { opacity: 0.45; cursor: default; }
+/* The wallet's own Cook Rooms, under everything else in the menu. */
+.positions-cooks { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
 .positions-outcome { grid-column: 1 / -1; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; }
 
 /* ── Trades, in the site's own style ────────────────────────────────────── */

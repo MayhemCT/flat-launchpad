@@ -169,6 +169,113 @@ function DisplayNameRow({ account }: { account: Address }) {
   );
 }
 
+/** A Cook Room this wallet opened, as the wallet menu shows it. */
+interface Cook {
+  address: string;
+  name: string;
+  symbol: string;
+  seats: number;
+  seated: number;
+  /** Unix seconds: when the sale of passes ends. */
+  saleDeadline: number;
+  launched: boolean;
+}
+/** How many of the wallet's own Cook Rooms the menu shows. */
+const COOKS_SHOWN = 3;
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/**
+ * The newest Cook Rooms `account` opened, read from this site's API (apps/worker/src/rooms.ts). The list of a
+ * wallet's rooms holds the ones it is a member of too, 100 to a page, newest first: pages are read until three
+ * it opened are found or there are no more. Throws when an answer cannot be read.
+ */
+async function loadCooks(account: Address, signal: AbortSignal): Promise<Cook[]> {
+  const cooks: Cook[] = [];
+  for (let page = 1; cooks.length < COOKS_SHOWN; page++) {
+    const response = await fetch(`/api/rooms?wallet=${account.toLowerCase()}${page > 1 ? `&page=${page}` : ""}`, { signal });
+    if (!response.ok) throw new Error("The Cook Rooms could not be read.");
+    const body = (await response.json()) as { rooms?: unknown; total?: unknown; pageSize?: unknown } | null;
+    if (!body || !Array.isArray(body.rooms)) throw new Error("The Cook Rooms could not be read.");
+    for (const value of body.rooms as unknown[]) {
+      const room = value as Partial<Record<keyof Cook | "role", unknown>> | null;
+      if (!room || room.role !== "dev") continue;
+      if (
+        typeof room.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(room.address) || typeof room.name !== "string" || typeof room.symbol !== "string" ||
+        !isCount(room.seats) || !isCount(room.seated) || !isCount(room.saleDeadline) || typeof room.launched !== "boolean"
+      ) {
+        throw new Error("The Cook Rooms could not be read.");
+      }
+      cooks.push({ address: room.address.toLowerCase(), name: room.name, symbol: room.symbol, seats: room.seats, seated: room.seated, saleDeadline: room.saleDeadline, launched: room.launched });
+    }
+    // The last page: the API said how many rooms there are and how many a page holds, or gave an empty page.
+    if (body.rooms.length === 0 || !isCount(body.total) || !isCount(body.pageSize) || page * body.pageSize >= body.total) break;
+  }
+  return cooks.slice(0, COOKS_SHOWN);
+}
+
+/** Where a Cook Room stands, in the words its own page uses. Keep in sync with `statusOf` in apps/web/src/rooms.tsx. */
+function cookStatus(cook: Cook, now: number): { label: string; tone: "good" | "gold" | "muted" | "warn" } {
+  if (cook.launched) return { label: "Launched", tone: "good" };
+  if (Math.floor(now / 1000) >= cook.saleDeadline) return { label: "Closed", tone: "muted" };
+  if (cook.seated >= cook.seats) return { label: "Full", tone: "warn" };
+  return { label: "Open", tone: "gold" };
+}
+
+/** The Cook Rooms this wallet opened, newest first, with the way to all of them and to the wallet's profile. */
+function CooksRow({ account, onNavigate }: { account: Address; onNavigate(): void }) {
+  const [cooks, setCooks] = useState<Cook[] | "loading" | "error">("loading");
+  // Read each time the menu opens, like the balances above it.
+  useEffect(() => {
+    const abort = new AbortController();
+    setCooks("loading");
+    loadCooks(account, abort.signal).then(
+      (next) => {
+        if (!abort.signal.aborted) setCooks(next);
+      },
+      () => {
+        if (!abort.signal.aborted) setCooks("error");
+      },
+    );
+    return () => abort.abort();
+  }, [account]);
+  const now = Date.now();
+  return (
+    <section className="positions-cooks" data-testid="positions-cooks" aria-label="Your Cook Rooms">
+      <p className="positions-head">
+        <strong>Your Cook Rooms</strong>
+      </p>
+      {cooks === "loading" && <p className="positions-note" role="status">Reading your Cook Rooms…</p>}
+      {cooks === "error" && <p className="positions-note" role="alert">Your Cook Rooms could not be read. Close and open this to try again.</p>}
+      {Array.isArray(cooks) && cooks.length === 0 && (
+        <p className="positions-note" data-testid="positions-cooks-empty">You have not opened a Cook Room yet.</p>
+      )}
+      {Array.isArray(cooks) && cooks.length > 0 && (
+        <ul className="positions-list">
+          {cooks.map((cook) => {
+            const status = cookStatus(cook, now);
+            return (
+              <li key={cook.address}>
+                <a className="positions-token" data-testid="positions-cook" href={`#/room/${cook.address}`} onClick={onNavigate}>
+                  <span>
+                    <strong>{cook.name || short(cook.address)}</strong>
+                    <span className="dim num">{cook.symbol ? `${cook.symbol} · ` : ""}{cook.seated} / {cook.seats} seats</span>
+                  </span>
+                </a>
+                <span className={`tag tag-${status.tone}`} data-testid="positions-cook-status">{status.label}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="links">
+        {Array.isArray(cooks) && cooks.length === 0 && <a href="#/rooms/create" data-testid="positions-cooks-open" onClick={onNavigate}>Open one</a>}
+        <a href="#/rooms" data-testid="positions-cooks-all" onClick={onNavigate}>All your cooks</a>
+        <a href={`#/u/${account.toLowerCase()}`} data-testid="positions-profile" onClick={onNavigate}>Your profile</a>
+      </p>
+    </section>
+  );
+}
+
 export default function Positions({ account, chainId, onNavigate }: { account: Address; chainId: number | null; onNavigate(): void }) {
   const [positions, setPositions] = useState<Position[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -305,6 +412,7 @@ export default function Positions({ account, chainId, onNavigate }: { account: A
         </ul>
       )}
       <p className="positions-foot dim">Tokens from the board, tokens launched on CallZ, and ones bought here, that this wallet holds on BNB Chain. "Sell all" goes through PancakeSwap with 5% slippage; your wallet asks you to confirm.</p>
+      <CooksRow account={account} onNavigate={onNavigate} />
     </div>
   );
 }

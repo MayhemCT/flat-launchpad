@@ -55,6 +55,8 @@ const TOTAL_SUPPLY = 1_000_000_000n * 10n ** 18n;
 /** The limits of apps/worker/src/rooms.ts, for the same reason. */
 const MAX_ABOUT_LENGTH = 600;
 const MAX_BRIEF_LENGTH = 300;
+/** Longest text a dev can require a post on X to contain: `MAX_PHRASE_LENGTH` in apps/worker/src/rooms.ts. */
+const MAX_PHRASE_LENGTH = 120;
 const MAX_ROLE_LENGTH = 60;
 const MAX_PORTFOLIO_LENGTH = 600;
 const MAX_MESSAGE_LENGTH = 1000;
@@ -161,6 +163,8 @@ interface ApiRoom {
   about: string;
   wantPost: boolean;
   postBrief: string;
+  /** Words the post must contain, checked with X. Empty or absent when the dev requires none. */
+  postPhrase?: string;
   wantRole: boolean;
   roleBrief: string;
   gate: ApiGate | null;
@@ -193,8 +197,22 @@ interface ApiMember {
   muted: boolean;
 }
 
+/** A room as the list gives it. */
+interface ListedRoom extends ApiRoom {
+  /** Applications in the last 24 hours, plus two for every pass first seen in them. A score, not a count. */
+  hot?: number;
+  /** What the wallet the list was asked for is in this room. Only there when a wallet was given. */
+  role?: "dev" | "member";
+}
+
 interface RoomList {
-  rooms: ApiRoom[];
+  rooms: ListedRoom[];
+  sort?: string;
+  page?: number;
+  /** The most rooms one page holds. */
+  pageSize?: number;
+  /** Every room that matches, on all pages. */
+  total?: number;
 }
 
 interface RoomDetail {
@@ -250,8 +268,19 @@ interface RoomMessage {
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
 function isRoomList(value: unknown): value is RoomList {
-  return isObject(value) && Array.isArray(value.rooms) && value.rooms.every((room) => isObject(room) && typeof room.address === "string" && typeof room.creator === "string");
+  return (
+    isObject(value) && Array.isArray(value.rooms) &&
+    value.rooms.every(
+      (room) =>
+        isObject(room) && typeof room.address === "string" && typeof room.creator === "string" &&
+        (room.hot === undefined || isCount(room.hot)) && (room.role === undefined || room.role === "dev" || room.role === "member"),
+    ) &&
+    (value.total === undefined || isCount(value.total)) && (value.page === undefined || isCount(value.page)) &&
+    (value.pageSize === undefined || (isCount(value.pageSize) && value.pageSize > 0))
+  );
 }
 
 function isRoomDetail(value: unknown): value is RoomDetail {
@@ -925,7 +954,7 @@ function gateChip(gate: ApiGate): string {
 const POST_WORDS: Record<string, string> = {
   ok: "The post is up and carries the code.",
   missing: "X says there is no such post: it may be deleted, or from an account that is not public.",
-  nocode: "The post is up but does not carry the code.",
+  nocode: "The post is up but does not carry the code, or the words the dev requires.",
   unreachable: "X could not be asked, so the post was not read.",
 };
 const HOLD_WORDS: Record<string, string> = {
@@ -938,14 +967,138 @@ const HOLD_WORDS: Record<string, string> = {
 // #/rooms: the list
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The longest search the API takes, in characters. */
+const MAX_SEARCH_LENGTH = 64;
+/** How long the search box waits after the last key before it asks. */
+const SEARCH_DELAY_MS = 300;
+/** How many of a wallet's own rooms show before "Show all". */
+const COOKS_SHOWN = 3;
+/** How long a room counts as new, and how far back "hot" looks. */
+const DAY_SECONDS = 86_400;
+const HOT_MEANS = "Hot: most applications and passes bought in the last 24 hours.";
+
+type RoomSort = "latest" | "hot";
+
+/** How many rooms match in all. A list without a count has only the rooms it carries. */
+const totalOf = (list: RoomList): number => Math.max(list.total ?? 0, list.rooms.length);
+
+/**
+ * The connected wallet's own rooms, newest first: the ones it opened and the ones it holds a pass in. The API
+ * gives them 100 to a page; the first page is kept fresh, and "Load more" adds the pages after it.
+ */
+function YourCooks({ account, now }: { account: Address; now: number }) {
+  const base = `/api/rooms?wallet=${account.toLowerCase()}`;
+  const first = useApi(base, 15_000, isRoomList);
+  const [expanded, setExpanded] = useState(false);
+  const [later, setLater] = useState<{ rooms: ListedRoom[]; pages: number }>({ rooms: [], pages: 1 });
+  const [more, setMore] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+
+  const cooks = useMemo(() => {
+    if (first.state !== "ready") return [];
+    // A room opened since a later page was read moves every room down one: none is shown twice.
+    const seen = new Set<string>();
+    return [...first.data.rooms, ...later.rooms].filter((room) => {
+      const address = room.address.toLowerCase();
+      if (seen.has(address)) return false;
+      seen.add(address);
+      return true;
+    });
+  }, [first.state, first.data, later.rooms]);
+
+  const loadMore = async () => {
+    if (more.busy) return;
+    setMore({ busy: true, error: null });
+    try {
+      const next: unknown = await api<unknown>(`${base}&page=${later.pages + 1}`);
+      if (!isRoomList(next)) throw new Error("The site answered something unexpected. Try again.");
+      setLater((previous) => ({ rooms: [...previous.rooms, ...next.rooms], pages: previous.pages + 1 }));
+      setMore({ busy: false, error: null });
+    } catch (cause) {
+      setMore({ busy: false, error: messageOf(cause) });
+    }
+  };
+
+  const total = first.state === "ready" ? Math.max(totalOf(first.data), cooks.length) : 0;
+  const pageSize = first.state === "ready" ? first.data.pageSize ?? 0 : 0;
+  // More to fetch: the API said how many there are and how many a page holds, and the pages read do not reach it.
+  const unread = pageSize > 0 && later.pages * pageSize < total;
+  const shown = expanded ? cooks : cooks.slice(0, COOKS_SHOWN);
+  return (
+    <section data-testid="your-cooks" aria-label="Your cooks">
+      <div className="section-head">
+        <h2>Your cooks {first.state === "ready" && <span className="dim">{total}</span>}</h2>
+      </div>
+      {first.state === "loading" && <p className="note" role="status">Loading your cooks…</p>}
+      {first.state === "error" && <p className="note" role="alert">{first.error.message}</p>}
+      {first.state === "ready" && cooks.length === 0 && (
+        <p className="note" data-testid="your-cooks-empty">You have no cooks yet. Open a Cook Room or apply to one.</p>
+      )}
+      {shown.length > 0 && (
+        <ul className="cards grid" data-testid="your-cooks-list">
+          {shown.map((room) => <li key={room.address}><RoomCard room={room} now={now} /></li>)}
+        </ul>
+      )}
+      {total > COOKS_SHOWN && (
+        <div className="actions rooms-more">
+          <button type="button" className="button button-quiet" data-testid="your-cooks-toggle" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+            {expanded ? `Show the latest ${COOKS_SHOWN}` : `Show all ${total}`}
+          </button>
+          {expanded && unread && (
+            <button type="button" className="button button-quiet" data-testid="your-cooks-more" disabled={more.busy} onClick={() => void loadMore()}>
+              {more.busy ? "Loading…" : `Load more (${cooks.length} of ${total} shown)`}
+            </button>
+          )}
+        </div>
+      )}
+      {more.error !== null && <p className="note" role="alert">{more.error}</p>}
+    </section>
+  );
+}
+
 function RoomsHome() {
   const wallet = useWallet();
   const factory = useChain(readFactory, 30_000);
-  const list = useApi("/api/rooms", 15_000, isRoomList);
+  /** What is in the search box, and what the list was last asked for: the box is ahead by a short wait. */
+  const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<RoomSort>("latest");
+  const [page, setPage] = useState(1);
+  const path = useMemo(() => {
+    const params = new URLSearchParams();
+    if (query !== "") params.set("q", query);
+    if (sort !== "latest") params.set("sort", sort);
+    if (page > 1) params.set("page", String(page));
+    const asked = params.toString();
+    return asked === "" ? "/api/rooms" : `/api/rooms?${asked}`;
+  }, [query, sort, page]);
+  const list = useApi(path, 15_000, isRoomList);
   const { tx, send } = useTransaction();
   const gate = WalletGate();
   const now = useNow(30_000);
   const deployed = factory.state === "ready" && factory.data.deployed;
+
+  /** What the list is searched for. A new search starts at its first page. */
+  const asked = useRef("");
+  const search = useCallback((text: string) => {
+    const next = [...cleanLine(text)].slice(0, MAX_SEARCH_LENGTH).join("");
+    if (next === asked.current) return;
+    asked.current = next;
+    setQuery(next);
+    setPage(1);
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => search(draft), SEARCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [draft, search]);
+  const clearSearch = () => {
+    setDraft("");
+    search("");
+  };
+  const pick = (next: RoomSort) => {
+    if (next === sort) return;
+    setSort(next);
+    setPage(1);
+  };
 
   const deploy = async () => {
     if (!wallet.account) return;
@@ -956,6 +1109,13 @@ function RoomsHome() {
   };
 
   const rooms = list.state === "ready" ? list.data.rooms : [];
+  const total = list.state === "ready" ? totalOf(list.data) : 0;
+  const pageSize = list.state === "ready" ? list.data.pageSize ?? 0 : 0;
+  const pages = pageSize > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+  // A page asked for past the last one leads back to the last one.
+  useEffect(() => {
+    if (list.state === "ready" && page > pages) setPage(pages);
+  }, [list.state, page, pages]);
   return (
     <div className="rooms-page">
       <div className="page-head">
@@ -973,6 +1133,7 @@ function RoomsHome() {
         </p>
         {deployed && <div className="actions"><a className="button" href="#/rooms/create" data-testid="room-create-link">Open a Cook Room</a></div>}
       </div>
+      {wallet.account && <YourCooks key={wallet.account} account={wallet.account} now={now} />}
       <p className="note note-warn" data-testid="rooms-risk">{RISK}</p>
 
       {factory.state === "error" && <p className="note" role="alert">BNB Chain could not be reached. Reload to try again.</p>}
@@ -991,30 +1152,80 @@ function RoomsHome() {
 
       <section>
         <div className="section-head">
-          <h2>Cook Rooms {list.state === "ready" && <span className="dim">{rooms.length}</span>}</h2>
+          <h2>Cook Rooms {list.state === "ready" && <span className="dim" data-testid="rooms-total">{total}</span>}</h2>
         </div>
+        <div className="rooms-tools">
+          <form
+            className="rooms-search"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              search(draft);
+            }}
+          >
+            <label className="field">
+              <span className="visually-hidden">Search the Cook Rooms</span>
+              <input
+                type="search"
+                name="q"
+                data-testid="rooms-search"
+                value={draft}
+                maxLength={MAX_SEARCH_LENGTH}
+                placeholder="Search by name, symbol, dev or address"
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="search"
+                onChange={(event) => setDraft(event.target.value)}
+              />
+            </label>
+            {draft !== "" && <button type="button" className="button button-quiet" data-testid="rooms-search-clear" onClick={clearSearch}>Clear</button>}
+          </form>
+          <div className="seg" role="group" aria-label="Order of the Cook Rooms" data-testid="rooms-sort">
+            <button type="button" aria-pressed={sort === "latest"} data-testid="rooms-sort-latest" title="Newest first" onClick={() => pick("latest")}>Latest</button>
+            <button type="button" aria-pressed={sort === "hot"} data-testid="rooms-sort-hot" title={HOT_MEANS} onClick={() => pick("hot")}>Hot</button>
+          </div>
+        </div>
+        {sort === "hot" && <p className="trade-note dim rooms-sort-note" data-testid="rooms-sort-note">{HOT_MEANS}</p>}
         {list.state === "loading" && <p className="note" role="status">Loading the Cook Rooms…</p>}
         {list.state === "error" && <p className="note" role="alert">{list.error.message}</p>}
-        {list.state === "ready" && rooms.length === 0 && (
+        {list.state === "ready" && rooms.length === 0 && query === "" && (
           <p className="note" data-testid="rooms-empty">No Cook Rooms yet.{deployed ? " Open the first one." : ""}</p>
+        )}
+        {list.state === "ready" && rooms.length === 0 && query !== "" && (
+          <div className="note" data-testid="rooms-search-empty">
+            <p>No Cook Room matches “{query}”.</p>
+            <div className="actions"><button type="button" className="button button-quiet" data-testid="rooms-search-empty-clear" onClick={clearSearch}>Clear the search</button></div>
+          </div>
         )}
         {rooms.length > 0 && (
           <ul className="cards grid" data-testid="rooms-list">
             {rooms.map((room) => <li key={room.address}><RoomCard room={room} now={now} /></li>)}
           </ul>
         )}
+        {list.state === "ready" && pageSize > 0 && total > pageSize && (
+          <nav className="rooms-pager" aria-label="Pages of Cook Rooms" data-testid="rooms-pager">
+            <button type="button" className="button button-quiet" data-testid="rooms-page-prev" disabled={page <= 1} onClick={() => setPage(Math.max(1, page - 1))}>Previous</button>
+            <span className="num" data-testid="rooms-page" aria-live="polite">Page {Math.min(page, pages)} of {pages}</span>
+            <button type="button" className="button button-quiet" data-testid="rooms-page-next" disabled={page >= pages} onClick={() => setPage(Math.min(pages, page + 1))}>Next</button>
+          </nav>
+        )}
       </section>
     </div>
   );
 }
 
-function RoomCard({ room, now }: { room: ApiRoom; now: number }) {
+function RoomCard({ room, now }: { room: ListedRoom; now: number }) {
   const seats = Number(room.seats) || 0;
   const seated = Number(room.seated) || 0;
   const launched = room.launched === true;
   const status = statusOf({ launched, closed: Math.floor(now / 1000) >= Number(room.saleDeadline), full: seated >= seats });
   const price = toBig(room.seatPrice);
   const waiting = Number(room.applicants) || 0;
+  const hot = isCount(room.hot) ? room.hot : 0;
+  // `createdAt` is when CallZ first listed the room.
+  const fresh = isCount(room.createdAt) && room.createdAt > Math.floor(now / 1000) - DAY_SECONDS;
   return (
     <a className="launch-card room-card" href={`#/room/${room.address.toLowerCase()}`} data-testid="room-card" data-room={room.address.toLowerCase()}>
       <span className="launch-head">
@@ -1025,6 +1236,15 @@ function RoomCard({ room, now }: { room: ApiRoom; now: number }) {
         </span>
         <span className={`tag tag-${status.tone}`} data-testid="room-card-status" data-status={status.key}>{status.label}</span>
       </span>
+      {(room.role !== undefined || hot > 0 || fresh) && (
+        <span className="room-chips room-marks">
+          {room.role !== undefined && <span className={`tag tag-${room.role === "dev" ? "gold" : "muted"}`} data-testid="room-card-role" data-role={room.role}>{room.role === "dev" ? "Dev" : "Member"}</span>}
+          {hot > 0 && (
+            <span className="tag tag-warn" data-testid="room-card-hot" title={`Activity score ${hot} in the last 24 hours: one for each application, two for each pass bought.`}>Hot</span>
+          )}
+          {fresh && <span className="tag tag-good" data-testid="room-card-new" title="Listed in the last 24 hours">New</span>}
+        </span>
+      )}
       <span className="room-card-line dim">Dev <AuthorName className="room-author" address={room.creator} name={room.creatorName} clan={room.creatorClan} /></span>
       <span className="room-card-line">
         <span className="num">{seated} / {seats} seats</span>
@@ -1103,7 +1323,7 @@ async function readEarlierLaunches(): Promise<EarlierLaunch[]> {
 }
 
 function LaunchedPage() {
-  const list = useApi("/api/rooms", 15_000, isRoomList);
+  const list = useApi("/api/rooms?launched=1", 15_000, isRoomList);
   const earlier = useChain(readEarlierLaunches, 60_000);
   const launched = list.state === "ready" ? list.data.rooms.filter((room) => room.launched === true) : [];
   const before = earlier.state === "ready" ? earlier.data : [];
@@ -1224,12 +1444,12 @@ function CreatePage() {
   const picture = usePickedPicture(ROOM_PICTURE_SIDE);
   const [form, setForm] = useState({
     name: "", symbol: "", about: "", total: "1", passes: "10", poolShare: "50", hours: "24",
-    wantPost: false, postBrief: "", wantHold: false, gateToken: "", gateAmount: "", wantRole: false, roleBrief: "",
+    wantPost: false, postBrief: "", postPhrase: "", wantHold: false, gateToken: "", gateAmount: "", wantRole: false, roleBrief: "",
   });
   const [step, setStep] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const set = (key: "name" | "symbol" | "about" | "total" | "passes" | "poolShare" | "hours" | "postBrief" | "gateToken" | "gateAmount" | "roleBrief") =>
+  const set = (key: "name" | "symbol" | "about" | "total" | "passes" | "poolShare" | "hours" | "postBrief" | "postPhrase" | "gateToken" | "gateAmount" | "roleBrief") =>
     (event: { target: { value: string } }) => setForm((previous) => ({ ...previous, [key]: event.target.value }));
   const toggle = (key: "wantPost" | "wantHold" | "wantRole") => (event: { target: { checked: boolean } }) => setForm((previous) => ({ ...previous, [key]: event.target.checked }));
 
@@ -1340,6 +1560,7 @@ function CreatePage() {
         about: parsed.about,
         wantPost: form.wantPost,
         postBrief: form.wantPost ? parsed.postBrief : "",
+        postPhrase: form.wantPost ? form.postPhrase.trim() : "",
         wantRole: form.wantRole,
         roleBrief: form.wantRole ? parsed.roleBrief : "",
       };
@@ -1441,6 +1662,11 @@ function CreatePage() {
                 <label className="field">
                   <span className="stat-label">What should the post say?</span>
                   <textarea className="room-text" name="postBrief" rows={3} value={form.postBrief} onChange={set("postBrief")} maxLength={MAX_BRIEF_LENGTH} />
+                </label>
+                <label className="field">
+                  <span className="stat-label">Words the post must contain</span>
+                  <input name="postPhrase" value={form.postPhrase} onChange={set("postPhrase")} maxLength={MAX_PHRASE_LENGTH} autoComplete="off" placeholder="For example: Cooking $NIGHT with @callzfun" />
+                  <span className="dim field-hint">Optional. The site checks with X that the post contains exactly these words, in any capitals. A post without them is refused.</span>
                 </label>
               </>
             )}
@@ -1721,6 +1947,7 @@ function RoomView({ mobile, notListed, listingError, ...given }: Omit<RoomContex
                 <li>
                   <strong>Make a post on X.</strong> Your application gives you a personal code to put in the post, and the site checks with X that the post is up and carries it.
                   {detail.room.postBrief !== "" && <span className="room-brief">{String(detail.room.postBrief)}</span>}
+                  {typeof detail.room.postPhrase === "string" && detail.room.postPhrase !== "" && <span className="room-brief" data-testid="room-requirement-phrase">It must contain: {detail.room.postPhrase}</span>}
                 </li>
               )}
               {gated && (
@@ -1962,6 +2189,9 @@ function ApplicationPanel(context: RoomContext & { account: Address }) {
         <div className="room-step-block">
           <p className="trade-note"><strong>1. Make a post on X</strong> that includes your personal code. The code ties the post to this wallet and this room.</p>
           {detail && detail.room.postBrief !== "" && <p className="room-brief">{String(detail.room.postBrief)}</p>}
+          {detail && typeof detail.room.postPhrase === "string" && detail.room.postPhrase !== "" && (
+            <p className="trade-note" data-testid="room-post-phrase">The post must also contain these words: <code className="room-code">{detail.room.postPhrase}</code></p>
+          )}
           <div className="room-code-row">
             <code className="room-code" data-testid="room-post-code">{code}</code>
             <button type="button" className="button button-quiet" data-testid="room-copy-code" onClick={() => void copy()}>{copied === "yes" ? "Copied" : "Copy the code"}</button>
@@ -2707,6 +2937,7 @@ function Settings(context: RoomContext) {
     about: unsaved?.about ?? detail?.room.about ?? "",
     wantPost: unsaved?.wantPost ?? detail?.room.wantPost === true,
     postBrief: unsaved?.postBrief ?? detail?.room.postBrief ?? "",
+    postPhrase: detail?.room.postPhrase ?? "",
     wantRole: unsaved?.wantRole ?? detail?.room.wantRole === true,
     roleBrief: unsaved?.roleBrief ?? detail?.room.roleBrief ?? "",
   }));
@@ -2718,7 +2949,7 @@ function Settings(context: RoomContext) {
   useEffect(() => {
     if (filled.current || !detail) return;
     filled.current = true;
-    setForm({ about: detail.room.about ?? "", wantPost: detail.room.wantPost === true, postBrief: detail.room.postBrief ?? "", wantRole: detail.room.wantRole === true, roleBrief: detail.room.roleBrief ?? "" });
+    setForm({ about: detail.room.about ?? "", wantPost: detail.room.wantPost === true, postBrief: detail.room.postBrief ?? "", postPhrase: detail.room.postPhrase ?? "", wantRole: detail.room.wantRole === true, roleBrief: detail.room.roleBrief ?? "" });
   }, [detail]);
 
   const problems: string[] = [];
@@ -2732,7 +2963,7 @@ function Settings(context: RoomContext) {
     setBusy(true);
     setSaid(null);
     try {
-      await api("/api/rooms", { body: { room: address, about: form.about.trim(), wantPost: form.wantPost, postBrief: form.wantPost ? form.postBrief.trim() : "", wantRole: form.wantRole, roleBrief: form.wantRole ? form.roleBrief.trim() : "" } });
+      await api("/api/rooms", { body: { room: address, about: form.about.trim(), wantPost: form.wantPost, postBrief: form.wantPost ? form.postBrief.trim() : "", postPhrase: form.wantPost ? form.postPhrase.trim() : "", wantRole: form.wantRole, roleBrief: form.wantRole ? form.roleBrief.trim() : "" } });
       if (unsavedSettings?.room === address) unsavedSettings = null;
       setPending(false);
       setSaid({ kind: "done", text: "Saved." });
@@ -2755,12 +2986,17 @@ function Settings(context: RoomContext) {
         </label>
         <fieldset className="room-requirement">
           <label className="room-toggle"><input type="checkbox" name="wantPost" checked={form.wantPost} onChange={(event) => setForm((previous) => ({ ...previous, wantPost: event.target.checked }))} /><span>Applicants make a post on X</span></label>
-          {form.wantPost && (
+          {form.wantPost && (<>
             <label className="field">
               <span className="stat-label">What should the post say?</span>
               <textarea className="room-text" name="postBrief" rows={3} value={form.postBrief} maxLength={MAX_BRIEF_LENGTH} onChange={(event) => setForm((previous) => ({ ...previous, postBrief: event.target.value }))} />
             </label>
-          )}
+            <label className="field">
+              <span className="stat-label">Words the post must contain</span>
+              <input name="postPhrase" value={form.postPhrase} maxLength={MAX_PHRASE_LENGTH} autoComplete="off" onChange={(event) => setForm((previous) => ({ ...previous, postPhrase: event.target.value }))} />
+              <span className="dim field-hint">Optional. The site checks with X that the post contains exactly these words, in any capitals.</span>
+            </label>
+          </>)}
         </fieldset>
         <fieldset className="room-requirement">
           <label className="room-toggle"><input type="checkbox" name="wantRole" checked={form.wantRole} onChange={(event) => setForm((previous) => ({ ...previous, wantRole: event.target.checked }))} /><span>Applicants state a role and show a portfolio</span></label>

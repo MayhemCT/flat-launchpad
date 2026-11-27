@@ -24,6 +24,20 @@
 .room-card-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0; font-size: 13.5px; overflow-wrap: anywhere; }
 .room-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .room-chips .tag { max-width: 100%; font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
+/* What a card is marked with besides its status: the wallet's part in it, Hot, New. */
+.room-marks .tag { font-weight: 700; }
+/* Above the list: the search box takes the room there is, the order sits beside it or under it. */
+.rooms-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-width: 0; margin-bottom: 12px; }
+.rooms-search { flex: 1 1 260px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.rooms-search .field { flex: 1 1 160px; }
+.rooms-search input::placeholder { color: var(--dim); }
+.rooms-search .button { flex: none; min-height: 48px; }
+.rooms-tools .seg { flex: none; max-width: 100%; }
+.rooms-tools .seg button[aria-pressed="true"] { cursor: default; }
+.rooms-sort-note { margin: 0 0 12px; }
+.rooms-more { margin-top: 12px; }
+.rooms-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 14px; min-width: 0; margin-top: 16px; font-size: 14px; }
+.rooms-pager .button { flex: 0 1 auto; }
 /* A wallet shown by AuthorName outside the chat. */
 .room-author { min-width: 0; font-family: var(--mono); font-size: 0.95em; }
 

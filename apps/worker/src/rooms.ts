@@ -4,7 +4,11 @@
  * applications, the private chat and its pictures, and the points and tags the dev gives.
  *
  * Anyone, signed in or not:
- *   GET  /api/rooms                         every room, newest first.
+ *   GET  /api/rooms?q=&sort=&page=&wallet=  rooms, 100 to a page. `sort` is `latest` (newest first, the default) or
+ *                                           `hot` (most applications and passes bought in the last 24 hours first).
+ *                                           `q` searches names, symbols, room and dev addresses and dev names.
+ *                                           `wallet` keeps only the rooms that wallet created or holds a pass of,
+ *                                           each marked with which.
  *   GET  /api/rooms/<room>                  one room, its requirements and its members (wallet, name, clan, pass,
  *                                           points, tag).
  *   GET  /api/rooms/image/<hash>            a room's picture.
@@ -17,7 +21,7 @@
  *   POST /api/rooms/<room>/application      { postUrl?, role?, portfolio? } apply, or change a pending application.
  *
  * The room's dev (the wallet that created the contract):
- *   POST /api/rooms                         { room, about, wantPost, postBrief, wantRole, roleBrief } list the
+ *   POST /api/rooms                         { room, about, wantPost, postBrief, postPhrase, wantRole, roleBrief } list the
  *                                           room, or change those settings.
  *   GET  /api/rooms/<room>/applications     every applicant with what each requirement reads.
  *   POST /api/rooms/<room>/applications/<wallet>  { action: 'check' | 'decline' | 'reopen' }. 'check' reads every
@@ -74,6 +78,8 @@ const LAUNCHED_FRESH_SECONDS = 3600
 
 export const MAX_ABOUT_LENGTH = 600
 export const MAX_BRIEF_LENGTH = 300
+/** Longest text a dev can require a post on X to contain. A post is 280 characters and also carries the code. */
+export const MAX_PHRASE_LENGTH = 120
 export const MAX_ROLE_LENGTH = 60
 export const MAX_PORTFOLIO_LENGTH = 600
 export const MAX_MESSAGE_LENGTH = 1000
@@ -160,7 +166,12 @@ export type PostState = 'ok' | 'missing' | 'nocode' | 'unreachable'
  * Asks X whether a post is up and whether it carries `code`, through X's public embed endpoint, which needs
  * no key. 'unreachable' when X could not be asked or answered something else: an unread post is never 'ok'.
  */
-export async function checkPost(url: string, code: string, fetcher: typeof fetch = fetch): Promise<{ state: PostState; handle: string | null }> {
+export async function checkPost(
+  url: string,
+  code: string,
+  fetcher: typeof fetch = fetch,
+  phrase = '',
+): Promise<{ state: PostState; handle: string | null; hasCode?: boolean; hasPhrase?: boolean }> {
   let response: Response
   try {
     response = await fetcher(`https://publish.x.com/oembed?url=${encodeURIComponent(url)}&omit_script=1&dnt=1`, {
@@ -189,7 +200,35 @@ export async function checkPost(url: string, code: string, fetcher: typeof fetch
   const { html, author_url: authorUrl } = (payload ?? {}) as Record<string, unknown>
   if (typeof html !== 'string') return { state: 'unreachable', handle: null }
   const author = typeof authorUrl === 'string' ? /^https:\/\/(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})$/.exec(authorUrl)?.[1]?.toLowerCase() ?? null : null
-  return { state: html.toUpperCase().includes(code.toUpperCase()) ? 'ok' : 'nocode', handle: author }
+  const said = postText(html)
+  const hasCode = said.includes(comparable(code))
+  const hasPhrase = phrase === '' || said.includes(comparable(phrase))
+  // 'nocode' also covers a post without the words the dev requires: either way it does not say what it must.
+  return { state: hasCode && hasPhrase ? 'ok' : 'nocode', handle: author, hasCode, hasPhrase }
+}
+
+/** Text as it is compared: one case, and every run of white space one space. */
+const comparable = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ').trim()
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '\u2014', ndash: '\u2013', hellip: '\u2026' }
+
+/**
+ * What a post says, from the markup X's embed endpoint returns for it: the post's own paragraph, with tags
+ * taken out and character references read back into characters. X wraps mentions, hashtags and cashtags in
+ * links, so "@callzfun" would not be found in the markup as it stands. The text is only ever compared, never
+ * shown or stored.
+ */
+export function postText(html: string): string {
+  const paragraph = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html)?.[1] ?? html
+  const text = paragraph
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z]{2,8}));/gi, (whole, decimal?: string, hexadecimal?: string, name?: string) => {
+      if (name) return ENTITIES[name.toLowerCase()] ?? whole
+      const point = decimal ? Number(decimal) : Number.parseInt(hexadecimal ?? '', 16)
+      return Number.isInteger(point) && point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : whole
+    })
+  return comparable(text)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -461,10 +500,12 @@ ON CONFLICT (address) DO UPDATE SET seated = excluded.seated, launched = exclude
     db
       .prepare(
         `INSERT INTO room_members (room, wallet, seat, joined_at, sync)
-SELECT ?1, json_extract(value, '$[0]'), json_extract(value, '$[1]'), ?3, ?3 FROM json_each(?2) WHERE true
+SELECT ?1, json_extract(value, '$[0]'), json_extract(value, '$[1]'), ?4, ?3 FROM json_each(?2) WHERE true
 ON CONFLICT (room, wallet) DO UPDATE SET seat = excluded.seat, sync = excluded.sync`,
       )
-      .bind(address, JSON.stringify(chain.members.map(({ wallet, seat }) => [wallet, seat])), now),
+      // A room read for the first time may have had its members for a long while: when they joined is not
+      // known, and 0 says so. Only a wallet first seen on a later reading joined "now".
+      .bind(address, JSON.stringify(chain.members.map(({ wallet, seat }) => [wallet, seat])), now, row ? now : 0),
     db.prepare('DELETE FROM room_members WHERE room = ?1 AND sync != ?2').bind(address, now),
   ])
   return await db.prepare('SELECT * FROM rooms WHERE address = ?').bind(address).first<Row>()
@@ -502,6 +543,8 @@ const toRoom = (row: Row) => ({
   about: row.about,
   wantPost: row.want_post === 1,
   postBrief: row.post_brief,
+  // Words the post must contain, checked with X. Empty when the dev requires none.
+  postPhrase: typeof row.post_phrase === 'string' ? row.post_phrase : '',
   wantRole: row.want_role === 1,
   roleBrief: row.role_brief,
   gate: text(row.gate_token) ? { token: row.gate_token, amount: row.gate_amount, symbol: text(row.gate_symbol), decimals: row.gate_decimals } : null,
@@ -526,15 +569,60 @@ const identity = (column: string, prefix: string) =>
 // Rooms
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function list(db: D1Database): Promise<Response> {
-  const rows = await db
-    .prepare(
-      `SELECT r.*, n.name AS creator_name, c.tag AS creator_clan,
-  (SELECT COUNT(*) FROM room_applications a WHERE a.room = r.address AND a.status = 'pending') AS applicants
-FROM rooms r ${identity('r.creator', '')} ORDER BY r.created_at DESC LIMIT 200`,
-    )
-    .all<Row>()
-  return json({ factory: ROOM_FACTORY, rooms: rows.results.map((row) => ({ ...toRoom(row), applicants: row.applicants })) })
+/** Rooms on one page of the list. */
+export const ROOMS_PER_PAGE = 100
+/** How far back "hot" looks, in seconds. */
+export const HOT_WINDOW_SECONDS = 86_400
+const MAX_QUERY_LENGTH = 64
+
+/** A search text as a LIKE pattern that matches it anywhere, with nothing in it read as a wildcard. */
+const likeAnywhere = (text: string): string => `%${text.replace(/[\\%_]/g, (character) => `\\${character}`)}%`
+
+/**
+ * One page of rooms. How hot a room is: the applications it got in the last 24 hours, plus two for every pass
+ * bought in them. Buying a pass counts for more than asking for one.
+ */
+async function list(db: D1Database, url: URL): Promise<Response> {
+  const sort = url.searchParams.get('sort') ?? 'latest'
+  if (sort !== 'latest' && sort !== 'hot') return failure(400, "sort must be 'latest' or 'hot'.")
+  const requested = Number(url.searchParams.get('page') ?? 1)
+  if (!Number.isInteger(requested) || requested < 1 || requested > 10_000) return failure(400, 'page must be a whole number from 1.')
+  const query = cleanBody(url.searchParams.get('q') ?? '')
+  if (lengthOf(query) > MAX_QUERY_LENGTH) return failure(400, `The search is longer than ${MAX_QUERY_LENGTH} characters.`)
+  const rawWallet = url.searchParams.get('wallet')
+  if (rawWallet !== null && !ADDRESS.test(rawWallet)) return failure(400, 'wallet must be a 0x address.')
+  const wallet = rawWallet === null ? null : rawWallet.toLowerCase()
+  const pattern = query === '' ? null : likeAnywhere(query.toLowerCase())
+  const launchedOnly = url.searchParams.get('launched')
+  if (launchedOnly !== null && launchedOnly !== '1') return failure(400, "launched must be '1' when given.")
+  const since = Math.floor(Date.now() / 1000) - HOT_WINDOW_SECONDS
+
+  // ?1 the search pattern or NULL, ?2 the wallet or NULL. Every value is bound: nothing typed is part of the SQL.
+  const where = `WHERE (?1 IS NULL OR lower(r.name) LIKE ?1 ESCAPE '\\' OR lower(r.symbol) LIKE ?1 ESCAPE '\\' OR r.address LIKE ?1 ESCAPE '\\'
+    OR r.creator LIKE ?1 ESCAPE '\\' OR lower(n.name) LIKE ?1 ESCAPE '\\')
+  AND (?2 IS NULL OR r.creator = ?2 OR EXISTS (SELECT 1 FROM room_members w WHERE w.room = r.address AND w.wallet = ?2))${launchedOnly === null ? '' : ' AND r.launched = 1'}`
+  const [counted, rows] = await db.batch<Row>([
+    db.prepare(`SELECT COUNT(*) AS total FROM rooms r LEFT JOIN wallet_names n ON n.wallet = r.creator ${where}`).bind(pattern, wallet),
+    db
+      .prepare(
+        `SELECT r.*, n.name AS creator_name, c.tag AS creator_clan,
+  (SELECT COUNT(*) FROM room_applications a WHERE a.room = r.address AND a.status = 'pending') AS applicants,
+  (SELECT COUNT(*) FROM room_applications a WHERE a.room = r.address AND a.created_at > ?3)
+    + 2 * (SELECT COUNT(*) FROM room_members m WHERE m.room = r.address AND m.joined_at > ?3) AS hot,
+  CASE WHEN ?2 IS NULL THEN NULL WHEN r.creator = ?2 THEN 'dev' ELSE 'member' END AS role
+FROM rooms r ${identity('r.creator', '')} ${where}
+ORDER BY ${sort === 'hot' ? 'hot DESC, r.created_at DESC' : 'r.created_at DESC'}, r.address LIMIT ?4 OFFSET ?5`,
+      )
+      .bind(pattern, wallet, since, ROOMS_PER_PAGE, (requested - 1) * ROOMS_PER_PAGE),
+  ])
+  return json({
+    factory: ROOM_FACTORY,
+    sort,
+    page: requested,
+    pageSize: ROOMS_PER_PAGE,
+    total: Number(counted?.results[0]?.total ?? 0),
+    rooms: (rows?.results ?? []).map((row) => ({ ...toRoom(row), applicants: row.applicants, hot: row.hot, ...(row.role === null ? {} : { role: row.role }) })),
+  })
 }
 
 async function detail(env: RoomsEnv, fetcher: typeof fetch, address: string, maxAge = ROOM_FRESH_SECONDS): Promise<Response> {
@@ -586,10 +674,19 @@ async function settings(request: Request, env: RoomsEnv, fetcher: typeof fetch):
   const about = textField(input.about, 'The description', MAX_ABOUT_LENGTH, true)
   const postBrief = textField(input.postBrief, 'What the post should say', MAX_BRIEF_LENGTH, true)
   const roleBrief = textField(input.roleBrief, 'Who you are looking for', MAX_BRIEF_LENGTH, true)
-  for (const field of [about, postBrief, roleBrief]) if (typeof field === 'string') return failure(400, field)
+  const postPhrase = textField(input.postPhrase, 'The words the post must contain', MAX_PHRASE_LENGTH, false)
+  for (const field of [about, postBrief, roleBrief, postPhrase]) if (typeof field === 'string') return failure(400, field)
   if (typeof input.wantPost !== 'boolean' || typeof input.wantRole !== 'boolean') return failure(400, 'wantPost and wantRole must be true or false.')
-  await env.DB.prepare('UPDATE rooms SET about = ?, want_post = ?, post_brief = ?, want_role = ?, role_brief = ? WHERE address = ?')
-    .bind((about as { text: string }).text, input.wantPost ? 1 : 0, (postBrief as { text: string }).text, input.wantRole ? 1 : 0, (roleBrief as { text: string }).text, address)
+  await env.DB.prepare('UPDATE rooms SET about = ?, want_post = ?, post_brief = ?, post_phrase = ?, want_role = ?, role_brief = ? WHERE address = ?')
+    .bind(
+      (about as { text: string }).text,
+      input.wantPost ? 1 : 0,
+      (postBrief as { text: string }).text,
+      input.wantPost ? (postPhrase as { text: string }).text.replace(/\s+/g, ' ') : '',
+      input.wantRole ? 1 : 0,
+      (roleBrief as { text: string }).text,
+      address,
+    )
     .run()
   return detail(env, fetcher, address)
 }
@@ -625,12 +722,16 @@ async function readRequirements(
   room: Row,
   wallet: string,
   postUrl: string | null,
-): Promise<{ postState: PostState | null; postHandle: string | null; held: string | null; holdState: 'ok' | 'short' | 'unreadable' | null }> {
+): Promise<{ postState: PostState | null; postHandle: string | null; held: string | null; holdState: 'ok' | 'short' | 'unreadable' | null; hasCode?: boolean; hasPhrase?: boolean }> {
   const address = String(room.address)
   let postState: PostState | null = null
   let postHandle: string | null = null
-  if (room.want_post === 1 && postUrl) ({ state: postState, handle: postHandle } = await checkPost(postUrl, postCode(address, wallet), fetcher))
-  else if (room.want_post === 1) postState = 'missing'
+  let hasCode: boolean | undefined
+  let hasPhrase: boolean | undefined
+  if (room.want_post === 1 && postUrl) {
+    const phrase = typeof room.post_phrase === 'string' ? room.post_phrase : ''
+    ;({ state: postState, handle: postHandle, hasCode, hasPhrase } = await checkPost(postUrl, postCode(address, wallet), fetcher, phrase))
+  } else if (room.want_post === 1) postState = 'missing'
 
   let holding: string | null = null
   let holdState: 'ok' | 'short' | 'unreadable' | null = null
@@ -643,7 +744,7 @@ async function readRequirements(
       holdState = 'unreadable'
     }
   }
-  return { postState, postHandle, held: holding, holdState }
+  return { postState, postHandle, held: holding, holdState, ...(hasCode === undefined ? {} : { hasCode }), ...(hasPhrase === undefined ? {} : { hasPhrase }) }
 }
 
 /** True when everything the room asks for is met by what was just read. */
@@ -697,7 +798,13 @@ async function apply(request: Request, env: RoomsEnv, fetcher: typeof fetch, add
 
   const read = await readRequirements(env, fetcher, room, wallet, postUrl)
   if (read.postState === 'missing') return failure(400, 'X says there is no such post. It may be deleted, or from an account that is not public.')
-  if (read.postState === 'nocode') return failure(400, `The post does not carry your code ${postCode(address, wallet)}. Put the code in the post and apply again.`)
+  if (read.postState === 'nocode') {
+    const missing = [
+      ...(read.hasCode === false ? [`your code ${postCode(address, wallet)}`] : []),
+      ...(read.hasPhrase === false ? [`the words the dev requires: \u201c${String(room.post_phrase)}\u201d`] : []),
+    ]
+    return failure(400, `The post does not carry ${missing.join(', or ')}. Make a post that does and apply again.`)
+  }
   if (read.holdState === 'unreadable') return failure(503, "This wallet's holdings could not be read right now. Try again in a moment.")
   if (read.holdState === 'short') return failure(403, 'This wallet does not hold enough of the token this room requires.')
 
@@ -753,6 +860,8 @@ async function review(request: Request, env: RoomsEnv, fetcher: typeof fetch, ad
   const now = Math.floor(Date.now() / 1000)
 
   let ready: boolean | undefined
+  /** On a check of a post that is up: whether it carries the code, and the words the dev requires. */
+  let said: { hasCode?: boolean; hasPhrase?: boolean } = {}
   if (input.action === 'decline' || input.action === 'reopen') {
     await db.prepare('UPDATE room_applications SET status = ?, updated_at = ? WHERE room = ? AND wallet = ?').bind(input.action === 'decline' ? 'declined' : 'pending', now, address, applicant).run()
   } else if (input.action === 'check') {
@@ -762,6 +871,7 @@ async function review(request: Request, env: RoomsEnv, fetcher: typeof fetch, ad
       .bind(read.postState, read.postHandle, read.held, read.holdState, now, address, applicant)
       .run()
     ready = requirementsMet(room, read)
+    said = { ...(read.hasCode === undefined ? {} : { hasCode: read.hasCode }), ...(read.hasPhrase === undefined ? {} : { hasPhrase: read.hasPhrase }) }
   } else {
     return failure(400, "action must be 'check', 'decline' or 'reopen'.")
   }
@@ -773,7 +883,7 @@ async function review(request: Request, env: RoomsEnv, fetcher: typeof fetch, ad
   } catch {
     standing = null
   }
-  return json({ application: row ? toApplication(row, standing) : null, ...(ready === undefined ? {} : { ready }) })
+  return json({ application: row ? toApplication(row, standing) : null, ...(ready === undefined ? {} : { ready }), ...said })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -981,7 +1091,7 @@ export async function handleRooms(request: Request, env: RoomsEnv, fetcher: type
   if (api !== 'api' || rooms !== 'rooms' || extra !== undefined) return failure(404, 'Not found.')
 
   try {
-    if (first === undefined || first === '') return reading ? await list(env.DB) : await settings(request, env, fetcher)
+    if (first === undefined || first === '') return reading ? await list(env.DB, url) : await settings(request, env, fetcher)
     if (first === 'images' && second === undefined && posting) {
       const wallet = await sessionWallet(request, env.DB)
       return wallet ? await storePicture(request, env.DB, wallet, '') : signInFirst()

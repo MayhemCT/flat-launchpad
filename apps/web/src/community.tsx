@@ -1,13 +1,15 @@
 // Community: the leaderboards, the clans and a wallet's profile. Everything shown is read from this site's
 // Worker (apps/worker/src/social.ts and apps/worker/src/clans.ts). The boards, the list of clans, a clan's page
 // and a profile are public; a wallet's own clan, its invites and every change to them need the wallet signed in
-// (apps/web/src/session.ts). Nothing here loads a chain library: these pages send no transaction.
+// (apps/web/src/session.ts). These pages send no transaction. The boards and the clans load no chain library;
+// a profile reads what its wallet holds from BNB Chain, through apps/web/src/trade.ts, loaded when one is opened.
 //
 // Every name, tag and label a visitor typed is put on the page as a text node, and every link built from one
 // starts with "#", so nothing the API returns can become markup or an address outside this page.
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { Address } from "viem";
 import { AuthorName, loadDisplayName, saveDisplayName, shownClan, useDisplayName } from "./display-name";
-import { ago, short } from "./format";
+import { amount, ago, short } from "./format";
 import { displayNameError, shownName } from "./names";
 import { ApiError, api, signIn, useSignedIn } from "./session";
 import { connect, useWallet } from "./wallet";
@@ -113,6 +115,25 @@ interface RoomRef {
   symbol: string | null;
 }
 
+/** A Cook Room the wallet opened or holds a pass in. */
+interface ProfileRoom extends RoomRef {
+  launched: boolean;
+  /** The wallet opened this room. */
+  dev: boolean;
+  /** The hash of the room's picture when this site keeps it. */
+  picture: string | null;
+  /** The number of the pass the wallet holds there. Null for a dev without one. */
+  seat: number | null;
+  /** What one pass cost, in wei. */
+  seatPrice: bigint | null;
+  seats: number | null;
+  /** The token the room launched, and its PancakeSwap pair. */
+  token: string | null;
+  pair: string | null;
+  /** Unix seconds: when CallZ first listed the room. */
+  createdAt: number | null;
+}
+
 interface Profile {
   wallet: string;
   name: string | null;
@@ -120,7 +141,8 @@ interface Profile {
   points: number;
   byRoom: Array<RoomRef & { points: number }>;
   tags: Array<RoomRef & { label: string }>;
-  rooms: Array<RoomRef & { launched: boolean; dev: boolean }>;
+  /** Newest first. */
+  rooms: ProfileRoom[];
   calls: number;
   tokensCalled: number;
 }
@@ -139,7 +161,32 @@ const isSentInvite = (value: unknown): value is SentInvite => isFields(value) &&
 const isRoomRef = (value: Fields) => isWallet(value.room) && isOptionalText(value.name) && isOptionalText(value.symbol);
 const isRoomPoints = (value: unknown): value is Profile["byRoom"][number] => isFields(value) && isRoomRef(value) && isCount(value.points);
 const isRoomTag = (value: unknown): value is Profile["tags"][number] => isFields(value) && isRoomRef(value) && typeof value.label === "string" && value.label !== "";
-const isProfileRoom = (value: unknown): value is Profile["rooms"][number] => isFields(value) && isRoomRef(value) && typeof value.launched === "boolean" && typeof value.dev === "boolean";
+const PICTURE = /^[0-9a-f]{64}$/;
+const WEI = /^\d{1,78}$/;
+
+/**
+ * A room of a profile. What says which room it is and what the wallet is in it has to be there; a detail that
+ * is missing or not what it should be is left out, and whatever is worked out from it is not shown.
+ */
+function readProfileRoom(value: unknown): ProfileRoom[] {
+  if (!isFields(value) || !isRoomRef(value) || typeof value.launched !== "boolean" || typeof value.dev !== "boolean") return [];
+  return [
+    {
+      room: value.room as string,
+      name: value.name as string | null,
+      symbol: value.symbol as string | null,
+      launched: value.launched,
+      dev: value.dev,
+      picture: typeof value.picture === "string" && PICTURE.test(value.picture) ? value.picture : null,
+      seat: isCount(value.seat) ? value.seat : null,
+      seatPrice: typeof value.seatPrice === "string" && WEI.test(value.seatPrice) ? BigInt(value.seatPrice) : null,
+      seats: isCount(value.seats) ? value.seats : null,
+      token: isWallet(value.token) ? value.token.toLowerCase() : null,
+      pair: isWallet(value.pair) ? value.pair.toLowerCase() : null,
+      createdAt: isCount(value.createdAt) ? value.createdAt : null,
+    },
+  ];
+}
 
 const readSocial = (body: unknown): SocialRow[] | null => (isFields(body) ? listOf(body.board, isSocialRow) : null);
 const readCalls = (body: unknown): CallsRow[] | null => (isFields(body) ? listOf(body.board, isCallsRow) : null);
@@ -164,7 +211,7 @@ function readProfile(body: unknown): Profile | null {
   const clan = isFields(body.clan) && shownClan(body.clan.tag) !== null && typeof body.clan.name === "string" ? { tag: body.clan.tag as string, name: body.clan.name } : null;
   const byRoom = listOf(body.byRoom, isRoomPoints);
   const tags = listOf(body.tags, isRoomTag);
-  const rooms = listOf(body.rooms, isProfileRoom);
+  const rooms = Array.isArray(body.rooms) ? body.rooms.flatMap(readProfileRoom) : null;
   return byRoom && tags && rooms ? { wallet: body.wallet, name: body.name, clan, points: body.points, byRoom, tags, rooms, calls: body.calls, tokensCalled: body.tokensCalled } : null;
 }
 
@@ -595,7 +642,7 @@ function NoClan({ account, data, onMine }: { account: string; data: Mine; onMine
               <li key={invite.tag} data-testid="clan-invite">
                 <span className="clan-list-main">
                   <a className="board-link" href={clanHref(invite.tag)}><ClanName tag={invite.tag} name={invite.name} /></a>
-                  <span className="clan-list-sub">Invited by <AuthorName className="board-who" address={invite.invitedBy} name={invite.invitedByName} /> · {ago(invite.createdAt)}</span>
+                  <span className="clan-list-sub">Invited by <Who wallet={invite.invitedBy} name={invite.invitedByName} /> · {ago(invite.createdAt)}</span>
                 </span>
                 <span className="clan-list-actions">
                   <button type="button" className="button" data-testid="clan-join" disabled={working !== null} onClick={() => void answer("join", invite.tag)}>
@@ -723,7 +770,7 @@ function LeaveClan({ account, clan, members, onOpen, onLeft }: { account: string
       {others.length === 0 ? (
         <p data-testid="clan-leave-effect"><strong>You are the last member: this clan will be gone.</strong></p>
       ) : same(clan.founder, account) && heir ? (
-        <p data-testid="clan-leave-effect"><strong>You are the founder.</strong> The place passes to <AuthorName className="board-who" address={heir.wallet} name={heir.name} />.</p>
+        <p data-testid="clan-leave-effect"><strong>You are the founder.</strong> The place passes to <Who wallet={heir.wallet} name={heir.name} />.</p>
       ) : null}
       <div className="actions">
         <button type="button" className="button button-warn" data-testid="clan-leave-yes" disabled={working} onClick={() => void leave()}>{working ? "Leaving…" : "Yes, leave"}</button>
@@ -766,7 +813,7 @@ function InClan({ account, clan, data, onReload, onMine }: { account: string; cl
             {data.sent.map((invite) => (
               <li key={invite.wallet} data-testid="clan-sent-invite">
                 <span className="clan-list-main"><Who wallet={invite.wallet} name={invite.name} /></span>
-                <span className="clan-list-sub">Invited by {same(invite.invitedBy, account) ? "you" : short(invite.invitedBy)} · {ago(invite.createdAt)}</span>
+                <span className="clan-list-sub">Invited by {same(invite.invitedBy, account) ? "you" : <a className="board-link board-who" href={profileHref(invite.invitedBy)}>{short(invite.invitedBy)}</a>} · {ago(invite.createdAt)}</span>
               </li>
             ))}
           </ul>
@@ -1078,6 +1125,325 @@ function ProfileName({ account, inClan }: { account: string; inClan: boolean }) 
   );
 }
 
+// What a profile reads from BNB Chain. The chain library comes with apps/web/src/trade.ts, asked for here so
+// that the boards and the clans never load it.
+
+/** How often a profile reads the chain again. */
+const CHAIN_REFRESH_MS = 60_000;
+
+type Read<T> = { state: "loading" } | { state: "error" } | { state: "ready"; data: T };
+
+/** Reads `load` now and again every `refreshMs` while the page is in view, keeping the last good answer through a failed refresh. */
+function useRead<T>(load: () => Promise<T>, refreshMs: number): Read<T> {
+  const [result, setResult] = useState<Read<T>>({ state: "loading" });
+  useEffect(() => {
+    let live = true;
+    let turn = 0;
+    const run = () => {
+      const mine = ++turn;
+      load().then(
+        (data) => {
+          if (live && mine === turn) setResult({ state: "ready", data });
+        },
+        () => {
+          if (live && mine === turn) setResult((previous) => (previous.state === "ready" ? previous : { state: "error" }));
+        },
+      );
+    };
+    setResult({ state: "loading" });
+    run();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") run();
+    }, refreshMs);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [load, refreshMs]);
+  return result;
+}
+
+/** Control characters, zero-width and text-direction marks: never part of a label read from a contract. */
+const UNSEEN = /[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁦-⁩]/g;
+/** A token's own name or symbol as one short clean line. Null when it has none. */
+const label = (raw: string | null | undefined): string | null => {
+  const text = typeof raw === "string" ? [...raw.replace(UNSEEN, "").trim()].slice(0, 40).join("") : "";
+  return text === "" ? null : text;
+};
+
+/** An amount of BNB to six places, never rounded up. Something too small to show at six places is said to be so, not shown as nothing. */
+const bnbText = (wei: bigint): string => {
+  const text = amount(wei, 6);
+  return wei > 0n && text === "0" ? "<0.000001" : text;
+};
+/** A gain or a loss in BNB, with its sign. */
+const signedBnb = (wei: bigint): string => (wei === 0n ? "0 BNB" : `${wei < 0n ? "−" : "+"}${bnbText(wei < 0n ? -wei : wei)} BNB`);
+/** `change` as a percentage of `base`, to two places, never rounded up. Null when there is nothing to compare with. */
+function signedPercent(change: bigint, base: bigint): string | null {
+  if (base <= 0n) return null;
+  const hundredths = ((change < 0n ? -change : change) * 10_000n) / base;
+  const text = `${(hundredths / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${(hundredths % 100n).toString().padStart(2, "0")}%`;
+  return change === 0n || hundredths === 0n ? (change === 0n ? "0.00%" : `${change < 0n ? "−" : "+"}<0.01%`) : `${change < 0n ? "−" : "+"}${text}`;
+}
+const toneOf = (change: bigint): "good" | "warn" | undefined => (change > 0n ? "good" : change < 0n ? "warn" : undefined);
+
+/** A room's picture, or a drawn stand-in carrying the first letters of its symbol. */
+function RoomPicture({ picture, text }: { picture: string | null; text: string }) {
+  const [failed, setFailed] = useState(false);
+  const letters = [...text.trim()].slice(0, 3).join("").toUpperCase() || "?";
+  return (
+    <span className="profile-art">
+      {picture !== null && !failed ? <img src={`/api/rooms/image/${picture}`} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} /> : <span aria-hidden="true">{letters}</span>}
+    </span>
+  );
+}
+
+interface Holding {
+  token: string;
+  symbol: string | null;
+  name: string | null;
+  /** Null when the token did not say: the amount is then not shown. */
+  decimals: number | null;
+  balance: bigint;
+  /** BNB that selling the whole balance returns now, after the token's tax and the CallZ fee. Null when no pool could be read. */
+  worth: bigint | null;
+}
+
+interface Holdings {
+  bnb: bigint;
+  tokens: Holding[];
+}
+
+/**
+ * What `address` holds on BNB Chain of the tokens CallZ knows: the ones its mints launched, and `roomTokens`,
+ * the ones launched by the Cook Rooms the wallet is in. Each is priced the way the wallet menu prices a
+ * position (apps/web/src/positions.tsx): what selling all of it through PancakeSwap would return right now.
+ */
+async function readHoldings(address: string, roomTokens: readonly string[]): Promise<Holdings> {
+  const [{ callzTokens, client, heldTokens, loadMarket, quoteSell }, { erc20Abi }] = await Promise.all([import("./trade"), import("viem")]);
+  const account = address.toLowerCase() as Address;
+  const [bnb, launched] = await Promise.all([client.getBalance({ address: account }), callzTokens()]);
+  const candidates = [...new Set([...launched.map((token) => token.toLowerCase()), ...roomTokens])] as Address[];
+  const held = await heldTokens(account, candidates);
+  const tokens = await Promise.all(
+    held.map(async ({ token, balance }): Promise<Holding> => {
+      try {
+        const market = await loadMarket(token);
+        const quote = await quoteSell(market, balance).catch(() => null);
+        return { token, symbol: label(market.symbol), name: label(market.name), decimals: market.decimals, balance, worth: quote?.amountOut ?? null };
+      } catch {
+        // No pool with liquidity, or none that could be read: the balance is still shown, without a value.
+        const read = <T,>(functionName: "symbol" | "name" | "decimals") => client.readContract({ address: token, abi: erc20Abi, functionName }).catch(() => null) as Promise<T | null>;
+        const [symbol, name, decimals] = await Promise.all([read<string>("symbol"), read<string>("name"), read<number>("decimals")]);
+        return { token, symbol: label(symbol), name: label(name), decimals: typeof decimals === "number" ? decimals : null, balance, worth: null };
+      }
+    }),
+  );
+  // The most valuable first; the ones without a value after them.
+  tokens.sort((a, b) => (a.worth === null ? (b.worth === null ? 0 : 1) : b.worth === null ? -1 : b.worth > a.worth ? 1 : b.worth < a.worth ? -1 : 0));
+  return { bnb, tokens };
+}
+
+function ProfileHoldings({ address, rooms }: { address: string; rooms: ProfileRoom[] }) {
+  // The tokens of the launched rooms, as one text: the same rooms read again are the same thing to load.
+  const roomTokens = useMemo(() => [...new Set(rooms.flatMap((room) => (room.launched && room.token !== null ? [room.token] : [])))].sort().join(","), [rooms]);
+  const load = useCallback(() => readHoldings(address, roomTokens === "" ? [] : roomTokens.split(",")), [address, roomTokens]);
+  const result = useRead(load, CHAIN_REFRESH_MS);
+  /** What the room said its token is called, for a token that does not say itself. */
+  const known = new Map(rooms.flatMap((room) => (room.token !== null ? [[room.token, room] as const] : [])));
+  return (
+    <section className="profile-panel" data-testid="profile-holdings" aria-label="Holdings">
+      <h2>Holdings</h2>
+      <p className="clan-note">
+        BNB and the tokens launched on CallZ that this wallet holds on BNB Chain, not everything it owns. A value is what selling the whole
+        balance on PancakeSwap would return right now, after the token's tax and the trading fee.
+      </p>
+      {result.state === "loading" && <p className="clan-note" role="status" data-testid="profile-holdings-loading">Reading the balances from BNB Chain…</p>}
+      {result.state === "error" && <p className="clan-note" role="alert" data-testid="profile-holdings-error">BNB Chain could not be reached, so the holdings are not shown. Reload to try again.</p>}
+      {result.state === "ready" && (() => {
+        const { bnb, tokens } = result.data;
+        const priced = tokens.filter((token) => token.worth !== null);
+        const unpriced = tokens.length - priced.length;
+        const total = priced.reduce((sum, token) => sum + (token.worth ?? 0n), bnb);
+        return (
+          <>
+            <ul className="profile-rows" data-testid="profile-holdings-list">
+              <li className="profile-row" data-testid="profile-holding-bnb">
+                <span className="profile-row-main"><strong>BNB</strong></span>
+                <span className="profile-row-side num">{bnbText(bnb)} BNB</span>
+              </li>
+              {tokens.map((token) => {
+                const room = known.get(token.token);
+                const symbol = token.symbol ?? room?.symbol ?? short(token.token);
+                const name = token.name ?? room?.name ?? null;
+                return (
+                  <li key={token.token} className="profile-row" data-testid="profile-holding" data-token={token.token}>
+                    <a className="profile-row-main profile-row-link" href={`#/token/${token.token}`}>
+                      <strong>{symbol}</strong>
+                      {name !== null && name !== symbol && <span className="dim">{name}</span>}
+                    </a>
+                    <span className="profile-row-side num">
+                      <span>{token.decimals === null ? "Amount not readable" : amount(token.balance, 2, token.decimals)}</span>
+                      <span className="dim" data-testid="profile-holding-value">{token.worth === null ? "— (no pool read)" : `≈ ${bnbText(token.worth)} BNB`}</span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            {tokens.length === 0 && <p className="clan-note" data-testid="profile-holdings-empty">This wallet holds no token launched on CallZ.</p>}
+            <p className="profile-total" data-testid="profile-holdings-total">
+              <strong>Total</strong>
+              <span className="num">≈ {bnbText(total)} BNB</span>
+            </p>
+            {unpriced > 0 && (
+              <p className="clan-note" data-testid="profile-holdings-unpriced">
+                {unpriced === 1 ? "1 token has" : `${count(unpriced)} tokens have`} no value here, because no pool could be read, and {unpriced === 1 ? "is" : "are"} not in the total.
+              </p>
+            )}
+          </>
+        );
+      })()}
+    </section>
+  );
+}
+
+/** The room's pass share and its pool, as the chain has them. */
+const passAbi = [
+  { type: "function", name: "tokensPerSeat", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "token0", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "token1", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "getReserves", stateMutability: "view", inputs: [], outputs: [{ type: "uint112" }, { type: "uint112" }, { type: "uint32" }] },
+] as const;
+
+/**
+ * What one pass's share of the token is worth now, in wei, for each launched room: the tokens a pass claims
+ * (`tokensPerSeat()` on the room) at the price of the room's own PancakeSwap pool against BNB. Null for a room
+ * whose share or pool could not be read, or whose pair is not that token against BNB.
+ */
+async function readPassValues(rooms: ReadonlyArray<{ room: string; token: string; pair: string }>): Promise<Record<string, bigint | null>> {
+  if (rooms.length === 0) return {};
+  const { client, WBNB } = await import("./trade");
+  const results = await client.multicall({
+    allowFailure: true,
+    contracts: rooms.flatMap(({ room, pair }) => [
+      { address: room as Address, abi: passAbi, functionName: "tokensPerSeat" as const },
+      { address: pair as Address, abi: passAbi, functionName: "token0" as const },
+      { address: pair as Address, abi: passAbi, functionName: "token1" as const },
+      { address: pair as Address, abi: passAbi, functionName: "getReserves" as const },
+    ]),
+  });
+  const values: Record<string, bigint | null> = {};
+  rooms.forEach(({ room, token }, index) => {
+    values[room] = null;
+    const [share, token0, token1, pool] = results.slice(index * 4, index * 4 + 4);
+    if (share?.status !== "success" || token0?.status !== "success" || token1?.status !== "success" || pool?.status !== "success") return;
+    const perPass = share.result as bigint;
+    const first = (token0.result as string).toLowerCase();
+    const second = (token1.result as string).toLowerCase();
+    const [reserve0, reserve1] = pool.result as readonly [bigint, bigint, number];
+    const bnbSide = WBNB.toLowerCase();
+    const reserves = first === token && second === bnbSide ? { token: reserve0, bnb: reserve1 } : second === token && first === bnbSide ? { token: reserve1, bnb: reserve0 } : null;
+    if (reserves === null || reserves.token === 0n) return;
+    values[room] = (perPass * reserves.bnb) / reserves.token;
+  });
+  return values;
+}
+
+function ProfilePasses({ rooms }: { rooms: ProfileRoom[] }) {
+  const passes = rooms.filter((room) => room.seat !== null);
+  // The rooms whose pass can be valued, as one text: the same rooms read again are the same thing to load.
+  const pricedKey = useMemo(
+    () => rooms.flatMap((room) => (room.seat !== null && room.launched && room.token !== null && room.pair !== null ? [`${room.room.toLowerCase()}:${room.token}:${room.pair}`] : [])).join(","),
+    [rooms],
+  );
+  const load = useCallback(
+    () =>
+      readPassValues(
+        pricedKey === "" ? [] : pricedKey.split(",").map((entry) => {
+          const [room = "", token = "", pair = ""] = entry.split(":");
+          return { room, token, pair };
+        }),
+      ),
+    [pricedKey],
+  );
+  const result = useRead(load, CHAIN_REFRESH_MS);
+  const values = result.state === "ready" ? result.data : {};
+
+  let pricedCount = 0;
+  let totalCost = 0n;
+  let totalValue = 0n;
+  const rows = passes.map((room) => {
+    const value = room.launched ? values[room.room.toLowerCase()] ?? null : null;
+    if (room.seatPrice !== null && value !== null) {
+      pricedCount += 1;
+      totalCost += room.seatPrice;
+      totalValue += value;
+    }
+    return { room, value };
+  });
+  return (
+    <section className="profile-panel" data-testid="profile-passes" aria-label="Cook Room passes: cost and value now">
+      <h2>Cook Room passes: cost and value now <span className="dim">{passes.length}</span></h2>
+      <p className="clan-note">What each pass cost against what its share of the token is worth now. It does not know whether the wallet has sold.</p>
+      {passes.length === 0 ? (
+        <p className="clan-note" data-testid="profile-passes-empty">This wallet holds no Cook Room pass.</p>
+      ) : (
+        <>
+          {pricedKey !== "" && result.state === "loading" && <p className="clan-note" role="status" data-testid="profile-passes-loading">Reading the pools from BNB Chain…</p>}
+          {pricedKey !== "" && result.state === "error" && <p className="clan-note" role="alert" data-testid="profile-passes-error">BNB Chain could not be reached, so no value is shown. Reload to try again.</p>}
+          <ul className="profile-rows" data-testid="profile-passes-list">
+            {rows.map(({ room, value }) => {
+              const cost = room.seatPrice;
+              const change = cost !== null && value !== null ? value - cost : null;
+              const percent = change !== null && cost !== null ? signedPercent(change, cost) : null;
+              return (
+                <li key={room.room} className="profile-row profile-pass" data-testid="profile-pass" data-room={room.room.toLowerCase()}>
+                  <a className="profile-row-main profile-row-link" href={roomHref(room.room)}>
+                    <strong>{roomName(room)}</strong>
+                    {room.symbol && <span className="dim">{room.symbol}</span>}
+                    <span className="dim num">Pass #{room.seat}</span>
+                  </a>
+                  <dl className="profile-pass-facts">
+                    <div><dt>Cost</dt><dd className="num" data-testid="profile-pass-cost">{cost === null ? "—" : `${bnbText(cost)} BNB`}</dd></div>
+                    <div>
+                      <dt>Value now</dt>
+                      <dd className="num" data-testid="profile-pass-value">{!room.launched ? "Not launched" : value === null ? "—" : `${bnbText(value)} BNB`}</dd>
+                    </div>
+                    <div>
+                      <dt>Difference</dt>
+                      <dd className="num profile-gain" data-tone={change === null ? undefined : toneOf(change)} data-testid="profile-pass-change">
+                        {change === null ? "—" : `${signedBnb(change)}${percent === null ? "" : ` (${percent})`}`}
+                      </dd>
+                    </div>
+                  </dl>
+                </li>
+              );
+            })}
+            {pricedCount > 0 && (
+              <li className="profile-row profile-pass profile-pass-total" data-testid="profile-passes-total">
+                <span className="profile-row-main">
+                  <strong>Total</strong>
+                  <span className="dim">{pricedCount === passes.length ? plural(pricedCount, "pass", "passes") : `${count(pricedCount)} of ${plural(passes.length, "pass", "passes")}: the ones with a value`}</span>
+                </span>
+                <dl className="profile-pass-facts">
+                  <div><dt>Cost</dt><dd className="num">{bnbText(totalCost)} BNB</dd></div>
+                  <div><dt>Value now</dt><dd className="num">{bnbText(totalValue)} BNB</dd></div>
+                  <div>
+                    <dt>Difference</dt>
+                    <dd className="num profile-gain" data-tone={toneOf(totalValue - totalCost)}>
+                      {signedBnb(totalValue - totalCost)}{signedPercent(totalValue - totalCost, totalCost) === null ? "" : ` (${signedPercent(totalValue - totalCost, totalCost)})`}
+                    </dd>
+                  </div>
+                </dl>
+              </li>
+            )}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
 function ProfilePage({ address, account }: { address: string; account: string | null }) {
   const result = useLoad(`/api/profile/${address}`, readProfile, REFRESH_MS);
   const own = same(address, account);
@@ -1115,6 +1481,8 @@ function ProfilePage({ address, account }: { address: string; account: string | 
               <div><dt>Tokens called</dt><dd className="num">{count(data.tokensCalled)}</dd></div>
             </dl>
             {own && account !== null && <ProfileName account={account} inClan={data.clan !== null} />}
+            <ProfileHoldings address={address} rooms={data.rooms} />
+            <ProfilePasses rooms={data.rooms} />
             <div className="profile-grid">
               <section className="profile-panel" data-testid="profile-tags">
                 <h2>Projects <span className="dim">{data.tags.length}</span></h2>
@@ -1131,7 +1499,7 @@ function ProfilePage({ address, account }: { address: string; account: string | 
                 )}
               </section>
               <section className="profile-panel" data-testid="profile-points">
-                <h2>Points by room <span className="dim">{count(data.points)}</span></h2>
+                <h2>Points earned from Cook Rooms <span className="dim">{count(data.points)}</span></h2>
                 {data.byRoom.length === 0 ? (
                   <p className="clan-note">No points yet. A room's dev gives them to the room's members for what they contributed, at most 100 per member per room.</p>
                 ) : (
@@ -1159,9 +1527,13 @@ function ProfilePage({ address, account }: { address: string; account: string | 
                       <li key={room.room}>
                         <a className="card profile-card" data-testid="profile-room" href={roomHref(room.room)}>
                           <span className="card-head">
-                            <strong>{roomName(room)} {room.symbol && <span className="dim">{room.symbol}</span>}</strong>
+                            <span className="profile-room-name">
+                              <RoomPicture picture={room.picture} text={room.symbol || roomName(room)} />
+                              <strong>{roomName(room)} {room.symbol && <span className="dim">{room.symbol}</span>}</strong>
+                            </span>
                             <span className="profile-marks">
-                              <span className={`tag tag-${room.dev ? "gold" : "muted"}`}>{room.dev ? "Dev" : "Member"}</span>
+                              <span className={`tag tag-${room.dev ? "gold" : "muted"}`} data-testid="profile-room-role">{room.dev ? "Dev" : "Member"}</span>
+                              {room.seat !== null && <span className="tag tag-muted num" data-testid="profile-room-pass">Pass #{room.seat}</span>}
                               {room.launched && <span className="tag tag-good">Launched</span>}
                             </span>
                           </span>

@@ -78,10 +78,11 @@ WHERE p.wallet = ? GROUP BY p.room ORDER BY points DESC`,
     db.prepare('SELECT t.room, t.label, r.name, r.symbol FROM room_tags t JOIN rooms r ON r.address = t.room WHERE t.wallet = ? ORDER BY t.created_at DESC').bind(wallet),
     db
       .prepare(
-        `SELECT r.address, r.name, r.symbol, r.launched, 1 AS dev FROM rooms r WHERE r.creator = ?1
-UNION ALL
-SELECT r.address, r.name, r.symbol, r.launched, 0 AS dev FROM room_members m JOIN rooms r ON r.address = m.room WHERE m.wallet = ?1 AND r.creator != ?1
-ORDER BY dev DESC, name, address`,
+        `SELECT r.address, r.name, r.symbol, r.launched, r.image, r.seat_price, r.seats, r.token, r.pair, r.created_at,
+  CASE WHEN r.creator = ?1 THEN 1 ELSE 0 END AS dev,
+  (SELECT m.seat FROM room_members m WHERE m.room = r.address AND m.wallet = ?1) AS seat
+FROM rooms r WHERE r.creator = ?1 OR EXISTS (SELECT 1 FROM room_members m WHERE m.room = r.address AND m.wallet = ?1)
+ORDER BY r.created_at DESC, r.address`,
       )
       .bind(wallet),
     db.prepare("SELECT COUNT(*) AS calls, COUNT(DISTINCT token) AS tokens FROM callouts WHERE chain = 'bsc' AND status = 'approved' AND author = ?").bind(wallet),
@@ -95,7 +96,22 @@ ORDER BY dev DESC, name, address`,
     points: awards.reduce((sum, row) => sum + Number(row.points ?? 0), 0),
     byRoom: awards.map((row) => ({ room: row.room, name: row.name, symbol: row.symbol, points: row.points })),
     tags: (tags?.results ?? []).map((row) => ({ room: row.room, name: row.name, symbol: row.symbol, label: row.label })),
-    rooms: (rooms?.results ?? []).map((row) => ({ room: row.address, name: row.name, symbol: row.symbol, launched: row.launched === 1, dev: row.dev === 1 })),
+    // Newest first. `seat` is the pass the wallet holds there, null for a dev without one. What a pass cost
+    // (`seatPrice`), how many there were and where the token trades let the page work out what it is worth now.
+    rooms: (rooms?.results ?? []).map((row) => ({
+      room: row.address,
+      name: row.name,
+      symbol: row.symbol,
+      picture: typeof row.image === 'string' ? /^https:\/\/callz\.fun\/api\/rooms\/image\/([0-9a-f]{64})$/.exec(row.image)?.[1] ?? null : null,
+      launched: row.launched === 1,
+      dev: row.dev === 1,
+      seat: typeof row.seat === 'number' ? row.seat : null,
+      seatPrice: row.seat_price,
+      seats: row.seats,
+      token: text(row.token),
+      pair: text(row.pair),
+      createdAt: row.created_at,
+    })),
     calls: Number(calls?.results[0]?.calls ?? 0),
     tokensCalled: Number(calls?.results[0]?.tokens ?? 0),
   })

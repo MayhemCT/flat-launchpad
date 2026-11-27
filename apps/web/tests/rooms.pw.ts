@@ -331,5 +331,30 @@ test("a room: created, applied to, joined, talked in, a member removed, launched
   await expect(alice.page.getByTestId("profile-tags")).toContainText("Designer", { timeout: 30_000 });
   await expect(alice.page.getByTestId("profile-points")).toContainText("80");
 
+  // Her profile: what she holds of the launched token, and what her pass cost against what its share is worth now.
+  await expect(alice.page.locator(`[data-testid=profile-holding][data-token="${token.toLowerCase()}"]`)).toBeVisible({ timeout: 60_000 });
+  const passRow = alice.page.locator(`[data-testid=profile-pass][data-room="${room}"]`);
+  await expect(passRow.getByTestId("profile-pass-cost")).toContainText("0.05", { timeout: 60_000 });
+  await expect(passRow.getByTestId("profile-pass-value")).toContainText("BNB");
+
+  // ── The dev's own cooks at the top of Cook Rooms, the search, hot and latest, and the wallet menu ───────
+  await dev.page.goto("/#/rooms");
+  const cooks = dev.page.getByTestId("your-cooks");
+  await expect(cooks.locator(`[data-testid=room-card][data-room="${room}"]`)).toBeVisible({ timeout: 30_000 });
+  await expect(cooks.locator(`[data-testid=room-card][data-room="${room}"]`).getByTestId("room-card-role")).toHaveAttribute("data-role", "dev");
+  const list = dev.page.getByTestId("rooms-list");
+  await dev.page.getByTestId("rooms-search").fill(roomName.toLowerCase());
+  await expect(list.locator("[data-testid=room-card]")).toHaveCount(1, { timeout: 30_000 });
+  await expect(list.locator(`[data-testid=room-card][data-room="${room}"]`)).toBeVisible();
+  await dev.page.getByTestId("rooms-search").fill("no room is called this 9z9z");
+  await expect(dev.page.getByTestId("rooms-search-empty")).toBeVisible({ timeout: 30_000 });
+  await dev.page.getByTestId("rooms-search-empty-clear").click();
+  await dev.page.getByTestId("rooms-sort-hot").click();
+  // Passes were bought in this room within the day: it is the hottest, and marked so.
+  await expect(list.locator("[data-testid=room-card]").first()).toHaveAttribute("data-room", room, { timeout: 30_000 });
+  await expect(list.locator("[data-testid=room-card]").first().getByTestId("room-card-hot")).toBeVisible();
+  await dev.page.getByTestId("wallet").click();
+  await expect(dev.page.getByTestId("positions-cooks").getByTestId("positions-cook").first()).toContainText(roomName, { timeout: 30_000 });
+
   for (const { errors } of [dev, alice, bob, carol]) expect(errors).toEqual([]);
 });

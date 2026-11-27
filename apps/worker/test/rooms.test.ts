@@ -698,3 +698,155 @@ describe('points, tags, clans and the boards', () => {
     expect((await call('/api/profile/not-a-wallet', null)).status).toBe(400)
   })
 })
+
+describe('the list of rooms', () => {
+  /** Rooms written straight into the database, as the chain reading would have left them. */
+  function seeded() {
+    const context = setup()
+    const insert = context.sqlite.prepare(
+      `INSERT INTO rooms (address, creator, name, symbol, seat_price, seats, seated, sale_deadline, pool_share_bps, launch_fee_bps, created_at, synced_at)
+VALUES (?, ?, ?, ?, '1000', 4, 0, ?, 5000, 1000, ?, ?)`,
+    )
+    const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}`
+    const add = (n: number, name: string, symbol: string, creator: string, createdAt: number) => insert.run(address(n), creator, name, symbol, NOW + 86_400, createdAt, NOW)
+    return { ...context, add, address }
+  }
+  const DEV_A = '0x00000000000000000000000000000000000000aa'
+  const DEV_B = '0x00000000000000000000000000000000000000bb'
+
+  it('is newest first, a hundred to a page', async () => {
+    const { call, add, address } = seeded()
+    for (let n = 1; n <= 205; n++) add(n, `Room ${n}`, `R${n}`, DEV_A, NOW - 1000 + n)
+    const first = (await call('/api/rooms', null)).body
+    expect(first).toMatchObject({ sort: 'latest', page: 1, pageSize: 100, total: 205 })
+    expect(first.rooms).toHaveLength(100)
+    expect(first.rooms[0].address).toBe(address(205))
+    expect(first.rooms[99].address).toBe(address(106))
+    const third = (await call('/api/rooms?page=3', null)).body
+    expect(third.rooms.map((room: { address: string }) => room.address)).toEqual([5, 4, 3, 2, 1].map(address))
+    expect((await call('/api/rooms?page=4', null)).body.rooms).toEqual([])
+    for (const bad of ['0', '-1', '1.5', 'x', '1;DROP TABLE rooms']) expect((await call(`/api/rooms?page=${encodeURIComponent(bad)}`, null)).status).toBe(400)
+    expect((await call('/api/rooms?sort=best', null)).status).toBe(400)
+  })
+
+  it('finds rooms by name, symbol, address, dev and dev name, and takes nothing typed as a pattern or as SQL', async () => {
+    const { call, add, address, sqlite } = seeded()
+    add(1, 'Night Shift', 'NIGHT', DEV_A, NOW - 30)
+    add(2, 'Day 100% Shift', 'DAY', DEV_B, NOW - 20)
+    add(3, 'Under_score', 'USC', DEV_B, NOW - 10)
+    sqlite.prepare("INSERT INTO wallet_names (wallet, name, name_key, updated_at, signature) VALUES (?, 'Billy_Badass', 'billy_badass', ?, 'sig-name')").run(DEV_A, NOW)
+    const found = async (q: string) => ((await call(`/api/rooms?q=${encodeURIComponent(q)}`, null)).body.rooms as Array<{ address: string }>).map((room) => room.address)
+
+    expect(await found('shift')).toEqual([address(2), address(1)])
+    expect(await found('  NIGHT ')).toEqual([address(1)])
+    expect(await found('usc')).toEqual([address(3)])
+    expect(await found(address(2))).toEqual([address(2)])
+    expect(await found(DEV_B)).toEqual([address(3), address(2)])
+    expect(await found('billy')).toEqual([address(1)])
+    // A percent sign and an underscore are themselves, not "anything".
+    expect(await found('100%')).toEqual([address(2)])
+    expect(await found('%')).toEqual([address(2)])
+    expect(await found('r_s')).toEqual([address(3)])
+    // The dev of room 1 is named Billy_Badass.
+    expect(await found('_')).toEqual([address(3), address(1)])
+    expect(await found("' OR 1=1 --")).toEqual([])
+    expect(await found('"; DROP TABLE rooms; --')).toEqual([])
+    expect((await call('/api/rooms', null)).body.total).toBe(3)
+    expect((await call(`/api/rooms?q=${'x'.repeat(65)}`, null)).status).toBe(400)
+  })
+
+  it('puts the rooms with the most applications and passes of the last day first when asked for what is hot', async () => {
+    const { call, add, address, sqlite } = seeded()
+    add(1, 'Quiet', 'Q', DEV_A, NOW - 10)
+    add(2, 'Asked', 'A', DEV_A, NOW - 500)
+    add(3, 'Bought', 'B', DEV_A, NOW - 900)
+    add(4, 'Yesterday', 'Y', DEV_A, NOW - 950)
+    const apply = sqlite.prepare("INSERT INTO room_applications (room, wallet, status, created_at, updated_at) VALUES (?, ?, 'pending', ?, ?)")
+    const join = sqlite.prepare('INSERT INTO room_members (room, wallet, seat, joined_at, sync) VALUES (?, ?, ?, ?, ?)')
+    for (let n = 1; n <= 3; n++) apply.run(address(2), address(100 + n), NOW - 60, NOW - 60)
+    for (let n = 1; n <= 2; n++) join.run(address(3), address(200 + n), n, NOW - 60, NOW)
+    // More than a day ago: it no longer counts.
+    for (let n = 1; n <= 9; n++) apply.run(address(4), address(300 + n), NOW - 90_000, NOW - 90_000)
+
+    const hot = (await call('/api/rooms?sort=hot', null)).body
+    expect(hot.sort).toBe('hot')
+    expect(hot.rooms.map((room: { address: string; hot: number }) => [room.address, room.hot])).toEqual([
+      [address(3), 4],
+      [address(2), 3],
+      [address(1), 0],
+      [address(4), 0],
+    ])
+    expect((await call('/api/rooms', null)).body.rooms.map((room: { address: string }) => room.address)).toEqual([1, 2, 3, 4].map(address))
+  })
+
+  it('lists the rooms of one wallet, as their dev or as a member', async () => {
+    const { call, add, address, sqlite } = seeded()
+    add(1, 'Mine', 'M', DEV_A, NOW - 30)
+    add(2, 'Joined', 'J', DEV_B, NOW - 20)
+    add(3, 'Other', 'O', DEV_B, NOW - 10)
+    sqlite.prepare('INSERT INTO room_members (room, wallet, seat, joined_at, sync) VALUES (?, ?, 1, ?, ?)').run(address(2), DEV_A, NOW, NOW)
+    const mine = (await call(`/api/rooms?wallet=${DEV_A.toUpperCase().replace('0X', '0x')}`, null)).body
+    expect(mine.total).toBe(2)
+    expect(mine.rooms.map((room: { address: string; role: string }) => [room.address, room.role])).toEqual([
+      [address(2), 'member'],
+      [address(1), 'dev'],
+    ])
+    expect((await call('/api/rooms', null)).body.rooms[0].role).toBeUndefined()
+    expect((await call('/api/rooms?wallet=nope', null)).status).toBe(400)
+    // The profile carries the same rooms, newest first, with what is needed to value a pass.
+    expect((await call(`/api/profile/${DEV_A}`, null)).body.rooms).toEqual([
+      expect.objectContaining({ room: address(2), dev: false, seat: 1, seatPrice: '1000', seats: 4, token: null, pair: null }),
+      expect.objectContaining({ room: address(1), dev: true, seat: null }),
+    ])
+  })
+})
+
+describe('what the post has to say', () => {
+  it('reads what a post says out of the markup X returns', async () => {
+    const { postText } = await import('../src/rooms.js')
+    const html =
+      '<blockquote class="twitter-tweet"><p lang="en" dir="ltr">Cooking  <a href="https://x.com/search?q=%24NIGHT">$NIGHT</a> with <a href="https://x.com/callzfun">@callzfun</a><br>Tom &amp; Jerry&#39;s &#x1F525; CZ-ABC123</p>&mdash; someone (@someone) <a href="https://x.com/someone/status/1">May 1, 2026</a></blockquote>'
+    expect(postText(html)).toBe("cooking $night with @callzfun tom & jerry's \u{1F525} cz-abc123")
+    // What stands outside the post's own paragraph (the author line) is not what the post says.
+    expect(postText(html)).not.toContain('someone')
+  })
+
+  it('holds a post to the words the dev set, when applying and again at the check', async () => {
+    const { call, dev, state } = setup()
+    const settings = { room: ROOM, about: '', wantPost: true, postBrief: 'Tell people why.', postPhrase: '  Cooking $NIGHT   with @CallZFun ', wantRole: false, roleBrief: '' }
+    expect((await call('/api/rooms', dev, { ...settings, postPhrase: 'x'.repeat(121) })).status).toBe(400)
+    expect((await call('/api/rooms', dev, settings)).body.room).toMatchObject({ postBrief: 'Tell people why.', postPhrase: 'Cooking $NIGHT with @CallZFun' })
+
+    const applicant = newAccount()
+    const code = postCode(ROOM, applicant.address)
+    // The code alone is not enough any more.
+    state.posts.set(post('owl', '1'), { author: 'owl', text: `gm ${code}` })
+    const refused = await call(`/api/rooms/${ROOM}/application`, applicant, { postUrl: post('owl', '1') })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error).toContain('Cooking $NIGHT with @CallZFun')
+    expect(refused.body.error).not.toContain(code)
+    // The words without the code are somebody else's post.
+    state.posts.set(post('owl', '2'), { author: 'owl', text: 'Cooking $NIGHT with @callzfun' })
+    expect((await call(`/api/rooms/${ROOM}/application`, applicant, { postUrl: post('owl', '2') })).body.error).toContain(code)
+
+    // As X returns it: the cashtag and the mention are links, in other capitals, with a line break between.
+    state.posts.set(post('owl', '3'), {
+      author: 'owl',
+      text: `COOKING <a href="https://x.com/search?q=%24NIGHT">$NIGHT</a><br>with <a href="https://x.com/callzfun">@callzfun</a> ${code}`,
+    })
+    const applied = await call(`/api/rooms/${ROOM}/application`, applicant, { postUrl: post('owl', '3') })
+    expect(applied.body.application).toMatchObject({ postState: 'ok' })
+    expect((await call(`/api/rooms/${ROOM}/applications/${applicant.address}`, dev, { action: 'check' })).body).toMatchObject({ ready: true, hasCode: true, hasPhrase: true })
+
+    // The dev changes the words: the post no longer says what it must, and the check says which part.
+    await call('/api/rooms', dev, { ...settings, postPhrase: 'Cooking $NIGHT at dawn' })
+    expect((await call(`/api/rooms/${ROOM}/applications/${applicant.address}`, dev, { action: 'check' })).body).toMatchObject({
+      ready: false,
+      hasCode: true,
+      hasPhrase: false,
+      application: { postState: 'nocode' },
+    })
+    // With the requirement switched off, no words are kept.
+    expect((await call('/api/rooms', dev, { ...settings, wantPost: false })).body.room.postPhrase).toBe('')
+  })
+})
