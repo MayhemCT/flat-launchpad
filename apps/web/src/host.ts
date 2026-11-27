@@ -28,7 +28,7 @@ import {
   type WalletClient,
 } from "viem";
 import manifest from "@launcher-ui/manifest.json";
-import { FACTORY, NETWORK, PORTAL, TOKEN_IMPLEMENTATION, portalAbi } from "./config";
+import { EARLIER_FACTORIES, FACTORY, NETWORK, PORTAL, TOKEN_IMPLEMENTATION, portalAbi } from "./config";
 import { findVanitySalt } from "./salt";
 import { connect, getWallet, setPendingHash, switchChain } from "./wallet";
 
@@ -67,7 +67,7 @@ function readAbi(read: ReadDeclaration): Abi {
   ];
 }
 
-/** Whether the Portal recorded `launcher` as created by this package's factory. */
+/** Whether the Portal recorded `launcher` as created by this package's factory, or by an earlier one of ours. */
 export async function belongsToFactory(launcher: Address): Promise<boolean> {
   const record = await publicClient.readContract({
     address: PORTAL,
@@ -75,7 +75,8 @@ export async function belongsToFactory(launcher: Address): Promise<boolean> {
     functionName: "getLauncher",
     args: [launcher],
   });
-  return record.launcherFactory.toLowerCase() === FACTORY.toLowerCase();
+  const factory = record.launcherFactory.toLowerCase();
+  return [FACTORY, ...EARLIER_FACTORIES].some((known) => known.toLowerCase() === factory);
 }
 
 /**

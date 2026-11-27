@@ -45,14 +45,17 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
 
-  // On a fresh fork the factory does not exist: deploy it from the page, with one transaction.
+  // On a fresh fork the current factory does not exist: deploy it from the page, with one transaction. The mint
+  // made through the earlier factory on BNB Chain Testnet is listed before and after.
   await page.goto("/#/launch/testnet");
+  const earlier = page.locator("tr", { hasText: "CallZ Testnet Pass" });
+  await expect(earlier).toContainText("Launched", { timeout: 30_000 });
   const deployButton = page.getByRole("button", { name: "Deploy the factory" });
-  await expect(deployButton.or(page.getByText("No mints yet"))).toBeVisible({ timeout: 30_000 });
   if (await deployButton.isVisible()) {
     await deployButton.click();
-    await expect(page.getByText("No mints yet")).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByTestId("not-deployed")).toHaveCount(0, { timeout: 90_000 });
   }
+  await expect(earlier).toContainText("Launched");
 
   // Create: 0.5 tBNB per NFT, cap 2.5 tBNB, so five NFTs. 2.5 tBNB clears the Portal's floor at a 50% pool share.
   await page.goto("/#/create");
@@ -95,9 +98,14 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
 
   // The launchpad lists it.
   await page.goto("/#/launch/testnet");
-  await expect(page.getByText("Flow Test")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Launched")).toBeVisible();
-  // A mint whose cap is under the Portal's floor is flagged before anyone puts BNB into it.
+  // The newest mint comes first: a fork that has run this before lists the earlier runs under it.
+  await expect(page.locator("tr", { hasText: "Flow Test" }).first()).toContainText("Launched", { timeout: 30_000 });
+  // The earlier factory's mint still opens: its page reads it and offers nothing to claim twice.
+  await earlier.getByRole("link").click();
+  await expect(page).toHaveURL(/#\/launcher\/0x86a22874083777d066359d6ef3661c6d8f186e90$/);
+  await expect(page.getByText("16 / 16")).toBeVisible({ timeout: 30_000 });
+  // A mint whose cap is under the Portal's floor cannot be created: the contract refuses it, so the page finds
+  // that the transaction would revert and sends nothing to the wallet.
   await page.goto("/#/create");
   await page.locator("input[name=name]").fill("Too Small");
   await page.locator("input[name=symbol]").fill("SMALL");
@@ -106,10 +114,20 @@ test("create a Launcher, mint to the cap, launch and claim", async ({ page }) =>
   await page.getByRole("button", { name: "Review creation" }).click();
   await page.getByRole("button", { name: "Prepare transaction" }).click();
   await page.getByRole("button", { name: "Create Launcher" }).click({ timeout: 90_000 });
-  await expect(page.getByText("Confirmed")).toBeVisible({ timeout: 90_000 });
-  await page.getByRole("button", { name: "Open mint page" }).click();
-  await expect(page.getByTestId("floor-warning")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("floor-warning")).toContainText("cannot launch");
+  await expect(page.getByRole("alert")).toContainText("would revert", { timeout: 90_000 });
+  await expect(page.getByText("Confirmed")).toHaveCount(0);
+
+  // Nor can a mint whose token symbol Flap's anti-scam module flags, whatever its cap.
+  await page.goto("/#/create");
+  await page.locator("input[name=name]").fill("Flow Test Two");
+  await page.locator("input[name=symbol]").fill("USDT");
+  await page.locator("input[name=price]").fill("0.5");
+  await page.locator("input[name=cap]").fill("2.5");
+  await page.getByRole("button", { name: "Review creation" }).click();
+  await page.getByRole("button", { name: "Prepare transaction" }).click();
+  await page.getByRole("button", { name: "Create Launcher" }).click({ timeout: 90_000 });
+  await expect(page.getByRole("alert")).toContainText("would revert", { timeout: 90_000 });
+  await expect(page.getByText("Confirmed")).toHaveCount(0);
 
   expect(errors, "page errors").toEqual([]);
 });

@@ -10,8 +10,8 @@ import deployment from "../src/callz-deployment.json" with { type: "json" };
  *
  * The contracts are deployed on the fork with the very transactions the site's Deploy button sends. PancakeSwap,
  * the Flap token and the pages are the real ones; the fork's own unlocked account stands in for a browser
- * wallet. So that it can also review, the test makes it the vault's attester, acting as the guardian on the fork,
- * and the local API has to be told the same:
+ * wallet. So that it can also review, the test makes it the vault's attester on the fork, and the local API has
+ * to be told the same:
  *
  *   anvil --fork-url https://bsc-rpc.publicnode.com --port 8548
  *   npx wrangler d1 migrations apply raidpass-index --local
@@ -62,12 +62,12 @@ test.beforeAll(async () => {
     if ((await rpc<string>("eth_getCode", [contract.address, "latest"])) !== "0x") continue;
     await mined(await rpc<string>("eth_sendTransaction", [{ from: ACCOUNT, to: deployment.deployer, data: `${contract.salt}${contract.initCode.slice(2)}`, gas: "0x989680" }]));
   }
-  // The guardian (the team wallet) makes the fork's account the attester, so this test can review.
-  await rpc("anvil_impersonateAccount", [deployment.team]);
-  await rpc("anvil_setBalance", [deployment.team, "0xde0b6b3a7640000"]);
-  const data = encodeFunctionData({ abi: parseAbi(["function setAttester(address attester)"]), functionName: "setAttester", args: [ACCOUNT] });
-  await mined(await rpc<string>("eth_sendTransaction", [{ from: deployment.team, to: VAULT, data }]));
-  await rpc("anvil_stopImpersonatingAccount", [deployment.team]);
+  // The fork's account is made the attester, so this test can review. On a real chain the guardian schedules a
+  // new attester and it takes over two days later; a fork cannot wait two days without leaving the pages' own
+  // clock behind, so the vault's `attester` slot (slot 2) is written on the fork instead.
+  await rpc("anvil_setStorageAt", [VAULT, "0x2", `0x${ACCOUNT.slice(2).toLowerCase().padStart(64, "0")}`]);
+  const attester = await rpc<string>("eth_call", [{ to: VAULT, data: encodeFunctionData({ abi: parseAbi(["function attester() view returns (address)"]), functionName: "attester" }) }, "latest"]);
+  expect(attester.slice(-40)).toBe(ACCOUNT.slice(2).toLowerCase());
 });
 
 /** A minimal EIP-1193 provider that hands every request to the fork, which signs for its own account. */

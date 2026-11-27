@@ -40,6 +40,12 @@ export const NETWORKS: Record<number, Network> = {
 /** The launch UI package declares the chain and the factory it was written for. */
 export const CHAIN_ID: number = manifest.chainId;
 export const FACTORY = manifest.factoryAddress as Address;
+/**
+ * CallZ Launcher Factories from before the current one. A change to the Launcher's code moves the factory to a
+ * new address, and the mints created through an earlier factory stay where they are: they are still listed and
+ * can still be minted, claimed and refunded here. New mints are created through `FACTORY` only.
+ */
+export const EARLIER_FACTORIES: readonly Address[] = ["0x873040D38Bd73eF1cE7d8D814278605CF6b697b3"];
 export const NETWORK: Network = NETWORKS[CHAIN_ID] ?? NETWORKS[97]!;
 
 export const portalAbi = parseAbi([

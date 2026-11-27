@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatEther, type Address } from "viem";
 import { Launcher, LauncherConfig } from "@launcher-ui/Component";
 import i18n from "@launcher-ui/i18n.json";
-import { CHAIN_ID, FACTORY, NETWORK, factoryAbi, launcherSummaryAbi } from "./config";
+import { CHAIN_ID, EARLIER_FACTORIES, FACTORY, NETWORK, factoryAbi, launcherSummaryAbi } from "./config";
 import { formatMinimum, readFloorGuide, readLaunchability, type FloorGuide, type Launchability } from "./floor";
 import { short } from "./format";
 import { belongsToFactory, createHost, deployFactory, publicClient, readSnapshot, type Snapshot } from "./host";
@@ -31,20 +31,34 @@ interface LaunchRow {
   deadline: bigint;
 }
 
-type Launches = { state: "loading" } | { state: "not-deployed" } | { state: "error" } | { state: "ready"; rows: LaunchRow[] };
+/** `deployed` is whether the current factory has code. The rows are its mints and the earlier factories'. */
+type Launches = { state: "loading" } | { state: "error" } | { state: "ready"; deployed: boolean; rows: LaunchRow[] };
 
-/** CallZ mints, read straight from the factory's own list: current to the block, with no indexer in between. */
-async function loadLaunches(): Promise<Launches> {
-  const code = await publicClient.getCode({ address: FACTORY });
-  if (!code || code === "0x") return { state: "not-deployed" };
-  const count = Number(await publicClient.readContract({ address: FACTORY, abi: factoryAbi, functionName: "launcherCount" }));
+/** The newest 50 Launchers of one factory, newest first, or `null` when the factory has no code on this network. */
+async function launchersOf(factory: Address): Promise<Address[] | null> {
+  const code = await publicClient.getCode({ address: factory });
+  if (!code || code === "0x") return null;
+  const count = Number(await publicClient.readContract({ address: factory, abi: factoryAbi, functionName: "launcherCount" }));
   const newest = Array.from({ length: Math.min(count, 50) }, (_, index) => BigInt(count - 1 - index));
-  if (newest.length === 0) return { state: "ready", rows: [] };
+  if (newest.length === 0) return [];
+  return [
+    ...(await publicClient.multicall({
+      allowFailure: false,
+      contracts: newest.map((index) => ({ address: factory, abi: factoryAbi, functionName: "launchers" as const, args: [index] as const })),
+    })),
+  ];
+}
 
-  const addresses = await publicClient.multicall({
-    allowFailure: false,
-    contracts: newest.map((index) => ({ address: FACTORY, abi: factoryAbi, functionName: "launchers" as const, args: [index] as const })),
-  });
+/**
+ * CallZ mints, read straight from the factories' own lists: current to the block, with no indexer in between.
+ * The current factory's mints come first, then those of each earlier factory.
+ */
+async function loadLaunches(): Promise<Launches> {
+  const lists = await Promise.all([FACTORY, ...EARLIER_FACTORIES].map(launchersOf));
+  const deployed = lists[0] !== null;
+  const addresses = lists.flatMap((list) => list ?? []);
+  if (addresses.length === 0) return { state: "ready", deployed, rows: [] };
+
   const fields = ["tokenName", "tokenSymbol", "minted", "maxNFTs", "cap", "raised", "launched", "saleDeadline"] as const;
   const values = await publicClient.multicall({
     allowFailure: false,
@@ -52,6 +66,7 @@ async function loadLaunches(): Promise<Launches> {
   });
   return {
     state: "ready",
+    deployed,
     rows: addresses.map((address, row) => {
       const at = (column: number) => values[row * fields.length + column];
       return {
@@ -140,13 +155,23 @@ function MintList({ mobile }: { mobile: boolean }) {
 
   if (launches.state === "loading") return <p className="note" role="status">Reading CallZ mints from {NETWORK.label}…</p>;
   if (launches.state === "error") return <p className="note" role="alert">The mints could not be read from {NETWORK.label}. Reload to try again.</p>;
-  if (launches.state === "not-deployed") return <DeployFactory onDeployed={() => setReload((value) => value + 1)} />;
-  if (launches.rows.length === 0) return <p className="note">No mints yet. <a href="#/create">Create the first one.</a></p>;
+  // While the current factory has no code, one transaction deploys it. Mints of an earlier factory are listed
+  // under that note either way.
+  const deploy = launches.deployed ? null : <DeployFactory onDeployed={() => setReload((value) => value + 1)} />;
+  if (launches.rows.length === 0) return deploy ?? <p className="note">No mints yet. <a href="#/create">Create the first one.</a></p>;
+  return (
+    <>
+      {deploy}
+      <MintRows rows={launches.rows} mobile={mobile} />
+    </>
+  );
+}
 
+function MintRows({ rows, mobile }: { rows: LaunchRow[]; mobile: boolean }) {
   if (mobile) {
     return (
       <ul className="cards" data-testid="mint-cards">
-        {launches.rows.map((row) => {
+        {rows.map((row) => {
           const status = statusOf(row);
           return (
             <li key={row.address}>
@@ -171,7 +196,7 @@ function MintList({ mobile }: { mobile: boolean }) {
           <tr><th>Token</th><th>NFTs minted</th><th>Raised</th><th>Cap</th><th>Status</th><th>Launcher</th></tr>
         </thead>
         <tbody>
-          {launches.rows.map((row) => {
+          {rows.map((row) => {
             const status = statusOf(row);
             return (
               <tr key={row.address}>
