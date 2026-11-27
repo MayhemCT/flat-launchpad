@@ -783,6 +783,29 @@ function LeaveClan({ account, clan, members, onOpen, onLeft }: { account: string
 
 /** The signed-in wallet's clan: who is in it, inviting to it, the invites it has out, and leaving. */
 function InClan({ account, clan, data, onReload, onMine }: { account: string; clan: Clan; data: Mine; onReload(): void; onMine(next: Mine): void }) {
+  const leads = same(clan.founder, account);
+  /** The member the leader is about to remove: one at a time, behind a step that says what removing does. */
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+
+  const remove = async (member: Member) => {
+    if (working) return;
+    setWorking(true);
+    setOutcome(null);
+    try {
+      const next = await send(`/api/clans/${encodeURIComponent(clan.tag)}/kick`, { wallet: member.wallet }, readMine);
+      setRemoving(null);
+      setOutcome({ kind: "done", text: `Removed ${shownName(member.name) ?? short(member.wallet)} from the clan. You can invite them again.` });
+      onMine(next);
+    } catch (cause) {
+      // The API's own sentence: it says why this member could not be removed.
+      setOutcome({ kind: "error", text: said(cause, "The member could not be removed. Try again.") });
+    } finally {
+      setWorking(false);
+    }
+  };
+
   return (
     <>
       <div className="clan-block">
@@ -791,17 +814,48 @@ function InClan({ account, clan, data, onReload, onMine }: { account: string; cl
           <span className="clan-list-sub">{plural(clan.members, "member", "members")} · {plural(clan.points, "point", "points")}</span>
         </p>
         <ul className="clan-list" data-testid="my-clan-members">
-          {data.members.map((member) => (
-            <li key={member.wallet} data-testid="my-clan-member">
-              <span className="clan-list-main">
-                <Who wallet={member.wallet} name={member.name} clan={clan.tag} />
-                {same(member.wallet, clan.founder) && <span className="tag tag-gold">Founder</span>}
-                {same(member.wallet, account) && <span className="tag tag-muted">You</span>}
-              </span>
-              <span className="num">{plural(member.points, "point", "points")}</span>
-            </li>
-          ))}
+          {data.members.map((member) => {
+            const founder = same(member.wallet, clan.founder);
+            const confirming = removing !== null && same(member.wallet, removing);
+            return (
+              <li key={member.wallet} data-testid="my-clan-member" data-wallet={member.wallet.toLowerCase()} data-leader={founder}>
+                <span className="clan-list-main">
+                  <Who wallet={member.wallet} name={member.name} clan={clan.tag} />
+                  {founder && <span className="tag tag-gold" data-testid="clan-leader">Leader</span>}
+                  {same(member.wallet, account) && <span className="tag tag-muted">You</span>}
+                </span>
+                <span className="clan-list-actions clan-member-side">
+                  <span className="num">{plural(member.points, "point", "points")}</span>
+                  {leads && !founder && !confirming && (
+                    <button
+                      type="button"
+                      className="button button-warn clan-kick"
+                      data-testid="clan-kick"
+                      disabled={working}
+                      onClick={() => {
+                        setOutcome(null);
+                        setRemoving(member.wallet);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </span>
+                {leads && !founder && confirming && (
+                  <div className="clan-confirm clan-kick-confirm" data-testid="clan-kick-confirm" role="group" aria-label="Remove this member">
+                    <p><strong>Remove {shownName(member.name) ?? short(member.wallet)} from <span className="clan-tag">[{clan.tag}]</span> {clan.name}?</strong></p>
+                    <p>They leave the clan and its tag disappears from their name everywhere. You can invite them again.</p>
+                    <div className="actions">
+                      <button type="button" className="button button-warn" data-testid="clan-kick-yes" disabled={working} onClick={() => void remove(member)}>{working ? "Removing…" : "Yes, remove"}</button>
+                      <button type="button" className="button button-quiet" data-testid="clan-kick-no" disabled={working} onClick={() => setRemoving(null)}>Keep</button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
+        <OutcomeNote outcome={outcome} testId="clan-outcome" />
       </div>
       <div className="clan-block">
         <InviteForm tag={clan.tag} onInvited={onReload} />

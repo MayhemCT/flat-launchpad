@@ -5,6 +5,7 @@ import { handleChat } from './chat.js'
 import { handleClans } from './clans.js'
 import { handleImage, handleMeta } from './image.js'
 import { handleNames } from './names.js'
+import { handlePreview } from './preview.js'
 import { handleRooms, refreshRooms } from './rooms.js'
 import { handleSession } from './session.js'
 import { handleSocial } from './social.js'
@@ -106,6 +107,7 @@ export default {
     if (url.pathname === '/api/session') return handleSession(request, env)
     if (url.pathname === '/api/rooms' || url.pathname.startsWith('/api/rooms/')) return handleRooms(request, env)
     if (url.pathname === '/api/clans' || url.pathname.startsWith('/api/clans/')) return handleClans(request, env)
+    if (url.pathname === '/api/preview' || url.pathname.startsWith('/api/preview/')) return handlePreview(request, env, ctx)
     if (url.pathname.startsWith('/api/leaderboard/') || url.pathname.startsWith('/api/profile/')) return handleSocial(request, env)
     if (url.pathname.startsWith('/api/')) return handleApi(request, env.DB)
     return env.ASSETS.fetch(request)

@@ -56,6 +56,9 @@ function parseRoute(hash: string): Route {
   if (path === "/launched") return { name: "launched" };
   const room = /^\/room\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (room?.[1]) return { name: "room", address: room[1].toLowerCase() };
+  // A Cook Room's applicants, for its dev.
+  const applicants = /^\/room\/(0x[0-9a-fA-F]{40})\/applicants$/.exec(path);
+  if (applicants?.[1]) return { name: "room-applicants", address: applicants[1].toLowerCase() };
   if (path === "/leaderboard") return { name: "leaderboard" };
   if (path === "/clans") return { name: "clans" };
   const clan = /^\/clan\/([A-Za-z0-9]{2,5})$/.exec(path);
@@ -215,7 +218,7 @@ const NAV: ReadonlyArray<{ href: string; label: string; short?: string; wide?: b
   { href: "#/scope", label: "Memescope", short: "Scope", routes: ["scope", "launches"] },
   { href: "#/tokens", label: "Tokens", routes: ["tokens", "token"] },
   // Cook Rooms are how a token is launched here: a dev picks the members, they buy a pass each, the dev launches.
-  { href: "#/rooms", label: "Cook Rooms", short: "Cook", routes: ["rooms", "room-create", "room"] },
+  { href: "#/rooms", label: "Cook Rooms", short: "Cook", routes: ["rooms", "room-create", "room", "room-applicants"] },
   // The projects that launched: every Cook Room that filled up and went to PancakeSwap.
   { href: "#/launched", label: "Launches", routes: ["launched"] },
   { href: "#/leaderboard", label: "Leaderboard", short: "Top", routes: ["leaderboard", "clans", "clan", "profile"] },
@@ -375,7 +378,7 @@ export function App() {
             <PancakeSection route={route} />
           </Suspense>
         )}
-        {(route.name === "rooms" || route.name === "room-create" || route.name === "room" || route.name === "launched") && (
+        {(route.name === "rooms" || route.name === "room-create" || route.name === "room" || route.name === "room-applicants" || route.name === "launched") && (
           <Suspense fallback={<p className="note" role="status">Loading the Cook Rooms…</p>}>
             <RoomsSection route={route} mobile={mobile} />
           </Suspense>

@@ -213,6 +213,20 @@ test("a room: created, applied to, joined, talked in, a member removed, launched
     await expect(application(wallet)).toHaveAttribute("data-standing", "admitted", { timeout: 120_000 });
   }
 
+  // The dev's own page of applicants: found by wallet, and by nothing that is not there.
+  await dev.page.getByTestId("room-applicants-link").click();
+  const board = dev.page.getByTestId("applicants-page");
+  await expect(board.getByTestId("applicant-card")).toHaveCount(2, { timeout: 60_000 });
+  await board.getByTestId("applicants-search").fill(aliceAccount.slice(2, 12).toUpperCase());
+  await expect(board.getByTestId("applicant-card")).toHaveCount(1, { timeout: 15_000 });
+  await expect(board.getByTestId("applicant-card")).toHaveAttribute("data-wallet", aliceAccount);
+  // The website in her portfolio is a link there.
+  await expect(board.getByTestId("applicant-card").locator('a[href="https://example.com/alice"]')).toBeVisible();
+  await board.getByTestId("applicants-search").fill("nobody-by-this-name");
+  await expect(board.getByTestId("applicant-card")).toHaveCount(0, { timeout: 15_000 });
+  await dev.page.goto(`/#/room/${room}`);
+  await expect(dev.page.getByTestId("room-head")).toContainText(roomName, { timeout: 60_000 });
+
   // ── Each buys their pass; the pass shows the room's picture and what it cost ─────────────────────────────
   for (const member of [alice, bob]) {
     await expect(member.page.getByTestId("room-seat")).toHaveAttribute("data-state", "admitted", { timeout: 60_000 });
@@ -246,6 +260,13 @@ test("a room: created, applied to, joined, talked in, a member removed, launched
   const bobChat = bob.page.getByTestId("room-chat");
   await expect(bobChat.getByTestId("room-chat-message").filter({ hasText: "gm, read this" })).toBeVisible({ timeout: 30_000 });
   await expect(bobChat.getByTestId("room-chat-picture").first()).toBeVisible({ timeout: 30_000 });
+  // A website typed without "https://" is a link all the same, and the chat shows what is behind it.
+  await bob.page.waitForTimeout(1500);
+  await bobChat.getByTestId("room-chat-form").locator("input[type=text], textarea").first().fill("our site is example.com, have a look");
+  await bobChat.getByTestId("room-chat-send").click();
+  const bare = aliceChat.getByTestId("room-chat-message").filter({ hasText: "our site is" });
+  await expect(bare.locator('a[href="https://example.com"]').first()).toBeVisible({ timeout: 30_000 });
+  await expect(bare.getByTestId("link-preview")).toContainText("Example Domain", { timeout: 30_000 });
   // Carol is not in the room: no chat for her.
   await carol.page.goto(`/#/room/${room}`);
   await expect(carol.page.getByTestId("room-head")).toContainText(roomName, { timeout: 60_000 });

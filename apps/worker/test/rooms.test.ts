@@ -850,3 +850,93 @@ describe('what the post has to say', () => {
     expect((await call('/api/rooms', dev, { ...settings, wantPost: false })).body.room.postPhrase).toBe('')
   })
 })
+
+describe('a clan leader removing a member', () => {
+  const pack = async () => {
+    const context = setup()
+    const { call, dev } = context
+    await call('/api/rooms', dev, { room: ROOM, about: '', wantPost: false, postBrief: '', wantRole: false, roleBrief: '' })
+    const [founder, friend, third] = [newAccount(), newAccount(), newAccount()]
+    await call('/api/clans', founder, { name: 'Night Wolves', tag: 'wolf' })
+    for (const member of [friend, third]) {
+      expect((await call('/api/clans/WOLF/invites', founder, { wallet: member.address })).status).toBe(201)
+      expect((await call('/api/clans/WOLF/join', member, {})).body.clan).toMatchObject({ tag: 'WOLF' })
+    }
+    return { ...context, founder, friend, third }
+  }
+
+  it('takes the tag off the member everywhere, and leaves them in no clan', async () => {
+    const { call, seat, later, founder, friend, third } = await pack()
+    seat(friend)
+    later(31)
+    await call(`/api/rooms/${ROOM}/messages`, friend, { body: 'awoo' })
+    expect((await call(`/api/rooms/${ROOM}/messages`, friend)).body.messages[0]).toMatchObject({ authorClan: 'WOLF' })
+
+    const kicked = await call('/api/clans/WOLF/kick', founder, { wallet: friend.address })
+    expect(kicked.status).toBe(200)
+    // What `mine` answers for the leader: the clan without the member.
+    expect(kicked.body).toMatchObject({ wallet: founder.address.toLowerCase(), clan: { tag: 'WOLF', members: 2, founder: founder.address.toLowerCase() } })
+    expect(kicked.body.members.map((member: { wallet: string }) => member.wallet)).toEqual([founder.address.toLowerCase(), third.address.toLowerCase()])
+
+    expect((await call(`/api/rooms/${ROOM}/messages`, friend)).body.messages[0]).toMatchObject({ body: 'awoo', authorClan: null })
+    expect((await call(`/api/rooms/${ROOM}`, null)).body.members[0]).toMatchObject({ wallet: friend.address.toLowerCase(), clan: null })
+    expect((await call('/api/clans/mine', friend)).body).toMatchObject({ clan: null, members: [], invites: [] })
+    expect((await call('/api/clans/WOLF', null)).body.clan).toMatchObject({ members: 2 })
+    // Gone is gone: a second time there is nobody to remove.
+    expect((await call('/api/clans/WOLF/kick', founder, { wallet: friend.address })).status).toBe(404)
+  })
+
+  it('is for the leader alone', async () => {
+    const { call, founder, friend, third } = await pack()
+    const outsider = newAccount()
+    expect((await call('/api/clans/WOLF/kick', null, { wallet: third.address })).status).toBe(401)
+    expect((await call('/api/clans/WOLF/kick', friend, { wallet: third.address })).status).toBe(403)
+    // A member cannot remove the leader either.
+    expect((await call('/api/clans/WOLF/kick', friend, { wallet: founder.address })).status).toBe(403)
+    expect((await call('/api/clans/WOLF/kick', outsider, { wallet: third.address })).status).toBe(403)
+    expect((await call('/api/clans/WOLF', null)).body.clan).toMatchObject({ members: 3, founder: founder.address.toLowerCase() })
+  })
+
+  it('removes nobody but a member of that clan, and never the leader', async () => {
+    const { call, founder, friend } = await pack()
+    const rival = newAccount()
+    await call('/api/clans', rival, { name: 'Bears', tag: 'bear' })
+
+    const self = await call('/api/clans/WOLF/kick', founder, { wallet: founder.address })
+    expect(self.status).toBe(400)
+    expect(self.body.error).toContain('Leave')
+    for (const wallet of ['nope', '0x123', 7, null, "0x' OR 1=1 --"]) expect((await call('/api/clans/WOLF/kick', founder, { wallet })).status).toBe(400)
+    expect((await call('/api/clans/WOLF/kick', founder, {})).status).toBe(400)
+    expect((await call('/api/clans/NONE/kick', founder, { wallet: friend.address })).status).toBe(404)
+    // A wallet of another clan, a wallet of none, and another clan's member through one's own tag.
+    expect((await call('/api/clans/WOLF/kick', founder, { wallet: rival.address })).status).toBe(404)
+    expect((await call('/api/clans/WOLF/kick', founder, { wallet: newAccount().address })).status).toBe(404)
+    expect((await call('/api/clans/BEAR/kick', founder, { wallet: rival.address })).status).toBe(403)
+    expect((await call('/api/clans/BEAR', null)).body.clan).toMatchObject({ members: 1 })
+    expect((await call('/api/clans/WOLF', null)).body.clan).toMatchObject({ members: 3 })
+
+    // An invite that is only waiting is not a membership: it stays, and there is nobody to remove.
+    const invited = newAccount()
+    await call('/api/clans/WOLF/invites', founder, { wallet: invited.address })
+    expect((await call('/api/clans/WOLF/kick', founder, { wallet: invited.address })).status).toBe(404)
+    expect((await call('/api/clans/mine', invited)).body.invites).toHaveLength(1)
+  })
+
+  it('lets the removed wallet be invited again and come back', async () => {
+    const { call, sqlite, later, founder, friend, third } = await pack()
+    await call('/api/clans/WOLF/kick', founder, { wallet: friend.address.toUpperCase().replace('0X', '0x') })
+    expect((await call('/api/clans/mine', friend)).body.clan).toBeNull()
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM clan_invites WHERE wallet = ?').get(friend.address.toLowerCase())).toMatchObject({ n: 0 })
+    // Without a new invite there is no way back in.
+    expect((await call('/api/clans/WOLF/join', friend, {})).status).toBe(403)
+
+    later(5)
+    expect((await call('/api/clans/WOLF/invites', third, { wallet: friend.address })).status).toBe(201)
+    const back = await call('/api/clans/WOLF/join', friend, {})
+    expect(back.body).toMatchObject({ clan: { tag: 'WOLF', members: 3 }, invites: [] })
+    // When the leader leaves, the place passes on, and the new leader is the one who removes.
+    await call('/api/clans/leave', founder, {})
+    expect((await call('/api/clans/WOLF/kick', founder, { wallet: friend.address })).status).toBe(403)
+    expect((await call('/api/clans/WOLF/kick', third, { wallet: friend.address })).body.clan).toMatchObject({ founder: third.address.toLowerCase(), members: 1 })
+  })
+})

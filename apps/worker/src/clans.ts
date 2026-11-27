@@ -15,6 +15,11 @@
  *   POST /api/clans/<TAG>/decline         turn an invite down.
  *   POST /api/clans/leave                 leave. The clan stays while it has a member; with none it is gone.
  *
+ * The clan's leader (its founder, or whoever the place passed to when the founder left):
+ *   POST /api/clans/<TAG>/kick            { wallet } remove a member. The tag is gone from that wallet's name
+ *                                         everywhere at once: a tag is read from who is in the clan. The wallet
+ *                                         can be invited again.
+ *
  * Every value reaches the database as a bound parameter. A tag is 2 to 5 capital letters and digits and a name
  * is letters, digits and single spaces, so neither can carry anything but itself onto a page.
  */
@@ -246,6 +251,35 @@ async function leave(db: D1Database, wallet: string): Promise<Response> {
   return mine(db, wallet)
 }
 
+/** The leader removes a member. A leader does not remove themself: they leave, and the place passes on. */
+async function kick(request: Request, db: D1Database, wallet: string, tag: string): Promise<Response> {
+  const input = await readObject(request, 1024)
+  if (input instanceof Response) return input
+  if (typeof input.wallet !== 'string' || !ADDRESS.test(input.wallet)) return failure(400, 'wallet must be a 0x address.')
+  const removed = input.wallet.toLowerCase()
+  const clan = await db
+    .prepare('SELECT c.id, c.founder, EXISTS (SELECT 1 FROM clan_members m WHERE m.clan_id = c.id AND m.wallet = ?1) AS member FROM clans c WHERE c.tag = ?2')
+    .bind(removed, tag)
+    .first<Row>()
+  if (!clan) return failure(404, 'There is no such clan.')
+  if (clan.founder !== wallet) return failure(403, "Only the clan's leader can remove a member.")
+  if (removed === wallet) return failure(400, 'You lead this clan and cannot remove yourself. Leave it instead, and it passes to the member who has been in longest.')
+  if (clan.member !== 1) return failure(404, 'That wallet is not a member of this clan.')
+  const clanId = Number(clan.id)
+  // One transaction, and only while the caller still leads the clan and is not the one removed.
+  const [gone] = await db.batch<Row>([
+    db
+      .prepare('DELETE FROM clan_members WHERE wallet = ?1 AND clan_id = ?2 AND wallet != ?3 AND EXISTS (SELECT 1 FROM clans WHERE id = ?2 AND founder = ?3) RETURNING wallet')
+      .bind(removed, clanId, wallet),
+    // An invite to this clan in that wallet's hands goes with it; a new one is the leader's or a member's to give.
+    db
+      .prepare('DELETE FROM clan_invites WHERE wallet = ?1 AND clan_id = ?2 AND NOT EXISTS (SELECT 1 FROM clan_members WHERE wallet = ?1 AND clan_id = ?2)')
+      .bind(removed, clanId),
+  ])
+  if (gone?.results[0]?.wallet !== removed) return failure(404, 'That wallet is not a member of this clan.')
+  return mine(db, wallet)
+}
+
 /** Routes `/api/clans/...`. */
 export async function handleClans(request: Request, env: ClansEnv): Promise<Response> {
   const reading = request.method === 'GET' || request.method === 'HEAD'
@@ -272,10 +306,11 @@ export async function handleClans(request: Request, env: ClansEnv): Promise<Resp
     const tag = first.toUpperCase()
     if (!TAG.test(tag)) return failure(404, 'There is no such clan.')
     if (second === undefined) return reading ? await one(db, tag) : failure(405, 'Method not allowed.', { allow: 'GET, HEAD' })
-    if (!posting || (second !== 'invites' && second !== 'join' && second !== 'decline')) return failure(404, 'Not found.')
+    if (!posting || (second !== 'invites' && second !== 'join' && second !== 'decline' && second !== 'kick')) return failure(404, 'Not found.')
     const wallet = await sessionWallet(request, db)
     if (!wallet) return signInFirst()
     if (second === 'invites') return await invite(request, db, wallet, tag)
+    if (second === 'kick') return await kick(request, db, wallet, tag)
     return second === 'join' ? await join(db, wallet, tag) : await decline(db, wallet, tag)
   } catch (error) {
     console.error(JSON.stringify({ clansFailed: String(error).slice(0, 500) }))

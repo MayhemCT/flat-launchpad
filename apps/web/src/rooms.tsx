@@ -1,13 +1,13 @@
 // Rooms on BNB Chain mainnet. A room is a CallZRoom contract (contracts/src/callz/CallZRoom.sol): its dev lets
 // wallets in, each one buys a single pass at the room's flat price, and when every seat is taken the dev
-// launches the token into a PancakeSwap pool. Three pages: the list of rooms, the form that creates one, and a
-// room's own page with its members, its private chat and the dev's console.
+// launches the token into a PancakeSwap pool. The pages: the list of rooms, the form that creates one, a room's
+// own page with its members, its private chat and the dev's console, and the dev's page of applicants.
 //
 // Money and standing are read from the room's contract by this page, and every action that moves either is a
 // transaction the visitor's wallet signs. What the chain does not hold (the description, the applications, the
 // chat and its pictures, points and tags) is this site's API, /api/rooms (apps/worker/src/rooms.ts), asked
 // through the session in session.ts. Nothing a visitor typed is ever put on the page as anything but text.
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   BaseError,
@@ -32,6 +32,7 @@ import { bsc } from "viem/chains";
 import deployment from "./room-deployment.json";
 import { AuthorName } from "./display-name";
 import { ago, short } from "./format";
+import { LinkedText, LinkPreviews, PostPreview } from "./links";
 import { api, apiBlob, ApiError, signIn, useSignedIn } from "./session";
 import { SITES } from "./site";
 import { CALLZ_FACTORIES } from "./trade";
@@ -135,7 +136,12 @@ const tokenAbi = parseAbi([
 // VITE_BSC_RPC_URL points the pages at another endpoint: a private one, or a local fork in the tests.
 const client = createPublicClient({ chain: bsc, transport: http(import.meta.env.VITE_BSC_RPC_URL ?? SITE.rpcUrl), batch: { multicall: true } });
 
-export type RoomsRoute = { name: "rooms" } | { name: "room-create" } | { name: "launched" } | { name: "room"; address: string };
+export type RoomsRoute =
+  | { name: "rooms" }
+  | { name: "room-create" }
+  | { name: "launched" }
+  | { name: "room"; address: string }
+  | { name: "room-applicants"; address: string };
 
 const RISK = "These contracts are new and have not been audited. Use only what you can afford to lose.";
 
@@ -373,45 +379,6 @@ function useNow(everyMs: number): number {
     return () => window.clearInterval(timer);
   }, [everyMs]);
   return now;
-}
-
-/** Text with its http and https addresses made into links. Everything else stays the text it was. */
-const LINK = /https?:\/\/[^\s<>"'`]+/gi;
-
-function linkParts(text: string): Array<{ text: string; href: string | null }> {
-  const parts: Array<{ text: string; href: string | null }> = [];
-  let from = 0;
-  for (const match of text.matchAll(LINK)) {
-    // Punctuation that ends the sentence is not part of the address.
-    const found = match[0].replace(/[.,!?;:)\]}]+$/, "");
-    const start = match.index ?? 0;
-    let href: string | null = null;
-    try {
-      const url = new URL(found);
-      // An address carrying a user name ("https://bank.com@elsewhere") is how a link lies about where it goes.
-      if ((url.protocol === "http:" || url.protocol === "https:") && url.username === "" && url.password === "") href = url.href;
-    } catch {
-      href = null;
-    }
-    if (href === null) continue;
-    if (start > from) parts.push({ text: text.slice(from, start), href: null });
-    parts.push({ text: found, href });
-    from = start + found.length;
-  }
-  if (from < text.length) parts.push({ text: text.slice(from), href: null });
-  return parts;
-}
-
-function Linked({ text }: { text: string }) {
-  return (
-    <>
-      {linkParts(text).map((part, index) => (
-        <Fragment key={index}>
-          {part.href === null ? part.text : <a href={part.href} target="_blank" rel="noopener noreferrer nofollow">{part.text}</a>}
-        </Fragment>
-      ))}
-    </>
-  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1792,7 +1759,8 @@ interface RoomContext {
   reloadListing(): void;
 }
 
-function RoomPage({ address, mobile }: { address: string; mobile: boolean }) {
+/** A room read from BNB Chain and from the API, for the connected wallet: what the room's page and its applicants page both stand on. */
+function useRoom(address: string) {
   const room = address as Address;
   const base = `/api/rooms/${address.toLowerCase()}`;
   const wallet = useWallet();
@@ -1841,11 +1809,22 @@ function RoomPage({ address, mobile }: { address: string; mobile: boolean }) {
     setTick((value) => value + 1);
   }, [base, reloadChain, reloadListing, setListing]);
 
+  return { room, base, account, signedIn, tick, chain, listing, refresh, reloadListing };
+}
+
+/** What a room's page says while the room is not there to show. Null once it is. */
+function roomUnread(chain: Loaded<ChainRoom | null>, room: Address): ReactNode {
   if (chain.state === "loading") return <p className="note" role="status">Reading the room from BNB Chain…</p>;
   if (chain.state === "error") return <p className="note" role="alert">BNB Chain could not be reached. Reload to try again.</p>;
   if (!chain.data) {
     return <p className="note" role="alert" data-testid="unknown-room"><code>{short(room)}</code> is not a Cook Room made by the CallZ factory on BNB Chain. <a href="#/rooms">Back to the rooms.</a></p>;
   }
+  return null;
+}
+
+function RoomPage({ address, mobile }: { address: string; mobile: boolean }) {
+  const { room, base, account, signedIn, tick, chain, listing, refresh, reloadListing } = useRoom(address);
+  if (chain.state !== "ready" || !chain.data) return roomUnread(chain, room);
   return (
     <RoomView
       mobile={mobile}
@@ -1864,21 +1843,24 @@ function RoomPage({ address, mobile }: { address: string; mobile: boolean }) {
   );
 }
 
+/** An amount of the token a room requires, in words: the token's own answer first, the API's copy of it while the chain has not answered. */
+function useGateText(info: RoomInfo, detail: RoomDetail | null): (value: bigint) => string {
+  const token = useToken(info.gateToken !== ZERO ? info.gateToken : null);
+  const apiGate = detail?.room.gate ?? null;
+  const gateDecimals = token.state === "ready" ? token.decimals : typeof apiGate?.decimals === "number" ? apiGate.decimals : null;
+  const gateSymbol = (token.state === "ready" ? token.symbol : null) ?? (typeof apiGate?.symbol === "string" && apiGate.symbol ? apiGate.symbol : null) ?? short(info.gateToken);
+  return useCallback(
+    (value: bigint) => (gateDecimals === null ? `${value.toString()} base units of ${gateSymbol}` : `${units(value, gateDecimals)} ${gateSymbol}`),
+    [gateDecimals, gateSymbol],
+  );
+}
+
 function RoomView({ mobile, notListed, listingError, ...given }: Omit<RoomContext, "gateText"> & { mobile: boolean; notListed: boolean; listingError: string | null }) {
   const { room, data, detail, account, signedIn } = given;
   const { info, refundAvailable, mine } = data;
   const now = useNow(20_000);
   const gated = info.gateToken !== ZERO;
-  const token = useToken(gated ? info.gateToken : null);
-
-  // The token's own answer first; the API's copy of it while the chain has not answered.
-  const apiGate = detail?.room.gate ?? null;
-  const gateDecimals = token.state === "ready" ? token.decimals : typeof apiGate?.decimals === "number" ? apiGate.decimals : null;
-  const gateSymbol = (token.state === "ready" ? token.symbol : null) ?? (typeof apiGate?.symbol === "string" && apiGate.symbol ? apiGate.symbol : null) ?? short(info.gateToken);
-  const gateText = useCallback(
-    (value: bigint) => (gateDecimals === null ? `${value.toString()} base units of ${gateSymbol}` : `${units(value, gateDecimals)} ${gateSymbol}`),
-    [gateDecimals, gateSymbol],
-  );
+  const gateText = useGateText(info, detail);
   const context: RoomContext = { ...given, gateText };
 
   // The chain for money and standing, the API for text.
@@ -1920,7 +1902,7 @@ function RoomView({ mobile, notListed, listingError, ...given }: Omit<RoomContex
               <p className="trade-note dim">A CallZ room on BNB Chain. {standingLine}</p>
             </div>
           </header>
-          {detail && detail.room.about !== "" && <p className="token-description room-about" data-testid="room-about">{String(detail.room.about)}</p>}
+          {detail && detail.room.about !== "" && <p className="token-description room-about" data-testid="room-about"><LinkedText text={String(detail.room.about)} /></p>}
           {notListed && <p className="note" data-testid="room-not-listed">This room is on BNB Chain but not listed on CallZ yet, so its description, applications and chat are not here. What follows is read from the room's contract.</p>}
           {listingError && !detail && <p className="note" role="alert">{listingError}</p>}
 
@@ -1946,7 +1928,7 @@ function RoomView({ mobile, notListed, listingError, ...given }: Omit<RoomContex
               {detail?.room.wantPost && (
                 <li>
                   <strong>Make a post on X.</strong> Your application gives you a personal code to put in the post, and the site checks with X that the post is up and carries it.
-                  {detail.room.postBrief !== "" && <span className="room-brief">{String(detail.room.postBrief)}</span>}
+                  {detail.room.postBrief !== "" && <LinkedText className="room-brief" text={String(detail.room.postBrief)} />}
                   {typeof detail.room.postPhrase === "string" && detail.room.postPhrase !== "" && <span className="room-brief" data-testid="room-requirement-phrase">It must contain: {detail.room.postPhrase}</span>}
                 </li>
               )}
@@ -1959,7 +1941,7 @@ function RoomView({ mobile, notListed, listingError, ...given }: Omit<RoomContex
               {detail?.room.wantRole && (
                 <li>
                   <strong>Say your role and show your work.</strong> The dev reads it and decides.
-                  {detail.room.roleBrief !== "" && <span className="room-brief">{String(detail.room.roleBrief)}</span>}
+                  {detail.room.roleBrief !== "" && <LinkedText className="room-brief" text={String(detail.room.roleBrief)} />}
                 </li>
               )}
               {!gated && !detail?.room.wantPost && !detail?.room.wantRole && <li>{detail ? "Nothing but the dev's yes: ask to join, and the dev decides." : "The room's contract requires no token. Whatever else the dev asks for shows once the room is listed."}</li>}
@@ -2182,13 +2164,15 @@ function ApplicationPanel(context: RoomContext & { account: Address }) {
               {application.holdState !== null && <li data-state={application.holdState}>Holdings{heldBefore !== null ? ` (${gateText(heldBefore)} when read)` : ""}: {HOLD_WORDS[application.holdState] ?? application.holdState}</li>}
             </ul>
           )}
+          {application.postUrl !== null && POST_URL.test(application.postUrl) && <PostPreview url={application.postUrl} />}
+          {application.portfolio !== null && <LinkPreviews text={application.portfolio} limit={2} />}
         </div>
       )}
 
       {wantPost && (
         <div className="room-step-block">
           <p className="trade-note"><strong>1. Make a post on X</strong> that includes your personal code. The code ties the post to this wallet and this room.</p>
-          {detail && detail.room.postBrief !== "" && <p className="room-brief">{String(detail.room.postBrief)}</p>}
+          {detail && detail.room.postBrief !== "" && <p className="room-brief"><LinkedText text={String(detail.room.postBrief)} /></p>}
           {detail && typeof detail.room.postPhrase === "string" && detail.room.postPhrase !== "" && (
             <p className="trade-note" data-testid="room-post-phrase">The post must also contain these words: <code className="room-code">{detail.room.postPhrase}</code></p>
           )}
@@ -2211,7 +2195,7 @@ function ApplicationPanel(context: RoomContext & { account: Address }) {
       {wantRole && (
         <div className="room-step-block">
           <p className="trade-note"><strong>{wantPost ? "2. " : ""}Say what you would do in this project.</strong></p>
-          {detail && detail.room.roleBrief !== "" && <p className="room-brief">{String(detail.room.roleBrief)}</p>}
+          {detail && detail.room.roleBrief !== "" && <p className="room-brief"><LinkedText text={String(detail.room.roleBrief)} /></p>}
           <Field label="Your role"><input name="role" value={role} onChange={(event) => setRole(event.target.value)} maxLength={MAX_ROLE_LENGTH} placeholder="Designer, community lead, developer…" autoComplete="off" /></Field>
           <label className="field">
             <span className="stat-label">Portfolio</span>
@@ -2547,7 +2531,8 @@ function RoomChat({ base, me }: { base: string; me: string }) {
                   <a className="room-profile room-profile-inline" href={`#/u/${message.author}`}><AuthorName className="chat-author" address={message.author} name={message.authorName} clan={message.authorClan} /></a>
                   <time className="chat-time" dateTime={new Date(message.createdAt * 1000).toISOString()}>{ago(message.createdAt, now)}</time>
                 </span>
-                {message.body !== "" && <span className="chat-body"><Linked text={message.body} /></span>}
+                {message.body !== "" && <LinkedText className="chat-body" text={message.body} />}
+                {message.body !== "" && <LinkPreviews text={message.body} limit={1} onReady={follow} />}
                 {typeof message.picture === "string" && HASH.test(message.picture) && <ChatPicture hash={message.picture} load={loadPicture} onOpen={setOpened} onReady={follow} />}
               </li>
             ))}
@@ -2684,6 +2669,8 @@ function Launch(context: RoomContext & { ready: boolean }) {
   );
 }
 
+// ── Applicants ───────────────────────────────────────────────────────────────
+
 /** How an applicant stands in the room, by the room's own contract as the API read it. */
 function standingWords(standing: ApiStanding | null): { key: string; text: string } {
   if (!standing) return { key: "unread", text: "standing not read" };
@@ -2693,8 +2680,47 @@ function standingWords(standing: ApiStanding | null): { key: string; text: strin
   return { key: "waiting", text: "waiting" };
 }
 
-function Applications(context: RoomContext & { ready: boolean; open: boolean }) {
-  const { room, base, data, detail, account, gateText, tick, ready, open, refresh } = context;
+/** Where an application is, as the dev sorts them: each one is in exactly one of these. */
+type ApplicantKind = "waiting" | "admitted" | "member" | "declined" | "barred";
+
+function kindOf(application: Application): ApplicantKind {
+  const standing = application.standing;
+  if (standing?.banned) return "barred";
+  if (standing && standing.seat > 0) return "member";
+  if (standing?.admitted) return "admitted";
+  return application.status === "pending" ? "waiting" : "declined";
+}
+
+type ApplicantCounts = Record<ApplicantKind, number>;
+
+function countKinds(applications: Application[]): ApplicantCounts {
+  const counts: ApplicantCounts = { waiting: 0, admitted: 0, member: 0, declined: 0, barred: 0 };
+  for (const application of applications) counts[kindOf(application)]++;
+  return counts;
+}
+
+/** Newest application first; two made in the same second keep one order. */
+const newestFirst = (a: Application, b: Application): number => b.createdAt - a.createdAt || a.wallet.localeCompare(b.wallet);
+
+function ApplicantTally({ counts, testId }: { counts: ApplicantCounts; testId: string }) {
+  return (
+    <dl className="applicant-counts" data-testid={testId}>
+      <div data-kind="waiting"><dt>Waiting</dt><dd className="num">{counts.waiting}</dd></div>
+      <div data-kind="admitted"><dt>Let in</dt><dd className="num">{counts.admitted}</dd></div>
+      <div data-kind="member"><dt>Members</dt><dd className="num">{counts.member}</dd></div>
+      <div data-kind="declined"><dt>Declined</dt><dd className="num">{counts.declined}</dd></div>
+    </dl>
+  );
+}
+
+type ApplicantNote = { kind: "done" | "error"; text: string; openPost?: boolean };
+
+/**
+ * A room's applications and everything the dev does with one: reading its requirements again, letting the
+ * wallet in, declining, reopening, taking an invite back. The dev console and the applicants page both stand on it.
+ */
+function useApplicantReview(context: RoomContext) {
+  const { room, base, data, detail, account, gateText, tick, refresh } = context;
   const { info } = data;
   const gated = info.gateToken !== ZERO;
   const wantPost = detail?.room.wantPost === true;
@@ -2702,22 +2728,24 @@ function Applications(context: RoomContext & { ready: boolean; open: boolean }) 
   const { tx, act, working } = useRoomAction(room, account, refresh);
   /** The applicant the API is being asked about. */
   const [busy, setBusy] = useState<string | null>(null);
-  const [notes, setNotes] = useState<Record<string, { kind: "done" | "error"; text: string; openPost?: boolean }>>({});
+  /** The applicant the last transaction was for. */
+  const [acting, setActing] = useState<string | null>(null);
+  const [notes, setNotes] = useState<Record<string, ApplicantNote>>({});
   /** Applicants whose post the dev says they opened themselves, when X could not be asked. */
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
-  const now = useNow(30_000);
   const applications = list.state === "ready" ? list.data.applications : [];
 
   const replace = (fresh: Application) => {
     if (list.state === "ready") list.set({ applications: list.data.applications.map((entry) => (entry.wallet === fresh.wallet ? fresh : entry)) });
   };
-  const say = (wallet: string, note: { kind: "done" | "error"; text: string; openPost?: boolean } | null) =>
+  const say = (wallet: string, note: ApplicantNote | null) =>
     setNotes((previous) => {
       const next = { ...previous };
       if (note) next[wallet] = note;
       else delete next[wallet];
       return next;
     });
+  const confirm = (wallet: string, value: boolean) => setConfirmed((previous) => ({ ...previous, [wallet]: value }));
 
   /** Which of the room's requirements `application` does not meet, by what was just read. */
   const unmet = (application: Application): string[] => {
@@ -2772,11 +2800,18 @@ function Applications(context: RoomContext & { ready: boolean; open: boolean }) 
         return;
       }
     }
+    setActing(wallet);
     const done = await act("Letting the wallet in", encodeFunctionData({ abi: roomAbi, functionName: "admit", args: [[wallet as Address]] }));
     if (done) {
       say(wallet, { kind: "done", text: "Let in. This wallet can now buy its pass." });
-      setConfirmed((previous) => ({ ...previous, [wallet]: false }));
+      confirm(wallet, false);
     }
+  };
+
+  const revoke = async (wallet: string) => {
+    say(wallet, null);
+    setActing(wallet);
+    await act("Taking the invite back", encodeFunctionData({ abi: roomAbi, functionName: "revoke", args: [[wallet as Address]] }));
   };
 
   const decide = async (wallet: string, action: "decline" | "reopen") => {
@@ -2784,87 +2819,309 @@ function Applications(context: RoomContext & { ready: boolean; open: boolean }) 
     if (read) say(wallet, { kind: "done", text: action === "decline" ? "Declined. The applicant cannot apply again unless you reopen it." : "Reopened." });
   };
 
+  return { list, applications, tx, working, busy, acting, notes, confirmed, confirm, check, letIn, revoke, decide };
+}
+
+type ApplicantReview = ReturnType<typeof useApplicantReview>;
+
+/**
+ * One application, with what was handed in and what the dev can do with it. `full` is the applicants page:
+ * the post and the portfolio's links are shown as what they lead to. The dev console shows the same card, shorter.
+ */
+function ApplicantCard({ context, review, application, now, ready, open, full }: { context: RoomContext; review: ApplicantReview; application: Application; now: number; ready: boolean; open: boolean; full: boolean }) {
+  const { data, detail, gateText } = context;
+  const { info } = data;
+  const { busy, working, notes, confirmed, acting } = review;
+  const gated = info.gateToken !== ZERO;
+  const wantPost = detail?.room.wantPost === true;
+  const wallet = String(application.wallet).toLowerCase();
+  const standing = standingWords(application.standing);
+  const kind = kindOf(application);
+  const note = notes[wallet];
+  const held = toBig(application.held);
+  const post = application.postUrl !== null && POST_URL.test(application.postUrl) ? application.postUrl : null;
+  const pending = application.status === "pending";
+  const waiting = standing.key === "waiting" || standing.key === "unread";
+  const idle = busy === null && !working;
+  const mine = acting === wallet;
+  const applied = new Date(application.createdAt * 1000);
+  return (
+    <li
+      className={full ? "room-app applicant-card" : "room-app"}
+      data-testid={full ? "applicant-card" : "room-application"}
+      data-wallet={wallet}
+      // On the applicants page: where the application is. In the console, as before: the application's own status.
+      data-status={full ? kind : application.status}
+      data-standing={standing.key}
+      data-application={application.status}
+      tabIndex={full ? 0 : undefined}
+      aria-label={full ? `Application from ${short(wallet)}, ${standing.text}${pending ? "" : ", declined"}` : undefined}
+    >
+      <div className="room-app-head">
+        <a className="room-profile" href={`#/u/${wallet}`}><AuthorName className="room-author" address={wallet} name={application.name} clan={application.clan} /></a>
+        <span className={`tag tag-${standing.key === "member" ? "good" : standing.key === "admitted" ? "gold" : "muted"}`} data-testid="room-application-standing">{standing.text}</span>
+        {!pending && <span className="tag tag-muted">declined</span>}
+        <time className="dim room-app-time" data-testid="room-application-time" dateTime={applied.toISOString()} title={applied.toLocaleString()}>applied {ago(application.createdAt, now)}</time>
+      </div>
+      <dl className="trade-quote room-app-facts">
+        {(wantPost || application.postUrl !== null) && (
+          <div>
+            <dt>Post on X</dt>
+            <dd data-state={application.postState ?? undefined}>
+              {post === null ? (application.postUrl ?? "None handed in.") : full ? <PostPreview url={post} /> : <a href={post} target="_blank" rel="noopener noreferrer nofollow">{post} ↗</a>}{" "}
+              {application.postState !== null && <span className="dim room-app-state" data-testid="room-application-post-state" data-state={application.postState}>{POST_WORDS[application.postState] ?? application.postState}</span>}
+            </dd>
+          </div>
+        )}
+        {gated && (
+          <div>
+            <dt>Holdings</dt>
+            <dd data-state={application.holdState ?? undefined}>
+              {held !== null ? `Holds ${gateText(held)}, needs ${gateText(info.gateAmount)}.` : `Needs ${gateText(info.gateAmount)}.`}{" "}
+              {application.holdState !== null && <span className="dim room-app-state" data-testid="room-application-hold-state" data-state={application.holdState}>{HOLD_WORDS[application.holdState] ?? application.holdState}</span>}
+            </dd>
+          </div>
+        )}
+        {application.role !== null && <div><dt>Role</dt><dd data-testid="room-application-role">{application.role}</dd></div>}
+        {application.portfolio !== null && (
+          <div>
+            <dt>Portfolio</dt>
+            <dd data-testid="room-application-portfolio">
+              <LinkedText className="room-app-text" text={application.portfolio} />
+              {full && <LinkPreviews text={application.portfolio} limit={2} />}
+            </dd>
+          </div>
+        )}
+        {typeof application.checkedAt === "number" && application.checkedAt > 0 && <div><dt>Last checked</dt><dd>{ago(application.checkedAt, now)}</dd></div>}
+      </dl>
+      {note?.openPost && post !== null && (
+        <div className="room-app-confirm" data-testid="room-application-open-post">
+          <a className="button button-quiet" href={post} target="_blank" rel="noopener noreferrer nofollow">Open the post ↗</a>
+          <label className="room-toggle">
+            <input type="checkbox" className="room-check" data-testid="room-application-confirm-post" checked={confirmed[wallet] === true} onChange={(event) => review.confirm(wallet, event.target.checked)} />
+            <span>I opened the post and it is still up</span>
+          </label>
+        </div>
+      )}
+      <div className="actions room-app-actions">
+        <button type="button" className="button button-quiet" data-testid="room-application-check" disabled={!idle} onClick={() => void review.check(wallet)}>{busy === wallet ? "Checking…" : "Check now"}</button>
+        {pending && waiting && open && (
+          <button type="button" className="button" data-testid="room-application-admit" disabled={!idle || !ready || (note?.openPost === true && confirmed[wallet] !== true)} onClick={() => void review.letIn(wallet)}>{mine && working ? "Letting in…" : "Let in"}</button>
+        )}
+        {standing.key === "admitted" && (
+          <button type="button" className="button button-quiet" data-testid="room-application-revoke" disabled={!idle || !ready} onClick={() => void review.revoke(wallet)}>{mine && working ? "Taking it back…" : "Take the invite back"}</button>
+        )}
+        {pending && standing.key !== "member" && <button type="button" className="button button-warn" data-testid="room-application-decline" disabled={!idle} onClick={() => void review.decide(wallet, "decline")}>Decline</button>}
+        {!pending && <button type="button" className="button button-quiet" data-testid="room-application-reopen" disabled={!idle} onClick={() => void review.decide(wallet, "reopen")}>Reopen</button>}
+      </div>
+      {standing.key === "barred" && <p className="trade-foot dim">This wallet is barred from the room. Lift the bar in the dev console before letting it in.</p>}
+      {mine && <TxNote tx={review.tx} />}
+      {note && <p className={`trade-outcome trade-${note.kind}`} role={note.kind === "error" ? "alert" : "status"} data-testid="room-application-note">{note.text}</p>}
+    </li>
+  );
+}
+
+/** How many waiting applicants the dev console shows itself. The rest are on the applicants page. */
+const CONSOLE_APPLICANTS = 3;
+
+/** In the dev console: how many applications there are of each kind, the way to the applicants page, and the newest few still waiting. */
+function Applications(context: RoomContext & { ready: boolean; open: boolean }) {
+  const { room, data, ready, open } = context;
+  const { info } = data;
+  const gated = info.gateToken !== ZERO;
+  const review = useApplicantReview(context);
+  const { list, applications, notes, acting } = review;
+  const now = useNow(30_000);
+  const counts = useMemo(() => countKinds(applications), [applications]);
+  const shown = useMemo(() => {
+    const newest = [...applications].sort(newestFirst);
+    const first = new Set(newest.filter((application) => kindOf(application) === "waiting").slice(0, CONSOLE_APPLICANTS).map((application) => application.wallet.toLowerCase()));
+    // An applicant the dev has just acted on stays where it was, with what came of it.
+    return newest.filter((application) => {
+      const wallet = application.wallet.toLowerCase();
+      return first.has(wallet) || notes[wallet] !== undefined || acting === wallet;
+    });
+  }, [applications, notes, acting]);
+  const actingShown = acting !== null && shown.some((application) => application.wallet.toLowerCase() === acting);
+
   return (
     <section className="trade-panel room-panel" data-testid="room-applications">
       <h2>Applications {list.state === "ready" && <span className="dim">{applications.length}</span>}</h2>
       {list.state === "loading" && <p className="trade-note" role="status">Loading the applications…</p>}
       {list.state === "error" && <p className="trade-note" role="alert">{list.error.message}</p>}
       {list.state === "ready" && applications.length === 0 && <p className="trade-note dim">Nobody has applied yet.</p>}
+      {list.state === "ready" && applications.length > 0 && <ApplicantTally counts={counts} testId="room-applications-counts" />}
+      <div className="actions">
+        <a className="button" href={`#/room/${room.toLowerCase()}/applicants`} data-testid="room-applicants-link">Review applicants</a>
+      </div>
       {!open && applications.length > 0 && <p className="trade-note">{info.launched ? "The room has launched" : "The deadline has passed"}, so nobody else can be let in.</p>}
-      <TxNote tx={tx} />
-      {applications.length > 0 && (
+      {!actingShown && <TxNote tx={review.tx} />}
+      {shown.length > 0 && (
         <ol className="room-apps">
-          {applications.map((application) => {
-            const wallet = String(application.wallet).toLowerCase();
-            const standing = standingWords(application.standing);
-            const note = notes[wallet];
-            const held = toBig(application.held);
-            const post = application.postUrl !== null && POST_URL.test(application.postUrl) ? application.postUrl : null;
-            const pending = application.status === "pending";
-            const waiting = standing.key === "waiting" || standing.key === "unread";
-            const idle = busy === null && !working;
-            return (
-              <li key={wallet} className="room-app" data-testid="room-application" data-wallet={wallet} data-status={application.status} data-standing={standing.key}>
-                <div className="room-app-head">
-                  <a className="room-profile" href={`#/u/${wallet}`}><AuthorName className="room-author" address={wallet} name={application.name} clan={application.clan} /></a>
-                  <span className={`tag tag-${standing.key === "member" ? "good" : standing.key === "admitted" ? "gold" : "muted"}`} data-testid="room-application-standing">{standing.text}</span>
-                  {!pending && <span className="tag tag-muted">declined</span>}
-                  <span className="dim room-app-time">applied {ago(application.createdAt, now)}</span>
-                </div>
-                <dl className="trade-quote room-app-facts">
-                  {(wantPost || application.postUrl !== null) && (
-                    <div>
-                      <dt>Post on X</dt>
-                      <dd data-state={application.postState ?? undefined}>
-                        {post !== null ? <a href={post} target="_blank" rel="noopener noreferrer nofollow">{post} ↗</a> : (application.postUrl ?? "None handed in.")}{" "}
-                        {application.postState !== null && <span className="dim">{POST_WORDS[application.postState] ?? application.postState}</span>}
-                      </dd>
-                    </div>
-                  )}
-                  {gated && (
-                    <div>
-                      <dt>Holdings</dt>
-                      <dd data-state={application.holdState ?? undefined}>
-                        {held !== null ? `Holds ${gateText(held)}, needs ${gateText(info.gateAmount)}.` : `Needs ${gateText(info.gateAmount)}.`}{" "}
-                        {application.holdState !== null && <span className="dim">{HOLD_WORDS[application.holdState] ?? application.holdState}</span>}
-                      </dd>
-                    </div>
-                  )}
-                  {application.role !== null && <div><dt>Role</dt><dd>{application.role}</dd></div>}
-                  {application.portfolio !== null && <div><dt>Portfolio</dt><dd className="room-app-text"><Linked text={application.portfolio} /></dd></div>}
-                  {typeof application.checkedAt === "number" && application.checkedAt > 0 && <div><dt>Last checked</dt><dd>{ago(application.checkedAt, now)}</dd></div>}
-                </dl>
-                {note?.openPost && post !== null && (
-                  <div className="room-app-confirm" data-testid="room-application-open-post">
-                    <a className="button button-quiet" href={post} target="_blank" rel="noopener noreferrer nofollow">Open the post ↗</a>
-                    <label className="room-toggle">
-                      <input type="checkbox" className="room-check" data-testid="room-application-confirm-post" checked={confirmed[wallet] === true} onChange={(event) => setConfirmed((previous) => ({ ...previous, [wallet]: event.target.checked }))} />
-                      <span>I opened the post and it is still up</span>
-                    </label>
-                  </div>
-                )}
-                <div className="actions">
-                  <button type="button" className="button button-quiet" data-testid="room-application-check" disabled={!idle} onClick={() => void check(wallet)}>{busy === wallet ? "Checking…" : "Check now"}</button>
-                  {pending && waiting && open && (
-                    <button type="button" className="button" data-testid="room-application-admit" disabled={!idle || !ready || (note?.openPost === true && confirmed[wallet] !== true)} onClick={() => void letIn(wallet)}>Let in</button>
-                  )}
-                  {standing.key === "admitted" && (
-                    <button type="button" className="button button-quiet" data-testid="room-application-revoke" disabled={!idle || !ready} onClick={() => void act("Taking the invite back", encodeFunctionData({ abi: roomAbi, functionName: "revoke", args: [[wallet as Address]] }))}>Take the invite back</button>
-                  )}
-                  {pending && standing.key !== "member" && <button type="button" className="button button-warn" data-testid="room-application-decline" disabled={!idle} onClick={() => void decide(wallet, "decline")}>Decline</button>}
-                  {!pending && <button type="button" className="button button-quiet" data-testid="room-application-reopen" disabled={!idle} onClick={() => void decide(wallet, "reopen")}>Reopen</button>}
-                </div>
-                {standing.key === "barred" && <p className="trade-foot dim">This wallet is barred from the room. Lift the bar below before letting it in.</p>}
-                {note && <p className={`trade-outcome trade-${note.kind}`} role={note.kind === "error" ? "alert" : "status"} data-testid="room-application-note">{note.text}</p>}
-              </li>
-            );
-          })}
+          {shown.map((application) => <ApplicantCard key={application.wallet.toLowerCase()} context={context} review={review} application={application} now={now} ready={ready} open={open} full={false} />)}
         </ol>
+      )}
+      {counts.waiting > CONSOLE_APPLICANTS && (
+        <p className="trade-note dim" data-testid="room-applications-more">The newest {CONSOLE_APPLICANTS} of {counts.waiting} waiting are here. Search, filter and read all of them on the applicants page.</p>
       )}
       <p className="trade-foot dim">
         Letting a wallet in reads every requirement again first, and sends nothing when one is not met.{gated ? " Whatever this page says, the room's contract itself refuses a wallet that does not hold the required token." : ""}
       </p>
     </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #/room/<address>/applicants: the dev's own page for reading applications
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ApplicantFilter = "all" | ApplicantKind;
+
+const APPLICANT_FILTERS: Array<{ key: ApplicantFilter; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "waiting", label: "Waiting" },
+  { key: "admitted", label: "Let in" },
+  { key: "member", label: "Members" },
+  { key: "declined", label: "Declined" },
+  { key: "barred", label: "Barred" },
+];
+
+/** Everything an applicant can be searched by, in small letters: name, clan tag, wallet, X handle, role. */
+function searchedBy(application: Application): string {
+  const fromPost = application.postUrl !== null ? /^https:\/\/x\.com\/([A-Za-z0-9_]{1,15})\/status\//.exec(application.postUrl)?.[1] : undefined;
+  const handles = [application.postHandle, fromPost].filter((handle): handle is string => typeof handle === "string" && handle !== "").map((handle) => `@${handle.replace(/^@/, "")}`);
+  return [application.name, application.clan !== null ? `[${application.clan}]` : null, application.wallet, ...handles, application.role]
+    .filter((value): value is string => typeof value === "string" && value !== "")
+    .join("\n")
+    .toLowerCase();
+}
+
+function ApplicantsPage({ address }: { address: string }) {
+  const { room, base, account, signedIn, tick, chain, listing, refresh, reloadListing } = useRoom(address);
+  if (chain.state !== "ready" || !chain.data) return roomUnread(chain, room);
+  return (
+    <ApplicantsView
+      room={room}
+      base={base}
+      data={chain.data}
+      detail={listing.state === "ready" ? listing.data : null}
+      account={account}
+      signedIn={signedIn}
+      tick={tick}
+      refresh={refresh}
+      reloadListing={reloadListing}
+    />
+  );
+}
+
+function ApplicantsView(given: Omit<RoomContext, "gateText">) {
+  const { room, data, detail, account, signedIn } = given;
+  const { info } = data;
+  const gateText = useGateText(info, detail);
+  const back = `#/room/${room.toLowerCase()}`;
+  const name = (detail ? String(detail.room.name) : cleanLine(info.tokenName)) || short(room);
+  if (!account || account.toLowerCase() !== info.creator.toLowerCase()) {
+    return (
+      <div className="rooms-page">
+        <p className="note" data-testid="applicants-denied">Only this room's dev can read its applications. <a href={back} data-testid="applicants-back">Back to the room.</a></p>
+      </div>
+    );
+  }
+  if (!signedIn) {
+    return (
+      <div className="rooms-page">
+        <div className="note" data-testid="applicants-denied">
+          <p>Applications are kept by the site, so it has to know you are the dev. Signing in is a message, not a transaction: it costs nothing. <a href={back} data-testid="applicants-back">Back to the room.</a></p>
+          <SignInButton account={account} label="Sign in as the dev" testId="applicants-signin" />
+        </div>
+      </div>
+    );
+  }
+  return <ApplicantsBoard {...given} gateText={gateText} name={name} back={back} />;
+}
+
+function ApplicantsBoard(context: RoomContext & { name: string; back: string }) {
+  const { data, name, back } = context;
+  const { info, refundAvailable } = data;
+  const gated = info.gateToken !== ZERO;
+  const gate = WalletGate();
+  const ready = gate === null;
+  const open = !info.launched && !refundAvailable;
+  const review = useApplicantReview(context);
+  const { list, applications, acting } = review;
+  const now = useNow(30_000);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<ApplicantFilter>("all");
+  const [order, setOrder] = useState<"newest" | "oldest">("newest");
+
+  const rows = useMemo(() => applications.map((application) => ({ application, kind: kindOf(application), text: searchedBy(application) })), [applications]);
+  const counts = useMemo(() => countKinds(applications), [applications]);
+  const asked = search.replace(REMOVED, "").trim().toLowerCase();
+  const shown = useMemo(() => {
+    const matching = rows.filter((row) => (filter === "all" || row.kind === filter) && (asked === "" || row.text.includes(asked)));
+    matching.sort((a, b) => (order === "newest" ? newestFirst(a.application, b.application) : newestFirst(b.application, a.application)));
+    return matching;
+  }, [rows, filter, asked, order]);
+  const actingShown = acting !== null && shown.some((row) => row.application.wallet.toLowerCase() === acting);
+  const narrowed = filter !== "all" || asked !== "";
+
+  return (
+    <div className="rooms-page" data-testid="applicants-page">
+      <header className="applicants-head">
+        <a className="applicants-back" href={back} data-testid="applicants-back">← Back to the room</a>
+        <h1 className="page-title"><span data-testid="applicants-room">{name}</span> <span className="dim">applicants</span></h1>
+        <p className="trade-note dim">Only you see this: the connected wallet created this room. Letting a wallet in is a transaction this wallet signs.</p>
+        <ApplicantTally counts={counts} testId="applicants-counts" />
+      </header>
+      {gate && <div className="actions">{gate}</div>}
+      {!open && <p className="note">{info.launched ? "The room has launched" : "The deadline has passed"}, so nobody else can be let in.</p>}
+
+      <div className="applicants-tools">
+        <label className="field applicants-search">
+          <span className="visually-hidden">Search the applicants</span>
+          <input type="search" name="search" data-testid="applicants-search" value={search} maxLength={80} placeholder="Search by name or wallet" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} enterKeyHint="search" onChange={(event) => setSearch(event.target.value)} />
+        </label>
+        <div className="applicants-row">
+          <div className="applicants-chips" role="group" aria-label="Show">
+            {APPLICANT_FILTERS.map((entry) => (
+              <button key={entry.key} type="button" className="applicants-chip" data-testid="applicants-filter" data-filter={entry.key} aria-pressed={filter === entry.key} onClick={() => setFilter(entry.key)}>
+                {entry.label} <span className="num">{entry.key === "all" ? applications.length : counts[entry.key]}</span>
+              </button>
+            ))}
+          </div>
+          <div className="seg seg-small applicants-order" role="group" aria-label="Order">
+            <button type="button" data-testid="applicants-sort" data-sort="newest" aria-pressed={order === "newest"} onClick={() => setOrder("newest")}>Newest first</button>
+            <button type="button" data-testid="applicants-sort" data-sort="oldest" aria-pressed={order === "oldest"} onClick={() => setOrder("oldest")}>Oldest first</button>
+          </div>
+        </div>
+      </div>
+
+      <section className="applicants-list" aria-label="Applicants">
+        {list.state === "loading" && <p className="note" role="status">Loading the applications…</p>}
+        {list.state === "error" && <p className="note" role="alert" data-testid="applicants-error">{list.error.message}</p>}
+        {list.state === "ready" && applications.length === 0 && <p className="note" data-testid="applicants-empty">Nobody has applied yet. Applications show here as they come in.</p>}
+        {list.state === "ready" && applications.length > 0 && (
+          <p className="dim applicants-shown" role="status" data-testid="applicants-shown">{narrowed ? `${shown.length} of ${plural(applications.length, "applicant", "applicants")}` : plural(applications.length, "applicant", "applicants")}</p>
+        )}
+        {!actingShown && <TxNote tx={review.tx} />}
+        {list.state === "ready" && applications.length > 0 && shown.length === 0 && (
+          <div className="note" data-testid="applicants-none">
+            <p>No applicant matches.</p>
+            <div className="actions">
+              <button type="button" className="button button-quiet" data-testid="applicants-clear" onClick={() => { setSearch(""); setFilter("all"); }}>Show all applicants</button>
+            </div>
+          </div>
+        )}
+        {shown.length > 0 && (
+          <ol className="room-apps" data-testid="applicants-cards">
+            {shown.map(({ application }) => <ApplicantCard key={application.wallet.toLowerCase()} context={context} review={review} application={application} now={now} ready={ready} open={open} full />)}
+          </ol>
+        )}
+      </section>
+      <p className="trade-foot dim room-foot">
+        Letting a wallet in reads every requirement again first, and sends nothing when one is not met.{gated ? " Whatever this page says, the room's contract itself refuses a wallet that does not hold the required token." : ""}
+      </p>
+    </div>
   );
 }
 
@@ -3018,6 +3275,7 @@ function Settings(context: RoomContext) {
 
 export default function RoomsSection({ route, mobile }: { route: RoomsRoute; mobile: boolean }) {
   if (route.name === "room-create") return <CreatePage />;
+  if (route.name === "room-applicants") return <ApplicantsPage key={route.address} address={route.address} />;
   if (route.name === "room") return <RoomPage key={route.address} address={route.address} mobile={mobile} />;
   if (route.name === "launched") return <LaunchedPage />;
   return <RoomsHome />;

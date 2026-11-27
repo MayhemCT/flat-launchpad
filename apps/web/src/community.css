@@ -56,6 +56,11 @@
 .clan-list-main { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; }
 .clan-list-sub { min-width: 0; color: var(--dim); font-size: 12.5px; overflow-wrap: anywhere; }
 .clan-list-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+/* A member's points, and for the leader the way to remove them, at the row's end. */
+.clan-member-side { align-items: center; justify-content: flex-end; gap: 8px 12px; margin-left: auto; }
+.clan-kick { flex: none; padding: 0 14px; font-size: 13px; }
+/* The step before a removal takes the row's whole width, under the member it is about. */
+.clan-kick-confirm { flex: 1 1 100%; margin: 4px 0 6px; overflow-wrap: anywhere; }
 
 /* Founding a clan: the name and the tag side by side where there is room, then how the name will look. */
 .clan-form { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); align-items: start; min-width: 0; }

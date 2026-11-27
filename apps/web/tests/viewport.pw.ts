@@ -39,6 +39,7 @@ const PAGES = [
   { name: "social launches", hash: "#/launched", ready: "[data-testid=launched-list], [data-testid=launched-empty]" },
   { name: "social room create", hash: "#/rooms/create", ready: "[data-testid=room-form], [data-testid=room-create-unavailable]" },
   { name: "social room", hash: "#/room/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-room]" },
+  { name: "social applicants", hash: "#/room/0x000000000000000000000000000000000000dead/applicants", ready: "[data-testid=applicants-denied], [data-testid=unknown-room], [data-testid=applicants-page]" },
   { name: "social leaderboard", hash: "#/leaderboard", ready: "[data-testid=board-table], [data-testid=board-cards], [data-testid=board-empty]" },
   { name: "social clans", hash: "#/clans", ready: "[data-testid=my-clan]" },
   { name: "social clan", hash: "#/clan/ZZZZ", ready: "[data-testid=clan-missing]" },
