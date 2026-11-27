@@ -1,6 +1,7 @@
 // Display names: the name a wallet gave itself, kept by this site's Worker under /api/names
 // (apps/worker/src/names.ts). Chat and callouts get each author's name with the messages and callouts
 // themselves; this file is how an author is shown, and how the connected wallet reads, sets and removes its own.
+// A wallet in a clan shows the clan's tag in brackets before its name, wherever it is shown.
 // Nobody logs in: the wallet signs the change with personal_sign, over plain EIP-1193, so nothing here loads a
 // chain library.
 import { useEffect, useSyncExternalStore } from "react";
@@ -17,15 +18,25 @@ const CLOCK_SLACK_MS = 30_000;
  * the name comes first and the short address stays right beside it in a quieter style, so a name can never
  * pass for another wallet. The name is put on the page as a text node, and only if it has the shape of a name.
  */
-export function AuthorName({ address, name, className }: { address: string; name?: string | null | undefined; className: string }) {
+export function AuthorName({ address, name, clan, className }: { address: string; name?: string | null | undefined; clan?: string | null | undefined; className: string }) {
   const shown = shownName(name);
-  if (shown === null) return <span className={className} title={address}>{short(address)}</span>;
+  const tag = shownClan(clan);
+  if (shown === null && tag === null) return <span className={className} title={address}>{short(address)}</span>;
   return (
     <span className={`${className} author-named`} title={address}>
-      <span className="author-name">{shown}</span>{" "}
+      {tag !== null && <span className="clan-tag">[{tag}]</span>}
+      {shown !== null && <span className="author-name">{shown}</span>}{" "}
       <span className="author-address">{short(address)}</span>
     </span>
   );
+}
+
+/**
+ * A clan tag as it is shown, in brackets before a wallet's name: 2 to 5 capital letters and digits
+ * (apps/worker/src/clans.ts). Null for a wallet in no clan, and for anything that does not have that shape.
+ */
+export function shownClan(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Z0-9]{2,5}$/.test(value) ? value : null;
 }
 
 /** What is known of one wallet's own name. */

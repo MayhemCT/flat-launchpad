@@ -74,13 +74,13 @@ test("deploy the factory, create a mint, mint to the cap, launch, claim and trad
   ).json();
   expect((flapFactoryCode.result as string).length, "the Flap factory has code on the fork").toBeGreaterThan(2);
 
-  // Create: 0.5 BNB a pass, cap 1 BNB, so two passes; half the supply into the pool.
+  // Create: raise 1 BNB from 2 passes, so 0.5 BNB a pass; half the supply into the pool.
   await page.goto("/#/launch/create");
   const form = page.getByTestId("pancake-create");
   await form.locator("input[name=name]").fill("Fork Test");
   await form.locator("input[name=symbol]").fill("FORK");
-  await form.locator("input[name=price]").fill("0.5");
   await form.locator("input[name=cap]").fill("1");
+  await form.locator("input[name=passes]").fill("2");
   await form.locator("input[name=hours]").fill("1");
   await form.locator("input[name=poolShare]").fill("50");
   await expect(page.getByTestId("pancake-summary")).toContainText("250,000,000");

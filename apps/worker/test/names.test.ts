@@ -716,12 +716,12 @@ VALUES (?, 'bsc', ?, ?, 0, ?, ?, 'x:someuser', '', ?, ?, 40000, '1000', '1000')`
     const room = `https://callz.test/api/chat/bsc/${TOKEN}`
     const list = async (url: string) => ((await (await handleChat(new Request(url), { DB: db })).json()) as { messages: Array<Record<string, unknown>> }).messages
     expect(await list(room)).toEqual([
-      { id: 1, author: named.address.toLowerCase(), authorName: 'Satoshi_2009', body: 'gm', createdAt: NOW },
-      { id: 2, author: plain.address.toLowerCase(), authorName: null, body: 'gm back', createdAt: NOW },
+      { id: 1, author: named.address.toLowerCase(), authorName: 'Satoshi_2009', authorClan: null, body: 'gm', createdAt: NOW },
+      { id: 2, author: plain.address.toLowerCase(), authorName: null, authorClan: null, body: 'gm back', createdAt: NOW },
     ])
     // The poll for newer messages carries it too, and so does the holder room.
-    expect(await list(`${room}?after=1`)).toEqual([{ id: 2, author: plain.address.toLowerCase(), authorName: null, body: 'gm back', createdAt: NOW }])
-    expect(await list(`${room}?room=holders`)).toEqual([{ id: 3, author: named.address.toLowerCase(), authorName: 'Satoshi_2009', body: 'holding', createdAt: NOW }])
+    expect(await list(`${room}?after=1`)).toEqual([{ id: 2, author: plain.address.toLowerCase(), authorName: null, authorClan: null, body: 'gm back', createdAt: NOW }])
+    expect(await list(`${room}?room=holders`)).toEqual([{ id: 3, author: named.address.toLowerCase(), authorName: 'Satoshi_2009', authorClan: null, body: 'holding', createdAt: NOW }])
   })
 
   it('shows the name a wallet has now on what it posted before, and none once it is removed', async () => {

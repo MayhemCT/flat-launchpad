@@ -22,6 +22,8 @@ interface ChatMessage {
   author: string;
   /** The display name that wallet has now. Null, or absent, for a wallet without one. */
   authorName?: string | null;
+  /** The tag of the clan that wallet is in now. Null, or absent, for a wallet in none. */
+  authorClan?: string | null;
   body: string;
   /** Unix seconds, by the server's clock. */
   createdAt: number;
@@ -342,7 +344,7 @@ export function TokenChat({ chain, token }: { chain: ChatChain; token: string })
             {messages.map((message) => (
               <li key={message.id} className="chat-message" data-own={message.author === me}>
                 <span className="chat-meta">
-                  <AuthorName className="chat-author" address={message.author} name={nameOf(message)} />
+                  <AuthorName className="chat-author" address={message.author} name={nameOf(message)} clan={message.authorClan} />
                   {holding[message.author] !== undefined && (
                     <span className="chat-holding" data-testid="chat-holding" data-holding={holding[message.author]} title="Read from the token on BNB Chain just now">
                       {holding[message.author] ? "Holding" : room === "holders" ? "No longer holding" : "Not holding"}

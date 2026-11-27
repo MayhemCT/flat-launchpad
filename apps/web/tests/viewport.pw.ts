@@ -34,13 +34,21 @@ const PAGES = [
   { name: "create", hash: "#/create", ready: "input[name=name]" },
   // An address the Portal has no record of: the page must still lay out its message correctly.
   { name: "launcher", hash: "#/launcher/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-launcher]" },
+  // The social pages: rooms, the boards, clans and a wallet's profile, as a visitor without a wallet sees them.
+  { name: "social rooms", hash: "#/rooms", ready: "[data-testid=rooms-list], [data-testid=rooms-empty], [data-testid=room-factory-not-deployed]" },
+  { name: "social room create", hash: "#/rooms/create", ready: "[data-testid=room-form], [data-testid=room-create-unavailable]" },
+  { name: "social room", hash: "#/room/0x000000000000000000000000000000000000dead", ready: "[data-testid=unknown-room]" },
+  { name: "social leaderboard", hash: "#/leaderboard", ready: "[data-testid=board-table], [data-testid=board-cards], [data-testid=board-empty]" },
+  { name: "social clans", hash: "#/clans", ready: "[data-testid=my-clan]" },
+  { name: "social clan", hash: "#/clan/ZZZZ", ready: "[data-testid=clan-missing]" },
+  { name: "social profile", hash: "#/u/0x000000000000000000000000000000000000dead", ready: "[data-testid=profile-stats]" },
 ] as const;
 
 // Below this width the page uses its phone layout: cards and a tab bar in place of tables and a nav bar.
 const PHONE_MAX = 1023;
 const MIN_TOUCH_TARGET = 44;
 // Controls a finger has to hit. Links inside a sentence are text, not controls.
-const CONTROLS = "button, select, input, a.button, a.brand, a.social-link, a.card, a.launch-card, a.scope-row, a.scope-main, a.flap-strip, a.chip-link, .seg a, .nav a, .tabbar a, .links a, .section-head a";
+const CONTROLS = "button, select, input, a.button, a.brand, a.social-link, a.card, a.launch-card, a.scope-row, a.scope-main, a.flap-strip, a.chip-link, .seg a, .nav a, .tabbar a, .more-links a, .links a, .section-head a";
 
 async function open(page: Page, hash: string, ready: string) {
   await page.goto(`/${hash}`);

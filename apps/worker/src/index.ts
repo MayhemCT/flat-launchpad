@@ -2,8 +2,12 @@ import { CHAINS, type ChainKey } from '@flat/protocol'
 import { handleApi } from './api.js'
 import { handleCallouts, refreshPositions, relayApproved } from './callouts.js'
 import { handleChat } from './chat.js'
+import { handleClans } from './clans.js'
 import { handleImage, handleMeta } from './image.js'
 import { handleNames } from './names.js'
+import { handleRooms, refreshRooms } from './rooms.js'
+import { handleSession } from './session.js'
+import { handleSocial } from './social.js'
 import { Budget, syncChain } from './sync.js'
 
 export interface Env {
@@ -82,6 +86,13 @@ async function positions(env: Env): Promise<void> {
   } catch (error) {
     console.error(JSON.stringify({ relayFailed: error instanceof Error ? error.name : 'error' }))
   }
+  // Last, the rooms that have not launched: who holds a pass is read from their contracts again.
+  try {
+    const rooms = await refreshRooms(env)
+    if (rooms > 0) console.log(JSON.stringify({ roomsRead: rooms }))
+  } catch (error) {
+    console.error(JSON.stringify({ roomsFailed: String(error).slice(0, 300) }))
+  }
 }
 
 export default {
@@ -92,6 +103,10 @@ export default {
     if (url.pathname.startsWith('/api/chat/')) return handleChat(request, env)
     if (url.pathname.startsWith('/api/callouts/')) return handleCallouts(request, env, ctx)
     if (url.pathname === '/api/names' || url.pathname.startsWith('/api/names/')) return handleNames(request, env)
+    if (url.pathname === '/api/session') return handleSession(request, env)
+    if (url.pathname === '/api/rooms' || url.pathname.startsWith('/api/rooms/')) return handleRooms(request, env)
+    if (url.pathname === '/api/clans' || url.pathname.startsWith('/api/clans/')) return handleClans(request, env)
+    if (url.pathname.startsWith('/api/leaderboard/') || url.pathname.startsWith('/api/profile/')) return handleSocial(request, env)
     if (url.pathname.startsWith('/api/')) return handleApi(request, env.DB)
     return env.ASSETS.fetch(request)
   },

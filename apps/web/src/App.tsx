@@ -7,6 +7,8 @@ import { ScopePage } from "./scope";
 import type { PancakeRoute } from "./pancake";
 import type { PoolsRoute } from "./pools";
 import type { FlapLaunchRoute, Locale } from "./flap-launch";
+import type { RoomsRoute } from "./rooms";
+import type { CommunityRoute } from "./community";
 
 // The launchpad needs a chain library and the launch UI package: both load only when one of its pages opens.
 const FlapLaunchSection = lazy(() => import("./flap-launch"));
@@ -18,6 +20,10 @@ const PopPage = lazy(() => import("./token").then((module) => ({ default: module
 const PancakeSection = lazy(() => import("./pancake"));
 // Pools: Flap's graduated pairs on PancakeSwap, with adding and removing liquidity.
 const PoolsSection = lazy(() => import("./pools"));
+// Rooms: a dev picks who gets in, the members buy a pass each, and the passes launch a token.
+const RoomsSection = lazy(() => import("./rooms"));
+// Clans, the leaderboards and a wallet's profile.
+const CommunitySection = lazy(() => import("./community"));
 // The wallet's positions read balances and sell through the same library: loaded when first opened.
 const Positions = lazy(() => import("./positions"));
 // Where the reviewer wallet approves callouts. Reached by its address, linked from nowhere.
@@ -30,7 +36,7 @@ const LOCALES: ReadonlyArray<{ id: Locale; label: string }> = [
 ];
 
 type AggregatorRoute = { name: "home" | "scope" | "launches" | "tokens" | "factories" | "deployers" };
-type Route = AggregatorRoute | FlapLaunchRoute | PancakeRoute | PoolsRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "review" } | { name: "missing" };
+type Route = AggregatorRoute | FlapLaunchRoute | PancakeRoute | PoolsRoute | RoomsRoute | CommunityRoute | { name: "token"; address: string } | { name: "pop"; address: string } | { name: "review" } | { name: "missing" };
 
 function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "") || "/";
@@ -45,6 +51,16 @@ function parseRoute(hash: string): Route {
   if (path === "/launch/testnet") return { name: "flaplaunch" };
   const mint = /^\/mint\/(0x[0-9a-fA-F]{40})$/.exec(path);
   if (mint?.[1]) return { name: "mint", address: mint[1].toLowerCase() };
+  if (path === "/rooms") return { name: "rooms" };
+  if (path === "/rooms/create") return { name: "room-create" };
+  const room = /^\/room\/(0x[0-9a-fA-F]{40})$/.exec(path);
+  if (room?.[1]) return { name: "room", address: room[1].toLowerCase() };
+  if (path === "/leaderboard") return { name: "leaderboard" };
+  if (path === "/clans") return { name: "clans" };
+  const clan = /^\/clan\/([A-Za-z0-9]{2,5})$/.exec(path);
+  if (clan?.[1]) return { name: "clan", tag: clan[1].toUpperCase() };
+  const profile = /^\/u\/(0x[0-9a-fA-F]{40})$/.exec(path);
+  if (profile?.[1]) return { name: "profile", address: profile[1].toLowerCase() };
   if (path === "/pools") return { name: "pools" };
   const pool = /^\/pool\/(0x[0-9a-fA-F]{40})(?:\/(bnb|usdt))?$/.exec(path);
   if (pool?.[1]) return { name: "pool", address: pool[1].toLowerCase(), ...(pool[2] ? { quote: pool[2] === "usdt" ? ("USDT" as const) : ("BNB" as const) } : {}) };
@@ -193,12 +209,14 @@ function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange(next: Loc
 }
 
 // `short` is the label on the phone tab bar, where five tabs share the width.
-// `wide` entries are left off the phone tab bar, where five fit: they are linked from the Factories page.
+// `wide` entries are left off the phone tab bar, where five fit: on a phone they are linked under every page.
 const NAV: ReadonlyArray<{ href: string; label: string; short?: string; wide?: boolean; routes: ReadonlyArray<Route["name"]> }> = [
   { href: "#/scope", label: "Memescope", short: "Scope", routes: ["scope", "launches"] },
   { href: "#/tokens", label: "Tokens", routes: ["tokens", "token"] },
-  { href: "#/pools", label: "Pools", routes: ["pools", "pool"] },
-  { href: "#/factories", label: "Factories", routes: ["factories"] },
+  { href: "#/rooms", label: "Rooms", routes: ["rooms", "room-create", "room"] },
+  { href: "#/leaderboard", label: "Leaderboard", short: "Top", routes: ["leaderboard", "clans", "clan", "profile"] },
+  { href: "#/pools", label: "Pools", routes: ["pools", "pool"], wide: true },
+  { href: "#/factories", label: "Factories", routes: ["factories"], wide: true },
   { href: "#/deployers", label: "Deployers", routes: ["deployers"], wide: true },
   { href: "#/launch", label: "Launch", routes: ["launch", "launch-create", "mint", "flaplaunch", "create", "launcher"] },
 ];
@@ -262,6 +280,17 @@ function SiteFoot() {
   );
 }
 
+/** On a phone, the pages the tab bar has no room for. */
+function MoreLinks({ route }: { route: Route }) {
+  return (
+    <nav className="more-links" aria-label="More pages" data-testid="more-links">
+      {NAV.filter((item) => item.wide).map((item) => (
+        <a key={item.href} href={item.href} aria-current={item.routes.includes(route.name) ? "page" : undefined}>{item.label}</a>
+      ))}
+    </nav>
+  );
+}
+
 /** The network a page's wallet button checks for. */
 const walletTarget = (mode: Mode): Site => (mode === "launchpad" ? FLAP_LAUNCH : SITES.bsc);
 
@@ -293,7 +322,7 @@ function MobileShell({ route, children, ...controls }: ShellProps) {
           <WalletButton target={walletTarget(controls.mode)} />
         </div>
       </header>
-      <main className="content">{children}<SiteFoot /></main>
+      <main className="content">{children}<MoreLinks route={route} /><SiteFoot /></main>
       <nav className="tabbar" aria-label="Main" data-testid="mobile-nav"><NavLinks route={route} compact /></nav>
     </div>
   );
@@ -341,6 +370,16 @@ export function App() {
         {(route.name === "launch" || route.name === "launch-create" || route.name === "mint") && (
           <Suspense fallback={<p className="note" role="status">Loading the launchpad…</p>}>
             <PancakeSection route={route} />
+          </Suspense>
+        )}
+        {(route.name === "rooms" || route.name === "room-create" || route.name === "room") && (
+          <Suspense fallback={<p className="note" role="status">Loading the rooms…</p>}>
+            <RoomsSection route={route} mobile={mobile} />
+          </Suspense>
+        )}
+        {(route.name === "leaderboard" || route.name === "clans" || route.name === "clan" || route.name === "profile") && (
+          <Suspense fallback={<p className="note" role="status">Loading…</p>}>
+            <CommunitySection route={route} mobile={mobile} />
           </Suspense>
         )}
         {(route.name === "pools" || route.name === "pool") && (

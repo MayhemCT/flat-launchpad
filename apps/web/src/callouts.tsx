@@ -198,6 +198,8 @@ interface Callout {
   author: string;
   /** The display name that wallet has now. Null, or absent, for a wallet without one. */
   authorName?: string | null;
+  /** The tag of the clan that wallet is in now. Null, or absent, for a wallet in none. */
+  authorClan?: string | null;
   kind: number;
   /** The canonical link. Shown as a link only after `checkedLink` has rebuilt the same one. */
   url: string;
@@ -754,7 +756,7 @@ export function Callouts({ token, marketCap, supply }: { token: Address; marketC
               <li key={callout.id} className="callout-card" data-own={callout.author === me}>
                 <div className="callout-meta">
                   <SiteBadge kind={callout.kind} />
-                  <AuthorName className="callout-author" address={callout.author} name={callout.author === me && own.state === "ready" ? own.name : callout.authorName} />
+                  <AuthorName className="callout-author" address={callout.author} name={callout.author === me && own.state === "ready" ? own.name : callout.authorName} clan={callout.authorClan} />
                   <time className="callout-time" dateTime={new Date(callout.createdAt * 1000).toISOString()}>{ago(callout.createdAt, now)}</time>
                   {counted === true ? (
                     <span className="callout-status" data-status="counted">Counted on-chain</span>
@@ -1030,7 +1032,7 @@ export function ReviewPage() {
               <li key={callout.id} className="callout-card">
                 <div className="callout-meta">
                   <SiteBadge kind={callout.kind} />
-                  <AuthorName className="callout-author" address={callout.author} name={callout.authorName} />
+                  <AuthorName className="callout-author" address={callout.author} name={callout.authorName} clan={callout.authorClan} />
                   <time className="callout-time" dateTime={new Date(callout.createdAt * 1000).toISOString()}>{ago(callout.createdAt, now)}</time>
                   <span className="callout-status" data-status={callout.status === "approved" ? "expired" : "pending"}>
                     {callout.status === "approved" ? "Approval expired" : "Awaiting review"}

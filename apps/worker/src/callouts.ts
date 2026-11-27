@@ -423,9 +423,14 @@ const COLUMNS =
  * A listed callout `c` with its author's display name beside it (apps/worker/src/names.ts): the name the
  * wallet has now, and null for a wallet without one. Read with the callouts, so the page asks once.
  */
-const LISTED = `SELECT ${COLUMNS.split(', ').map((column) => `c.${column}`).join(', ')}, n.name AS author_name FROM callouts c LEFT JOIN wallet_names n ON n.wallet = c.author`
+const LISTED = `SELECT ${COLUMNS.split(', ').map((column) => `c.${column}`).join(', ')}, n.name AS author_name, k.tag AS author_clan FROM callouts c LEFT JOIN wallet_names n ON n.wallet = c.author LEFT JOIN clan_members km ON km.wallet = c.author LEFT JOIN clans k ON k.id = km.clan_id`
 
-const toListed = (row: Row) => ({ ...toCallout(row), authorName: typeof row.author_name === 'string' ? row.author_name : null })
+const toListed = (row: Row) => ({
+  ...toCallout(row),
+  authorName: typeof row.author_name === 'string' ? row.author_name : null,
+  // The tag of the clan the author is in now (apps/worker/src/clans.ts), null for a wallet in none.
+  authorClan: typeof row.author_clan === 'string' ? row.author_clan : null,
+})
 
 function toCallout(row: Row) {
   const approved = row.status === 'approved'

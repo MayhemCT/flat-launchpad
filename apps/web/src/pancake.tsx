@@ -365,7 +365,8 @@ function CreatePage() {
   const wallet = useWallet();
   const { tx, send } = useTransaction();
   const gate = WalletGate();
-  const [form, setForm] = useState({ name: "", symbol: "", price: "0.01", cap: "1", hours: "24", poolShare: "50" });
+  // `cap` is the total to raise as typed; the price of a pass and the exact raise are worked out from it below.
+  const [form, setForm] = useState({ name: "", symbol: "", cap: "1", passes: "100", hours: "24", poolShare: "50" });
   // The launch fee a mint created now will carry, read from the factory. It is fixed into the mint at creation.
   const [feeBps, setFeeBps] = useState<number>(deployment.launchFeeBps);
   useEffect(() => {
@@ -384,25 +385,27 @@ function CreatePage() {
     const symbol = form.symbol.trim();
     if (!name || bytes(name) > 64) problems.push("Name: 1 to 64 bytes.");
     if (!symbol || bytes(symbol) > 32) problems.push("Symbol: 1 to 32 bytes.");
-    let price = 0n;
-    let cap = 0n;
+    let total = 0n;
     try {
-      price = parseEther(form.price.trim() || "0");
-      cap = parseEther(form.cap.trim() || "0");
+      total = parseEther(form.cap.trim() || "0");
     } catch {
-      problems.push("Price and cap must be BNB amounts.");
+      problems.push("Total to raise must be a BNB amount.");
     }
-    if (price <= 0n) problems.push("Price per pass must be above zero.");
-    if (cap <= 0n || cap > MAX_CAP) problems.push("Cap: above zero, at most 10 BNB.");
-    if (price > 0n && cap > 0n && cap % price !== 0n) problems.push("Cap must be an exact multiple of the price.");
-    const passes = price > 0n ? cap / price : 0n;
-    if (passes > MAX_NFTS) problems.push("At most 10,000 passes: raise the price or lower the cap.");
+    if (total <= 0n || total > MAX_CAP) problems.push("Total to raise: above zero, at most 10 BNB.");
+    const count = /^\d{1,6}$/.test(form.passes.trim()) ? BigInt(form.passes.trim()) : 0n;
+    const passes = count >= 1n && count <= MAX_NFTS ? count : 0n;
+    if (passes === 0n) problems.push("Number of passes: a whole number from 1 to 10,000.");
+    // Every pass costs the same: the total split between the passes, rounded down to the wei. The raise is that
+    // price times the passes, so it is always an exact multiple of the price, as the contract requires.
+    const price = passes > 0n && total > 0n ? total / passes : 0n;
+    const cap = price * passes;
+    if (passes > 0n && total > 0n && price <= 0n) problems.push("Price per pass must be above zero: raise the total or lower the number of passes.");
     const hours = Number(form.hours);
     const duration = Number.isFinite(hours) ? Math.round(hours * 3600) : 0;
     if (duration < 600 || duration > 30 * 86_400) problems.push("Sale length: 10 minutes to 30 days.");
     const share = Number(form.poolShare);
     if (!Number.isInteger(share) || share < 10 || share > 90) problems.push("Pool share: a whole number from 10 to 90.");
-    return { name, symbol, price, cap, passes, duration, poolShareBps: share * 100, problems };
+    return { name, symbol, price, cap, total, passes, duration, poolShareBps: share * 100, problems };
   }, [form]);
 
   const submit = async (event: FormEvent) => {
@@ -426,8 +429,14 @@ function CreatePage() {
       <form className="form" onSubmit={(event) => void submit(event)} data-testid="pancake-create">
         <Field label="Token name"><input name="name" value={form.name} onChange={set("name")} maxLength={64} autoComplete="off" required /></Field>
         <Field label="Token symbol"><input name="symbol" value={form.symbol} onChange={set("symbol")} maxLength={32} autoComplete="off" required /></Field>
-        <Field label="Price per pass (BNB)"><input name="price" inputMode="decimal" value={form.price} onChange={set("price")} autoComplete="off" /></Field>
-        <Field label="Cap (BNB)" hint="The raise that launches the token. At most 10 BNB, and an exact multiple of the price."><input name="cap" inputMode="decimal" value={form.cap} onChange={set("cap")} autoComplete="off" /></Field>
+        <Field label="Total to raise (BNB)" hint="The raise that launches the token. At most 10 BNB."><input name="cap" inputMode="decimal" value={form.cap} onChange={set("cap")} autoComplete="off" /></Field>
+        <Field label="Number of passes" hint="Every pass is one NFT at the same price. From 1 to 10,000."><input name="passes" inputMode="numeric" value={form.passes} onChange={set("passes")} autoComplete="off" /></Field>
+        {parsed.price > 0n && (
+          <p className="trade-note form-wide" data-testid="pancake-price" role="status">
+            Each pass costs <strong className="num">{formatEther(parsed.price)} BNB</strong>.
+            {parsed.cap !== parsed.total && <> The raise will be exactly <strong className="num">{formatEther(parsed.cap)} BNB</strong>: the price of a pass is rounded down to the smallest unit of BNB.</>}
+          </p>
+        )}
         <Field label="Sale length (hours)" hint="If the cap is not reached by then, every pass can be burned for a full refund."><input name="hours" inputMode="decimal" value={form.hours} onChange={set("hours")} autoComplete="off" /></Field>
         <Field label="Supply into the pool (%)" hint="The rest of the 1,000,000,000 supply is split equally between the passes."><input name="poolShare" inputMode="numeric" value={form.poolShare} onChange={set("poolShare")} autoComplete="off" /></Field>
 

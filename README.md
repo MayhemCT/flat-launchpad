@@ -60,6 +60,39 @@ CallZPancakeFactory v1   0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (BNB Chain
 
 The three CallZ fee contracts listed first were deployed on BNB Chain on 27 Nov 2026 from the site's Launch page, one transaction each, and the site trades and launches through them. The earlier three were deployed the same day, before the review fixes, and are no longer used. The sources of the deployed contracts must not change now: a change would move their addresses. `CallZLauncherFactory` deploys with one transaction from the testnet launch page, and on BNB Chain from the Launch page, to the same address on both. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
 
+## Rooms (not deployed yet)
+
+A room is the social way to launch: its creator (the dev) chooses who gets in, the members buy one pass each,
+and when every pass is sold the dev launches the token into PancakeSwap V2. The contracts are `CallZRoom`,
+`CallZRoomFactory` and `CallZRoomArt` in `contracts/src/callz`; the pages are at `#/rooms`.
+
+- **Getting in.** The dev switches on any of three requirements: a post on X, holding an amount of a token, a
+  role and portfolio. An applicant gets a personal code to put in their post; the API asks X's public embed
+  endpoint whether the post is up and carries the code. Holdings are read from the token itself. Everything is
+  read again when the dev lets a wallet in, and the room's contract itself refuses a wallet that does not hold
+  the required token at that moment (`admit` reverts with `GateNotMet`).
+- **The pass.** One per wallet, at one flat price, and it cannot be transferred. Its metadata is written on
+  chain: the room's picture and the price paid ("0.25 BNB").
+- **The chat.** Only the dev and wallets holding a pass can read or write it. Links and pictures are allowed
+  there; pictures are stored under the SHA-256 of their bytes and served only to members.
+- **Removing a member.** Before the launch the dev can `kick` a member: the pass is burned, the wallet is
+  barred, its price is sent back in full, and the seat is free for someone else. After the launch nobody can
+  be removed; the dev can only take a wallet out of the chat.
+- **The money.** The dev cannot withdraw the raise. BNB leaves a room only through the launch, through a
+  kick's repayment to the kicked wallet, or through members handing their passes back after the deadline. The
+  launch pays the same fee to the CallZ vault as the open mint does and locks the liquidity.
+- **Points, tags, clans.** A dev gives members of their room points (100 at most per member per room) and a
+  project tag; `#/leaderboard` ranks wallets by points and by approved callouts. A wallet can be in one clan,
+  whose tag is shown in brackets before its name in every chat.
+
+`CallZRoomFactory` has the CREATE2 address in `apps/web/src/room-deployment.json` and is deployed from the
+`#/rooms` page by one transaction. Until then the page says so and creates no rooms. These contracts have had
+no outside review. Tests: `contracts/test/callz/CallZRoom.BSC.fork.t.sol` (44, on a fork of BNB Chain),
+`apps/worker/test/rooms.test.ts`, and `apps/web/tests/rooms.pw.ts`, which runs the whole flow through the pages.
+The room contracts are built into `contracts/out-rooms` (see `scripts/room-deployment.mjs`), so the build
+output of the deployed contracts is never touched. The database tables are migration `0010_social.sql`, which
+has to be applied before this code is deployed.
+
 ## Fees and the vault
 
 CallZ collects two fees, both in BNB, both paid straight into `CallZVault` by the contract that takes them:

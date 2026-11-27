@@ -223,12 +223,14 @@ type Row = Record<string, string | number | null>
  * asks once.
  */
 const MESSAGES =
-  'SELECT m.id, m.author, m.body, m.created_at, n.name AS author_name FROM chat_messages m LEFT JOIN wallet_names n ON n.wallet = m.author'
+  'SELECT m.id, m.author, m.body, m.created_at, n.name AS author_name, c.tag AS author_clan FROM chat_messages m LEFT JOIN wallet_names n ON n.wallet = m.author LEFT JOIN clan_members cm ON cm.wallet = m.author LEFT JOIN clans c ON c.id = cm.clan_id'
 
 const toMessage = (row: Row) => ({
   id: row.id,
   author: row.author,
   authorName: typeof row.author_name === 'string' ? row.author_name : null,
+  // The tag of the clan the author is in now (apps/worker/src/clans.ts), null for a wallet in none.
+  authorClan: typeof row.author_clan === 'string' ? row.author_clan : null,
   body: row.body,
   createdAt: row.created_at,
 })

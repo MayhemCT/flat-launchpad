@@ -151,6 +151,10 @@ h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -0.01em; }
   gap: 6px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px);
 }
+/* On a phone, the pages the tab bar has no room for, linked under every page. */
+.more-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; font-size: 13px; }
+.more-links a { display: inline-flex; align-items: center; min-height: 44px; color: var(--dim); padding: 0 6px; }
+.more-links a[aria-current="page"] { color: var(--ink); }
 .shell-mobile ~ .backdrop, .backdrop { transition: opacity 0.3s; }
 
 @media (max-width: 1023px) {
@@ -633,6 +637,8 @@ h2 .dim { font-weight: 400; font-size: 0.8em; margin-left: 6px; }
    narrow card the pair may break between the two, never inside either. An author without a name is untouched. */
 .author-named { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; white-space: normal; }
 .author-name { font-weight: 700; white-space: nowrap; }
+/* The clan a wallet is in, in brackets before its name. */
+.clan-tag { font-family: var(--mono); font-size: 0.92em; font-weight: 700; color: var(--gold); white-space: nowrap; }
 .author-address { font-family: var(--mono); font-size: 0.92em; font-weight: 400; color: var(--dim); white-space: nowrap; }
 
 /* The wallet's own name in the wallet menu, and the form that sets it. */

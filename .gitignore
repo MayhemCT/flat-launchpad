@@ -22,3 +22,7 @@ keystores/
 *.keystore-password
 *password*
 *mnemonic*
+
+# Room contracts are built on their own, so the deployed contracts' build output is never disturbed.
+contracts/out-rooms/
+contracts/cache-rooms/

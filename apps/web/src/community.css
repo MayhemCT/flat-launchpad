@@ -1,0 +1,96 @@
+/* ── Community: leaderboards, clans and profiles ────────────────────────── */
+
+/* The four pages share one column: the section's own navigation, then the page. */
+.board-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; min-width: 0; }
+.board-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+.board-section .section-head { margin-bottom: 0; }
+.board-about { margin: 0; max-width: 720px; color: var(--dim); font-size: 14.5px; }
+
+.board-nav { max-width: 100%; }
+/* On a phone the four links take two rows, which a full pill cannot hold: the corners become a card's. */
+.shell-mobile .board-nav { border-radius: 16px; }
+.shell-mobile .board-nav a { flex: 1 1 auto; justify-content: center; padding: 0 12px; border-radius: 12px; }
+
+/* A wallet, a clan or a room as a link: it reads as the name it carries, and is a full-height target on a phone. */
+.board-link { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; max-width: 100%; text-decoration: none; overflow-wrap: anywhere; }
+.board-link:hover, .board-link:hover .author-address { color: var(--gold); }
+.shell-mobile .board-link { min-height: 44px; align-items: center; }
+.board-who { font-family: var(--mono); font-size: 14px; }
+.board-you { margin-left: 8px; vertical-align: middle; }
+
+/* The connected wallet's own row. */
+.board-table tr[data-own="true"] td { background: color-mix(in srgb, var(--gold) 8%, transparent); }
+.board-table tr[data-own="true"] td:first-child { box-shadow: inset 2px 0 0 var(--gold); }
+
+/* Rows as cards, on a phone. A long name wraps inside its card rather than widening the page. */
+.board-card > *, .clan-card > *, .profile-card > * { min-width: 0; }
+.board-card .card-head, .clan-card .card-head, .profile-card .card-head { flex-wrap: wrap; gap: 4px 10px; }
+.board-card strong, .clan-card strong, .profile-card strong { min-width: 0; overflow-wrap: anywhere; }
+.board-card:hover, .clan-card:hover, .profile-card:hover { border-color: color-mix(in srgb, var(--gold) 55%, var(--line)); }
+.board-card[data-own="true"] { border-color: color-mix(in srgb, var(--gold) 55%, var(--line)); background: color-mix(in srgb, var(--gold) 6%, var(--panel)); }
+.board-card .author-name, .clan-card .author-name, .clan-list .author-name, .clan-preview .author-name, .clan-confirm .author-name {
+  white-space: normal; overflow-wrap: anywhere;
+}
+
+/* ── Clans ──────────────────────────────────────────────────────────────── */
+
+.clan-panel, .profile-panel {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; padding: 16px;
+  border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 94%, transparent);
+}
+.clan-panel h2, .profile-panel h2 { margin: 0; font-size: 18px; }
+.clan-panel h3 { margin: 0; font-size: 15px; }
+.clan-panel p, .profile-panel p { margin: 0; }
+.clan-note { color: var(--dim); font-size: 14px; overflow-wrap: anywhere; }
+.clan-note a { color: var(--ink); }
+/* One part of the panel: the clan and its members, its invites, leaving. */
+.clan-block { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; min-width: 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.clan-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0; font-size: 20px; }
+
+.clan-list { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.clan-list li {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; min-width: 0; min-height: 44px; padding: 6px 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); font-size: 14px;
+}
+.clan-list li:first-child { border-top: 0; }
+.clan-list-main { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; }
+.clan-list-sub { min-width: 0; color: var(--dim); font-size: 12.5px; overflow-wrap: anywhere; }
+.clan-list-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+
+/* Founding a clan: the name and the tag side by side where there is room, then how the name will look. */
+.clan-form { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); align-items: start; min-width: 0; }
+.clan-form > .clan-preview, .clan-form > .actions, .clan-wide { grid-column: 1 / -1; min-width: 0; }
+.clan-form input.num, .clan-invite input.num { font-family: var(--mono); }
+.clan-form input[aria-invalid="true"], .clan-invite input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--warn) 70%, var(--line)); }
+.clan-hint { overflow-wrap: anywhere; }
+.clan-hint[data-invalid="true"] { color: var(--warn); }
+.clan-preview {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; padding: 10px 12px;
+  border: 1px dashed var(--line); border-radius: 10px; background: var(--bg);
+}
+
+/* Inviting: the address and its button on one row, the button under it where they do not fit. */
+.clan-invite { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; min-width: 0; }
+.clan-invite .field { flex: 1 1 240px; }
+.clan-invite .button { flex: 0 0 auto; min-height: 48px; }
+.shell-mobile .clan-invite .button { flex: 1 1 auto; }
+
+.clan-confirm {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; min-width: 0; padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line)); border-radius: 12px; font-size: 14.5px;
+}
+
+/* ── Profile ────────────────────────────────────────────────────────────── */
+
+/* The tag and the name, as large as a page title. A name wraps before it runs off a narrow screen. */
+.profile-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.35em; min-width: 0; font-size: clamp(26px, 5vw, 44px); }
+.profile-title > span { min-width: 0; overflow-wrap: anywhere; }
+.profile-title > .clan-tag { font-size: 0.8em; }
+.profile-line { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; font-size: 14px; }
+.profile-line code { min-width: 0; color: var(--dim); }
+.profile-copy { padding: 0 14px; font-size: 13px; }
+.profile-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; min-width: 0; }
+.profile-chips { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.profile-chips li { min-width: 0; max-width: 100%; }
+.profile-chips .chip-link { max-width: 100%; }
+.profile-marks { display: inline-flex; flex-wrap: wrap; gap: 6px; min-width: 0; }

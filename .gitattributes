@@ -1,3 +1,5 @@
 # Shell scripts and git hooks must keep LF line endings on every platform.
 .githooks/* text eol=lf
 *.sh text eol=lf
+# Contract sources keep LF everywhere: a contract's address depends on the exact bytes of its source.
+*.sol text eol=lf
