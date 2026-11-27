@@ -56,9 +56,13 @@ struct Submission {
 ///         recorded. That snapshot is their weight in the round's holder share.
 ///
 ///         After the round ends, the balances of all the round's callers are read once more, together, in one
-///         transaction: the checkpoint. A caller's holder share is paid on what they still hold then. Because
-///         every wallet is read at the same moment, tokens passed from one caller's wallet to another's are
-///         counted once, in the wallet that holds them at the checkpoint.
+///         transaction: the checkpoint. Each caller's weight is cut down to what they still hold of their
+///         snapshot then, and the holder share is worked out on those weights: every fee is shared between the
+///         callers who were in the round when it arrived, by what they still hold. Because every wallet is read
+///         at the same moment, tokens passed from one caller's wallet to another's count once, in the wallet
+///         that holds them at the checkpoint, and a snapshot of tokens that have since left a wallet takes
+///         nothing from the other callers. A fee that none of its callers still holds anything for stays in the
+///         round and is swept.
 ///
 ///         A round is one UTC day. A callout counts when the attester signed it for the running round and it is
 ///         recorded here before the round ends. Every recorded link is emitted in full, so the list of rewarded
@@ -74,14 +78,17 @@ struct Submission {
 ///         token's rewards can never be paid with another token's fees, whatever else happens.
 ///
 /// @dev Trust: the attester can approve any link, which mints callout claims and a place in the holder share,
-///      within the per-round cap on links per holder. The guardian can replace the attester and move the split
-///      (the platform share can never exceed 25%), but only by scheduling the change and waiting `CHANGE_DELAY`:
-///      the pending change is public for that time and anyone can apply it afterwards. The guardian can stop new
-///      callouts from being recorded at once, which is the answer to an attester key that has leaked. It can also
-///      replace the team wallet and change the round rules. None of this can touch amounts already owed.
+///      within the per-round cap on links per holder. The attester can be a contract (ERC-1271), so it can be a
+///      multisig. The guardian can replace the attester, replace the team wallet, move the split (the platform
+///      share can never exceed 25%) and change the round rules, but only by scheduling the change and waiting
+///      `CHANGE_DELAY`: the pending change is public for that time and anyone can apply it afterwards. The one
+///      thing the guardian can do at once is stop new callouts from being recorded, which is the answer to an
+///      attester key that has leaked. None of this can touch amounts already owed.
 ///
-///      The holder share is cut down in proportion when the holder holds less at the round's checkpoint than
-///      their snapshot, so buying, calling out and selling earns nothing from it.
+///      A caller's weight is cut down in proportion when they hold less at the round's checkpoint than their
+///      snapshot, so a caller who holds nothing then earns nothing from the holder share. What they give up
+///      goes to the callers who still hold, never to the team wallet. The balance is read at one moment: a
+///      caller who sold can hold the tokens again for that moment, at the cost of buying them back.
 contract CallZVault is EIP712, ReentrancyGuard {
     using SafeTransferLib for address;
 
@@ -98,7 +105,8 @@ contract CallZVault is EIP712, ReentrancyGuard {
     /// @notice The platform share can be lowered, never raised past this.
     uint16 public constant MAX_PLATFORM_BPS = 2500;
     uint256 public constant MAX_LINK_BYTES = 256;
-    /// @notice How long a new attester or a new split waits between being scheduled and taking effect.
+    /// @notice How long a new attester, team wallet, split or set of round rules waits between being scheduled and
+    ///         taking effect.
     uint256 public constant CHANGE_DELAY = 2 days;
     /// @notice The most holders one round's holder share can have for one token. It bounds the checkpoint, which
     ///         reads every one of them in a single transaction.
@@ -109,7 +117,7 @@ contract CallZVault is EIP712, ReentrancyGuard {
     uint256 internal constant PPM = 1_000_000;
     /// @dev A weight is `holdings * WEIGHT_SCALE / mcap`.
     uint256 internal constant WEIGHT_SCALE = 1e6;
-    /// @dev Fixed-point scale of a round's holder share per unit of weight.
+    /// @dev Fixed-point scale of the holder share per unit of weight, used while a checkpoint is worked out.
     uint256 internal constant ACC_SCALE = 1e36;
 
     bytes32 public constant SUBMISSION_TYPEHASH = keccak256(
@@ -139,6 +147,17 @@ contract CallZVault is EIP712, ReentrancyGuard {
     uint64 public splitEta;
     /// @notice While set, no callout can be recorded. Claims, sweeps and deposits are not affected.
     bool public submissionsPaused;
+    /// @notice The team wallet that takes over at `teamWalletEta`, once someone applies it. Zero when none is
+    ///         scheduled.
+    address public pendingTeamWallet;
+    /// @notice The first second the scheduled team wallet can be applied.
+    uint64 public teamWalletEta;
+    /// @notice The round rules that take over at `rulesEta`, once someone applies them.
+    uint8 public pendingRequiredLinks;
+    uint8 public pendingMaxLinksPerEpoch;
+    uint32 public pendingMinHoldPpm;
+    /// @notice The first second the scheduled rules can be applied. Zero when none are scheduled.
+    uint64 public rulesEta;
 
     /// @notice Share of every fee that goes to the round's holder share, in bps.
     uint16 public holdersBps = 4500;
@@ -170,7 +189,7 @@ contract CallZVault is EIP712, ReentrancyGuard {
     }
 
     struct Round {
-        /// @dev The holder share: paid to the round's verified callers by their snapshot of holdings.
+        /// @dev The holder share: paid to the round's verified callers by what they still hold of their snapshot.
         uint128 pot;
         /// @dev The callout pool: paid per verified link.
         uint128 pool;
@@ -183,10 +202,8 @@ contract CallZVault is EIP712, ReentrancyGuard {
         bool swept;
         /// @dev The round's callers' balances have been read, together, after the round ended.
         bool checkpointed;
-        /// @dev Sum of the weights of the holders in the holder share.
+        /// @dev Sum of the snapshot weights of the holders in the holder share.
         uint256 totalWeight;
-        /// @dev Holder share paid so far per unit of weight, scaled by ACC_SCALE.
-        uint256 acc;
     }
 
     /// @dev A round waiting to be swept once its claim window has passed.
@@ -201,15 +218,15 @@ contract CallZVault is EIP712, ReentrancyGuard {
         bool unlocked;
         bool claimedHolder;
         bool claimedCallout;
-        /// @dev What the holder still held of their snapshot at the round's checkpoint. The holder share is paid
-        ///      on this.
-        uint128 kept;
+        /// @dev What the holder share owes the holder, fixed at the round's checkpoint. BNB in wei: all the BNB
+        ///      there is fits in 104 bits many times over.
+        uint104 share;
+        /// @dev The round's holder share when they joined: they earn from the fees that arrive after it.
+        uint104 potAtJoin;
         /// @dev The snapshot: tokens in the holder's wallet when they joined the holder share.
-        uint256 held;
+        uint128 held;
         /// @dev `held * WEIGHT_SCALE / mcap`.
         uint256 weight;
-        /// @dev The round's `acc` when they joined: they earn from fees that arrive after it.
-        uint256 accAtJoin;
     }
 
     mapping(address token => mapping(uint256 epoch => Round)) internal _rounds;
@@ -252,6 +269,10 @@ contract CallZVault is EIP712, ReentrancyGuard {
     /// @notice The split takes over at `eta` once someone applies it. All zero when a schedule is cancelled.
     event SplitScheduled(uint16 holdersBps, uint16 calloutBps, uint16 platformBps, uint256 eta);
     event SubmissionsPausedSet(bool paused);
+    /// @notice `teamWallet` takes over at `eta` once someone applies it. Zero and zero when a schedule is cancelled.
+    event TeamWalletScheduled(address teamWallet, uint256 eta);
+    /// @notice The round rules take over at `eta` once someone applies them. All zero when a schedule is cancelled.
+    event RulesScheduled(uint8 requiredLinks, uint8 maxLinksPerEpoch, uint32 minHoldPpm, uint256 eta);
     event TeamWalletSet(address teamWallet);
     event SplitSet(uint16 holdersBps, uint16 calloutBps, uint16 platformBps);
     event RulesSet(uint8 requiredLinks, uint8 maxLinksPerEpoch, uint32 minHoldPpm);
@@ -331,14 +352,13 @@ contract CallZVault is EIP712, ReentrancyGuard {
 
         _ledgers[token].received += uint128(toHolders + toCallouts);
         Round storage r = _rounds[token][epoch];
-        uint256 totalWeight = r.totalWeight;
-        if (totalWeight == 0) {
+        if (r.totalWeight == 0) {
             // Nobody has called the token out this round yet: the holder share joins the callout pool.
             r.pool += uint128(toHolders + toCallouts);
         } else {
+            // It is for the callers already in the round now. How much each gets is settled at the checkpoint.
             r.pot += uint128(toHolders);
             r.pool += uint128(toCallouts);
-            r.acc += (toHolders * ACC_SCALE) / totalWeight;
         }
         if (!r.listed) {
             r.listed = true;
@@ -452,7 +472,7 @@ contract CallZVault is EIP712, ReentrancyGuard {
         uint256 holding = holdingOf(s.token, s.holder);
         if (s.held < holding) holding = s.held;
         if (holding == 0 || holding * PPM < _totalSupply(s.token) * minHoldPpm) revert BelowMinHold();
-        // The checkpoint keeps what is still held in 128 bits: far above any real supply.
+        // The snapshot is kept in 128 bits: far above any real supply.
         if (holding > type(uint128).max) holding = type(uint128).max;
 
         usedLink[s.linkHash] = true;
@@ -469,9 +489,9 @@ contract CallZVault is EIP712, ReentrancyGuard {
             if (weight != 0) {
                 callers.push(s.holder);
                 e.unlocked = true;
-                e.held = holding;
+                e.held = uint128(holding);
                 e.weight = weight;
-                e.accAtJoin = r.acc;
+                e.potAtJoin = uint104(r.pot);
                 r.totalWeight += weight;
                 emit Snapshot(s.holder, s.token, epoch, holding, s.mcap, weight);
             }
@@ -516,8 +536,8 @@ contract CallZVault is EIP712, ReentrancyGuard {
     /// @notice Collect everything `token` owes the caller for the listed rounds, in one transaction: their part
     ///         of each round's holder share and their callout rewards.
     /// @dev A listed round that is still running, or whose 24-hour claim window has passed, is skipped.
-    ///      The holder share is paid on what the caller still held of their snapshot at the round's checkpoint;
-    ///      what that cuts off stays in the round and is swept. The first claim of a round takes its checkpoint.
+    ///      The holder share is paid as the round's checkpoint fixed it, on what each caller still held of their
+    ///      snapshot then. The first claim of a round takes its checkpoint.
     function claim(address token, uint256[] calldata epochs) external nonReentrant returns (uint256 total) {
         for (uint256 i; i < epochs.length; ++i) {
             total += _claimRound(token, epochs[i]);
@@ -549,8 +569,8 @@ contract CallZVault is EIP712, ReentrancyGuard {
         _sendBnb(msg.sender, total);
     }
 
-    /// @notice Read the balances of all the callers of a finished round, together, and fix what each still holds
-    ///         of their snapshot. Anyone can call it, once per round; the round's first claim does it otherwise.
+    /// @notice Read the balances of all the callers of a finished round, together, and fix what the holder share
+    ///         owes each of them. Anyone can call it, once per round; the round's first claim does it otherwise.
     function checkpoint(address token, uint256 epoch) external nonReentrant {
         if (epoch >= currentEpoch()) revert RoundRunning();
         _checkpoint(token, epoch, _rounds[token][epoch]);
@@ -562,15 +582,53 @@ contract CallZVault is EIP712, ReentrancyGuard {
         if (r.checkpointed) return;
         r.checkpointed = true;
         address[] storage callers = _callers[token][epoch];
+        uint256[] memory shares = _shares(token, epoch, r);
+        uint256 count = shares.length;
+        for (uint256 i; i < count; ++i) {
+            _entries[token][epoch][callers[i]].share = uint104(shares[i]);
+        }
+        emit Checkpointed(token, epoch, count);
+    }
+
+    /// @dev What the holder share of a round owes each of its callers, in the order they joined, on what their
+    ///      wallets hold at this moment.
+    ///
+    ///      A caller's weight is their snapshot weight cut down to the part of the snapshot they still hold. The
+    ///      fees that arrived between one caller joining and the next are shared between the callers who were
+    ///      already in the round, by those weights. So a snapshot of tokens that have left the wallet weighs
+    ///      nothing and takes nothing from the others, and the amounts add up to no more than the holder share.
+    ///      A stretch of fees whose callers all hold nothing now is owed to nobody and is swept with the round.
+    function _shares(address token, uint256 epoch, Round storage r) private view returns (uint256[] memory shares) {
+        address[] storage callers = _callers[token][epoch];
         uint256 count = callers.length;
+        shares = new uint256[](count);
+        if (count == 0) return shares;
+        // Until the last loop, `shares` holds each caller's weight now.
+        uint256[] memory joinedAt = new uint256[](count);
+        uint256[] memory weightSoFar = new uint256[](count);
+        uint256 running;
         for (uint256 i; i < count; ++i) {
             address holder = callers[i];
             Entry storage e = _entries[token][epoch][holder];
-            uint256 holding = holdingOf(token, holder);
             uint256 held = e.held;
-            e.kept = uint128(holding < held ? holding : held);
+            uint256 holding = holdingOf(token, holder);
+            uint256 weight = holding < held ? FixedPointMathLib.fullMulDiv(e.weight, holding, held) : e.weight;
+            shares[i] = weight;
+            running += weight;
+            weightSoFar[i] = running;
+            joinedAt[i] = e.potAtJoin;
         }
-        emit Checkpointed(token, epoch, count);
+        // From the last caller back: `perWeight` is what one unit of weight earned from the fees that arrived
+        // after caller `i` joined.
+        uint256 perWeight;
+        uint256 upTo = r.pot;
+        for (uint256 i = count; i != 0;) {
+            --i;
+            uint256 among = weightSoFar[i];
+            if (among != 0) perWeight += FixedPointMathLib.fullMulDiv(upTo - joinedAt[i], ACC_SCALE, among);
+            upTo = joinedAt[i];
+            shares[i] = FixedPointMathLib.fullMulDiv(shares[i], perWeight, ACC_SCALE);
+        }
     }
 
     function _claimRound(address token, uint256 epoch) private returns (uint256 total) {
@@ -582,7 +640,7 @@ contract CallZVault is EIP712, ReentrancyGuard {
 
         if (e.unlocked && !e.claimedHolder) {
             e.claimedHolder = true;
-            uint256 payout = _holderPayout(r, e, e.kept);
+            uint256 payout = e.share;
             r.claimedPot += uint104(payout);
             total += payout;
             emit Claimed(msg.sender, token, epoch, 1, payout);
@@ -594,14 +652,6 @@ contract CallZVault is EIP712, ReentrancyGuard {
             total += payout;
             emit Claimed(msg.sender, token, epoch, 2, payout);
         }
-    }
-
-    /// @dev What the holder share owes an entry: its weight's part of every fee that arrived after it joined,
-    ///      cut down in proportion if `holding`, what the holder kept at the checkpoint, is less than their
-    ///      snapshot.
-    function _holderPayout(Round storage r, Entry storage e, uint256 holding) private view returns (uint256 payout) {
-        payout = FixedPointMathLib.fullMulDiv(e.weight, r.acc - e.accAtJoin, ACC_SCALE);
-        if (holding < e.held) payout = FixedPointMathLib.fullMulDiv(payout, holding, e.held);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -674,9 +724,21 @@ contract CallZVault is EIP712, ReentrancyGuard {
         Round storage r = _rounds[token][epoch];
         if (epoch >= currentEpoch() || block.timestamp > claimDeadline(epoch) || r.swept) return (0, 0);
         Entry storage e = _entries[token][epoch][holder];
-        // Before the checkpoint this is an estimate from the wallet's balance now; after it, the amount is fixed.
+        // After the checkpoint the amount is fixed. Before it, this is what a checkpoint taken now would fix,
+        // from the balances of all the round's callers as they are now.
         if (e.unlocked && !e.claimedHolder) {
-            holderPayout = _holderPayout(r, e, r.checkpointed ? e.kept : holdingOf(token, holder));
+            if (r.checkpointed) {
+                holderPayout = e.share;
+            } else {
+                address[] storage callers = _callers[token][epoch];
+                uint256[] memory shares = _shares(token, epoch, r);
+                for (uint256 i; i < shares.length; ++i) {
+                    if (callers[i] == holder) {
+                        holderPayout = shares[i];
+                        break;
+                    }
+                }
+            }
         }
         if (e.links != 0 && !e.claimedCallout) calloutPayout = (uint256(r.pool) / r.links) * e.links;
     }
@@ -741,10 +803,34 @@ contract CallZVault is EIP712, ReentrancyGuard {
         emit SubmissionsPausedSet(paused);
     }
 
-    function setTeamWallet(address teamWallet_) external onlyGuardian {
+    /// @notice Schedule a new team wallet. It can be applied `CHANGE_DELAY` later, and until then the current one
+    ///         keeps being paid. Scheduling again replaces the pending one and restarts the wait.
+    function scheduleTeamWallet(address teamWallet_) external onlyGuardian {
         if (teamWallet_ == address(0)) revert ZeroAddress();
-        teamWallet = teamWallet_;
-        emit TeamWalletSet(teamWallet_);
+        uint256 eta = block.timestamp + CHANGE_DELAY;
+        pendingTeamWallet = teamWallet_;
+        teamWalletEta = uint64(eta);
+        emit TeamWalletScheduled(teamWallet_, eta);
+    }
+
+    /// @notice Drop the scheduled team wallet.
+    function cancelTeamWallet() external onlyGuardian {
+        if (teamWalletEta == 0) revert NothingScheduled();
+        pendingTeamWallet = address(0);
+        teamWalletEta = 0;
+        emit TeamWalletScheduled(address(0), 0);
+    }
+
+    /// @notice Put the scheduled team wallet in place once its wait is over. Anyone can call it.
+    function applyTeamWallet() external {
+        uint256 eta = teamWalletEta;
+        if (eta == 0) revert NothingScheduled();
+        if (block.timestamp < eta) revert TooEarly();
+        address next = pendingTeamWallet;
+        teamWallet = next;
+        pendingTeamWallet = address(0);
+        teamWalletEta = 0;
+        emit TeamWalletSet(next);
     }
 
     /// @notice Schedule a change to how future deposits are split. The three shares add up to 100% and the
@@ -779,12 +865,36 @@ contract CallZVault is EIP712, ReentrancyGuard {
         emit SplitSet(holdersBps, calloutBps, platformBps);
     }
 
-    function setRules(uint8 requiredLinks_, uint8 maxLinksPerEpoch_, uint32 minHoldPpm_) external onlyGuardian {
+    /// @notice Schedule a change to the round rules: the links a holder needs to join the holder share, the most
+    ///         links a holder can record in a round, and the least a holder must hold. It can be applied
+    ///         `CHANGE_DELAY` later. Scheduling again replaces the pending rules and restarts the wait.
+    function scheduleRules(uint8 requiredLinks_, uint8 maxLinksPerEpoch_, uint32 minHoldPpm_) external onlyGuardian {
         if (requiredLinks_ == 0 || maxLinksPerEpoch_ < requiredLinks_ || minHoldPpm_ > PPM) revert InvalidRules();
-        requiredLinks = requiredLinks_;
-        maxLinksPerEpoch = maxLinksPerEpoch_;
-        minHoldPpm = minHoldPpm_;
-        emit RulesSet(requiredLinks_, maxLinksPerEpoch_, minHoldPpm_);
+        uint256 eta = block.timestamp + CHANGE_DELAY;
+        pendingRequiredLinks = requiredLinks_;
+        pendingMaxLinksPerEpoch = maxLinksPerEpoch_;
+        pendingMinHoldPpm = minHoldPpm_;
+        rulesEta = uint64(eta);
+        emit RulesScheduled(requiredLinks_, maxLinksPerEpoch_, minHoldPpm_, eta);
+    }
+
+    /// @notice Drop the scheduled rules.
+    function cancelRules() external onlyGuardian {
+        if (rulesEta == 0) revert NothingScheduled();
+        rulesEta = 0;
+        emit RulesScheduled(0, 0, 0, 0);
+    }
+
+    /// @notice Put the scheduled rules in place once their wait is over. Anyone can call it.
+    function applyRules() external {
+        uint256 eta = rulesEta;
+        if (eta == 0) revert NothingScheduled();
+        if (block.timestamp < eta) revert TooEarly();
+        rulesEta = 0;
+        requiredLinks = pendingRequiredLinks;
+        maxLinksPerEpoch = pendingMaxLinksPerEpoch;
+        minHoldPpm = pendingMinHoldPpm;
+        emit RulesSet(requiredLinks, maxLinksPerEpoch, minHoldPpm);
     }
 
     /// @notice Hand the guardian role over in two steps, so it cannot go to an address nobody controls.

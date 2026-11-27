@@ -46,9 +46,9 @@ All three are the same mint with the same rules. `CallZLauncher` is the design t
 The code in this repository (what the site points at; each is deployed from the site by one transaction)
 CallZLauncherFactory     0x1C43a0bBf01034c30c9d30F23C00E7F3019E678c   (CREATE2: same on BNB Chain and Testnet)
 CallZCurveFactory        0xCe3e30FC569C7931eB4F366c9F2EE5287D3637Ca   (CREATE2: BNB Chain; not deployed)
-CallZVault               0x15Bb217b839614EC6a862cea438327FA035E230A   (BNB Chain; holds and pays every fee)
-CallZRouter              0xC9Ff02BD30FE94B3F89756C3a257a131C9963e07   (BNB Chain; takes the trading fee)
-CallZPancakeFactory      0xe8D809b1d8b20DA7B879Ee15552e3B93A6Ce43ba   (BNB Chain; takes the launch fee)
+CallZVault               0x78578cB78c57354E4ecaAF8033646aabC49b8902   (BNB Chain; holds and pays every fee)
+CallZRouter              0x09BF2F6c6988C12b82BeBA3936e7b3A602a1dc57   (BNB Chain; takes the trading fee)
+CallZPancakeFactory      0xfFe694AC904B2FC664cd8f0D83AEA156EeBB321f   (BNB Chain; takes the launch fee)
 
 Earlier deployments (code as of commit cd84ceb, before the review fixes)
 CallZLauncherFactory     0x873040D38Bd73eF1cE7d8D814278605CF6b697b3   (BNB Chain Testnet; its mints are still listed and usable on the site)
@@ -58,7 +58,7 @@ CallZPancakeFactory      0x28507071955b19E99C5DDa572fc690b8856f65D0   (BNB Chain
 CallZPancakeFactory v1   0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (BNB Chain; no fee; its mints still list)
 ```
 
-The three CallZ fee contracts were deployed on BNB Chain on 27 Nov 2026 from the site's Launch page, and the site trades and launches through them. Their sources must not change now: a change would move their addresses. `CallZLauncherFactory` deploys from the testnet launch page with one transaction. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
+The three CallZ fee contracts listed first are deployed from the site's Launch page, one transaction each, and the site trades and launches through them once they have code on BNB Chain. The earlier three were deployed on 27 Nov 2026 and are no longer used. Once the current ones are deployed their sources must not change: a change would move their addresses. `CallZLauncherFactory` deploys with one transaction from the testnet launch page, and on BNB Chain from the Launch page, to the same address on both. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
 
 ## Fees and the vault
 
@@ -75,7 +75,9 @@ The vault is a callout reward system. It keeps a separate book per token and spl
 | 30% | Callout pool | Split equally per verified callout of the round. |
 | 25% | Platform | Sent to the team wallet inside the deposit that pays the fee. |
 
-**No staking.** The vault never holds anyone's tokens. A holder's tokens stay in their wallet; when their callout is recorded, the vault reads the wallet's balance (the snapshot), and never counts more than the wallet held when the callout was posted, which the attestation carries. A caller's weight is that snapshot divided by the token's market cap when they posted the callout, so the same holdings called at half the market cap weigh twice as much: the weight follows the gain since the call. A fee is shared only between the callers already in the round, so a caller earns from the trading that comes after their callout: the earlier the call, the more volume it earns from. A fee that arrives before the round has any caller goes to its callout pool. At the claim, a holder who holds less than their snapshot is paid in proportion to what they still hold.
+**No staking.** The vault never holds anyone's tokens. A holder's tokens stay in their wallet; when their callout is recorded, the vault reads the wallet's balance (the snapshot), and never counts more than the wallet held when the callout was posted, which the attestation carries. A caller's weight is that snapshot divided by the token's market cap when they posted the callout, so the same holdings called at half the market cap weigh twice as much: the weight follows the gain since the call. A fee is shared only between the callers already in the round, so a caller earns from the trading that comes after their callout: the earlier the call, the more volume it earns from. A fee that arrives before the round has any caller goes to its callout pool.
+
+**The checkpoint.** After a round ends, the balances of all its callers are read together in one transaction (`checkpoint`, taken by the round's first claim, or by anyone). Each caller's weight is cut down to the part of their snapshot they still hold, and the holder share is worked out on those weights: every fee is shared between the callers who were already in the round when it arrived. A caller who holds half of their snapshot weighs half; one who holds nothing weighs nothing. What they give up goes to the callers who still hold, not to the team wallet. Tokens passed from one caller's wallet to another's count once, in the wallet that holds them at the checkpoint, and take nothing from the other callers. A fee whose callers all hold nothing by then is owed to nobody and is swept with the round. A round's holder share takes at most 256 holders per token, so the checkpoint fits in one transaction; a callout recorded after that still earns from the callout pool. The balance is read at one moment, so a caller who sold can hold the tokens again for that moment at the cost of buying them back: the vault does not lock tokens and cannot rule that out.
 
 **The feed shows the position.** Each callout is stored with the wallet's holdings and the market cap at the moment it was posted, and shows "Called at $X market cap". The indexer re-reads the wallet's balance, and when it has sold, the callout shows the position as closed and the market cap it was closed at.
 
@@ -85,7 +87,7 @@ Nobody signs per payout. A holder's single `claim(token, rounds)` pays everythin
 
 **Solvency.** Each token has a ledger of what its fees brought in for its callers and what has been paid out of it. A payout that would take a token past what it produced reverts (`Insolvent`), so one token's rewards are never paid with another's fees. `ledgerOf(token)` shows both numbers.
 
-**Roles and keys.** The team wallet is the guardian of the vault, the router and the factory, the receiver of the platform share, and the first attester. The guardian can change the two fee rates (within their caps), replace the attester and the team wallet, move the split (the platform share can never exceed 25%) and change the round rules. It cannot touch amounts already owed. No server key can move funds or approve anything: fees are split by the contracts, and callouts are approved by the attester wallet signing in the browser at `#/review`. The Worker's configuration holds two public addresses (`CALLOUT_ATTESTER`, `CALLZ_VAULT`). Its one optional secret is the gas-only relayer key above.
+**Roles and keys.** The team wallet is the guardian of the vault, the router and the factory, the receiver of the platform share, and the first attester. The guardian can change the two fee rates (within their caps). In the vault it can replace the attester, replace the team wallet, move the split (the platform share can never exceed 25%) and change the round rules, but none of these at once: each is scheduled in public (`scheduleAttester`, `scheduleTeamWallet`, `scheduleSplit`, `scheduleRules`), waits two days, and is then put in place by anyone (`applyAttester` and so on). The one thing it can do at once is stop callouts from being recorded (`setSubmissionsPaused`), which is the answer to an attester key that has leaked. It cannot touch amounts already owed. A caller's weight comes from what the attester signs (the market cap and the holdings when the callout was posted), so the attester is trusted for that; it can be a separate key from the guardian, or a multisig (the vault accepts ERC-1271 signatures), and is replaced through the same two-day schedule. No server key can move funds or approve anything: fees are split by the contracts, and callouts are approved by the attester wallet signing in the browser at `#/review`. The Worker's configuration holds two public addresses (`CALLOUT_ATTESTER`, `CALLZ_VAULT`). Its one optional secret is the gas-only relayer key above.
 
 Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAULT` slots on a Flap tax token, behind `DirectLaunchVaultFactoryBase`), X proofs through Flap's `XGeneralVerifier` (X posts go through the same review as the other sites), and the Trigger Service auto-sweep (finished rounds are swept by the next fee instead). The passdown's ungated holder dividend became the holder share above: without staking, a vault cannot weigh holders of a token it does not control except at the moment they act.
 
@@ -102,7 +104,7 @@ Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAUL
   - NFTs that have not claimed earn no dividends on this path, because the Portal excludes the Launcher from them.
     Holders should claim early.
   - Flap's Guardian can call `openRefunds` on any mint that has not launched. It is the recovery path.
-- **Three changes made in review on 27 Nov 2026 moved the contracts to new addresses.** The site points at the
+- **Changes made in review on 27 Nov 2026 moved the contracts to new addresses, the vault and what names it twice.** The site points at the
   new ones, listed first above. Until each is deployed (one transaction each from the site: the Launcher Factory
   from the testnet launch page, the vault, router and mint factory from the Launch page), the site shows it as
   not deployed, trades go straight through PancakeSwap's router with no CallZ fee, and callouts cannot be
@@ -111,17 +113,18 @@ Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAUL
   - `CallZLauncher`: a mint whose token name or symbol Flap's anti-scam module flags is refused when it is
     created. With the check the contract passed the 24,576-byte size limit at 99,999 optimizer runs, so
     `foundry.toml` compiles it, its factory and its tests at 2,000 runs. Build from a clean `out/`.
-  - `CallZVault`: replacing the attester or changing the split is scheduled and takes effect two days later
-    (`scheduleAttester`/`applyAttester`, `scheduleSplit`/`applySplit`), and the guardian can stop callouts
+  - `CallZVault`: replacing the attester or the team wallet, changing the split and changing the round rules
+    are each scheduled and take effect two days later (`scheduleAttester`, `scheduleTeamWallet`,
+    `scheduleSplit`, `scheduleRules` and their `apply…` and `cancel…`), and the guardian can stop callouts
     being recorded at once (`setSubmissionsPaused`). After a round ends, the balances of all its callers are
     read together in one transaction (`checkpoint`, taken by the round's first claim), and the holder share is
-    paid on that reading, so tokens passed between callers' wallets count once. A round's holder share takes at
-    most 256 holders per token. Where "Fees and the vault" below says the holder share is paid on what a caller
-    holds at the claim, in these sources it is what they hold at the checkpoint.
+    worked out on what each still holds, so tokens passed between callers' wallets count once and take nothing
+    from the other callers. A round's holder share takes at most 256 holders per token. "Fees and the vault"
+    above describes these sources.
   - `CallZCurve` (never deployed): the mint earned BNB dividends on the tokens of unclaimed NFTs and nothing
     could withdraw them. An NFT is now paid its part of them, in BNB, when it claims.
-  - Tests on these sources: 81 of 81 pass (`CallZLauncher` 18 on BNB Chain Testnet and 18 on a fork of BNB
-    Chain, vault and fees 19, `CallZPancake` 16, `CallZCurve` 10). The counts in the lines below are for the
+  - Tests on these sources: 84 of 84 pass (`CallZLauncher` 18 on BNB Chain Testnet and 18 on a fork of BNB
+    Chain, vault and fees 22, `CallZPancake` 16, `CallZCurve` 10). The counts in the lines below are for the
     deployed code.
 
 - `CallZVault`, `CallZRouter` and the launch fee: 16 fork tests pass on a fork of BNB Chain (`test/callz/CallZFees.BSC.fork.t.sol`), against the real PancakeSwap and two live Flap tax tokens, one pooled against BNB and one against USDT: the split to the wei, the snapshot (nothing leaves the wallet), weighting by market cap and by the volume after the call, selling cutting the payout, refusals, the 24-hour window, the team wallet being paid by the next fee, a team wallet that refuses BNB, the fee caps, an attester wallet with delegated code (EIP-7702), and the per-token solvency ledger. `apps/web/tests/fees.pw.ts` drives a buy, a sell, a callout (posted, approved, recorded) and the claim after the round ends through the pages on a local fork.

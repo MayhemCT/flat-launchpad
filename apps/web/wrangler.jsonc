@@ -40,6 +40,6 @@
     "CALLOUT_ATTESTER": "0x2fcb91295c790d15d5f21ed9d95c6a89e0683c58",
     // The CallZ rewards vault that approvals are signed for. Written by scripts/callz-deployment.mjs: a public
     // contract address.
-    "CALLZ_VAULT": "0x15Bb217b839614EC6a862cea438327FA035E230A"
+    "CALLZ_VAULT": "0x78578cB78c57354E4ecaAF8033646aabC49b8902"
   }
 }

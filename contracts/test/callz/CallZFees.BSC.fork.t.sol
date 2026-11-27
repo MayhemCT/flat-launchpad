@@ -360,21 +360,25 @@ contract CallZFeesBSCForkTest is Test {
     }
 
     function test_07_theTeamIsPaidWithoutSendingAnythingAndItsShareCanOnlyBeLowered() public {
-        // The platform's 25% reaches the team wallet inside the deposit that pays the fee.
+        // A new team wallet is scheduled, and the one in place keeps being paid while it waits: the platform's
+        // 25% reaches it inside the deposit that pays the fee.
         address token = address(0xBEEF);
+        Refuser refuser = new Refuser();
+        vm.prank(guardian);
+        vault.scheduleTeamWallet(address(refuser));
         uint256 before = team.balance;
         vm.prank(bob);
         vault.deposit{value: 1 ether}(token);
         assertEq(team.balance - before, 0.25 ether);
         assertEq(vault.platformAccrued(), 0);
 
-        // A team wallet that refuses BNB does not stop fees coming in: its money waits for `collect`.
-        Refuser refuser = new Refuser();
-        vm.prank(guardian);
-        vault.setTeamWallet(address(refuser));
+        // A team wallet that refuses BNB does not stop fees coming in: its money waits for `collect`. By the time
+        // it is in place the first round's claim window has passed, so the next fee sweeps that round to it too.
+        vm.warp(block.timestamp + vault.CHANGE_DELAY() + 1);
+        vault.applyTeamWallet();
         vm.prank(bob);
         vault.deposit{value: 1 ether}(token);
-        assertEq(vault.platformAccrued(), 0.25 ether);
+        assertEq(vault.platformAccrued(), 0.25 ether + 0.75 ether);
         vm.expectRevert(CallZVault.BnbTransferFailed.selector);
         vault.collect(10);
         // BNB sent without a token is the team's too.
@@ -382,11 +386,14 @@ contract CallZFeesBSCForkTest is Test {
         (bool ok,) = address(vault).call{value: 1 ether}("");
         assertTrue(ok);
         vm.prank(guardian);
-        vault.setTeamWallet(team);
+        vault.scheduleTeamWallet(team);
+        vm.warp(block.timestamp + vault.CHANGE_DELAY() + 1);
+        vault.applyTeamWallet();
         before = team.balance;
         vm.prank(carol); // anyone can trigger it; it only ever pays the team wallet
-        assertEq(vault.collect(10), 1.25 ether);
-        assertEq(team.balance - before, 1.25 ether);
+        // What waited (1 + 1 BNB) and the second round, whose window has passed by now.
+        assertEq(vault.collect(10), 2.75 ether);
+        assertEq(team.balance - before, 2.75 ether);
         vm.expectRevert(CallZVault.NothingToClaim.selector);
         vault.collect(10);
 
@@ -399,10 +406,10 @@ contract CallZFeesBSCForkTest is Test {
         vault.scheduleSplit(4500, 3000, 2000); // does not add up
         vault.scheduleSplit(6000, 4000, 0);
         vm.expectRevert(CallZVault.InvalidRules.selector);
-        vault.setRules(0, 3, 100);
+        vault.scheduleRules(0, 3, 100);
         vm.expectRevert(CallZVault.InvalidRules.selector);
-        vault.setRules(4, 3, 100);
-        vault.setRules(2, 5, 0);
+        vault.scheduleRules(4, 3, 100);
+        vault.scheduleRules(2, 5, 0);
         vm.expectRevert(CallZVault.ZeroAddress.selector);
         vault.scheduleAttester(address(0));
         vault.scheduleAttester(bob);
@@ -414,6 +421,10 @@ contract CallZFeesBSCForkTest is Test {
         assertEq(vault.pendingAttester(), bob);
         assertEq(vault.platformBps(), 2500, "the split is unchanged until the delay has passed");
         assertEq(vault.splitEta(), block.timestamp + vault.CHANGE_DELAY());
+        assertEq(vault.requiredLinks(), 1, "the round rules are unchanged until the delay has passed");
+        assertEq(vault.rulesEta(), block.timestamp + vault.CHANGE_DELAY());
+        vm.expectRevert(CallZVault.TooEarly.selector);
+        vault.applyRules();
         vm.expectRevert(CallZVault.TooEarly.selector);
         vault.applyAttester();
         vm.expectRevert(CallZVault.TooEarly.selector);
@@ -427,13 +438,17 @@ contract CallZFeesBSCForkTest is Test {
         vault.applyAttester();
         vm.prank(carol);
         vault.applySplit();
+        vm.prank(carol);
+        vault.applyRules();
         assertEq(vault.attester(), bob);
         assertEq(vault.platformBps(), 0);
+        assertEq(vault.requiredLinks(), 2);
+        assertEq(vault.maxLinksPerEpoch(), 5);
+        assertEq(vault.minHoldPpm(), 0);
         vm.expectRevert(CallZVault.NothingScheduled.selector);
         vault.applySplit();
-        // The rounds that finished while the changes waited are settled first, so the next line measures only
-        // the new deposit.
-        vault.collect(10);
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applyRules();
         vm.prank(alice);
         vault.acceptGuardian();
         assertEq(vault.guardian(), alice);
@@ -623,7 +638,8 @@ contract CallZFeesBSCForkTest is Test {
         assertLe(paid, received);
     }
 
-    /// @dev Buying, calling out and selling earns nothing from the holder share: it is paid on what is still held.
+    /// @dev Calling out and then holding nothing at the checkpoint earns nothing from the holder share: it is paid
+    ///      on what is still held, and what that caller gives up goes to the callers who hold, not to the team.
     function test_11_callingOutAndSellingEarnsNothingFromTheHolderShare() public {
         (, address token) = _launch();
         IERC20 erc = IERC20(token);
@@ -642,17 +658,17 @@ contract CallZFeesBSCForkTest is Test {
         // Alice holds nothing now: she is paid for her link, and nothing from the holder share.
         vm.prank(alice);
         assertEq(vault.claim(token, _epochs(epoch)), 0.15 ether);
-        // Bob is paid his half of the holder share and his link. Alice's half stays in the round.
+        // Bob holds the tokens: he is paid the whole holder share and his link. Alice's snapshot weighs nothing.
         vm.prank(bob);
-        assertEq(vault.claim(token, _epochs(epoch)), 0.225 ether + 0.15 ether);
+        assertEq(vault.claim(token, _epochs(epoch)), 0.45 ether + 0.15 ether);
         (uint256 pot,, uint256 claimedPot,,,,,) = vault.roundOf(token, epoch);
-        assertEq(pot - claimedPot, 0.225 ether);
+        assertEq(pot - claimedPot, 0, "nothing of the holder share is left over for the team");
 
-        // After the window it goes to the team wallet, with the launch round's unclaimed 0.075.
+        // After the window only the launch round's unclaimed 0.075 goes to the team wallet.
         vm.warp(vault.claimDeadline(epoch) + 1);
         uint256 before = team.balance;
         vault.collect(10);
-        assertEq(team.balance - before, 0.225 ether + 0.075 ether);
+        assertEq(team.balance - before, 0.075 ether);
     }
 
     /// @dev Two tokens share the vault. Everything one token can pay out, claimed or swept in full, never passes
@@ -725,10 +741,11 @@ contract CallZFeesBSCForkTest is Test {
         vm.warp((epoch + 1) * DAY + 1);
         (,,,,, uint256 aliceHolder, uint256 aliceCallout) = vault.progress(token, epoch, alice);
         (,,,,, uint256 bobHolder, uint256 bobCallout) = vault.progress(token, epoch, bob);
-        // Holder share: all 0.45 of the first BNB, and two thirds of the second.
-        assertApproxEqAbs(aliceHolder, 0.45 ether + 0.3 ether, 10);
-        // A third of the second BNB, halved because he holds half of his snapshot.
-        assertApproxEqAbs(bobHolder, 0.075 ether, 10);
+        // Bob's weight is halved because he holds half of his snapshot: a quarter of hers. Holder share: all 0.45
+        // of the first BNB is hers, and the second is shared four to one.
+        assertApproxEqAbs(aliceHolder, 0.45 ether + 0.36 ether, 10);
+        assertApproxEqAbs(bobHolder, 0.09 ether, 10);
+        assertLe(aliceHolder + bobHolder, 0.9 ether, "never more than the holder share");
         // The pool is per callout, whoever made it: 0.3 a BNB, two callouts.
         assertEq(aliceCallout, 0.3 ether);
         assertEq(bobCallout, 0.3 ether);
@@ -844,7 +861,7 @@ contract CallZFeesBSCForkTest is Test {
         // Bob holds the bag and claims first. His claim takes the round's checkpoint: alice's wallet is read in
         // the same transaction and holds nothing.
         vm.prank(bob);
-        assertEq(vault.claim(token, _epochs(epoch)), 0.225 ether + 0.15 ether, "bob: his half of the holder share and his link");
+        assertEq(vault.claim(token, _epochs(epoch)), 0.45 ether + 0.15 ether, "bob: the holder share and his link");
         (, checkpointed) = vault.callersOf(token, epoch);
         assertTrue(checkpointed);
 
@@ -857,10 +874,159 @@ contract CallZFeesBSCForkTest is Test {
         vm.prank(alice);
         assertEq(vault.claim(token, _epochs(epoch)), 0.15 ether, "alice: her link only. The bag was counted in bob's wallet");
 
-        // The half of the holder share nobody earned stays in the round, and a second checkpoint changes nothing.
+        // The bag earned the holder share once, and a second checkpoint changes nothing.
         vault.checkpoint(token, epoch);
         (uint256 pot,, uint256 claimedPot,,,,,) = vault.roundOf(token, epoch);
-        assertEq(pot - claimedPot, 0.225 ether);
+        assertEq(pot, 0.45 ether);
+        assertEq(claimedPot, 0.45 ether);
+    }
+
+    /// @dev Audit: a bag passed between two wallets takes nothing from the other callers. Alice calls the token
+    ///      out, passes her bag to bob, bob calls it out too, and dave calls it out with his own tokens. The
+    ///      bag is snapshotted twice, but at the checkpoint each caller weighs what they hold then: dave is paid
+    ///      what he would have been paid had the second snapshot never been taken, and the team gets none of it.
+    function test_20_aBagPassedBetweenWalletsTakesNothingFromTheOtherCallers() public {
+        (, address token) = _launch();
+        IERC20 erc = IERC20(token);
+        address dave = address(uint160(0xC0DE0017));
+        vm.prank(alice);
+        erc.transfer(dave, 100_000_000e18); // alice 400M, dave 100M
+        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
+        uint256 epoch = vault.currentEpoch();
+
+        _submit(alice, token, 0, "https://x.com/alice/status/20");
+        vm.prank(alice);
+        erc.transfer(bob, 400_000_000e18);
+        _submit(bob, token, 0, "https://x.com/bob/status/20");
+        _submit(dave, token, 0, "https://x.com/dave/status/20");
+        (,, uint256 totalWeight,) = _round(token, epoch);
+        assertEq(totalWeight, 900_000_000e18 * 10, "the snapshots count the bag twice");
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token);
+
+        vm.warp((epoch + 1) * DAY + 1);
+        // Before anyone claims, the page already shows each caller what the checkpoint will fix.
+        (,,,,, uint256 daveHolder,) = vault.progress(token, epoch, dave);
+        assertApproxEqAbs(daveHolder, 0.09 ether, 10, "dave: a fifth of the holder share, as with one snapshot of the bag");
+        vault.checkpoint(token, epoch);
+        (,,,,, uint256 aliceHolder,) = vault.progress(token, epoch, alice);
+        (,,,,, uint256 bobHolder,) = vault.progress(token, epoch, bob);
+        (,,,,, uint256 daveFixed,) = vault.progress(token, epoch, dave);
+        assertEq(aliceHolder, 0, "the wallet the bag left weighs nothing");
+        assertApproxEqAbs(bobHolder, 0.36 ether, 10, "the bag earns once, where it is");
+        assertEq(daveFixed, daveHolder);
+
+        vm.prank(dave);
+        assertEq(vault.claim(token, _epochs(epoch)), daveFixed + 0.1 ether);
+        vm.prank(bob);
+        vault.claim(token, _epochs(epoch));
+        (uint256 pot,, uint256 claimedPot,,,,,) = vault.roundOf(token, epoch);
+        assertLe(claimedPot, pot);
+        assertLt(pot - claimedPot, 10, "the holder share went to the callers who hold, to the wei");
+    }
+
+    /// @dev Fees are shared between the callers who were in the round when they arrived, on what they hold at the
+    ///      checkpoint. A caller who joined later earns nothing from a fee that arrived before them, even when
+    ///      the earlier caller holds nothing at the checkpoint: that fee stays in the round and is swept.
+    function test_21_aFeeWhoseCallersHoldNothingStaysInTheRound() public {
+        (, address token) = _launch();
+        IERC20 erc = IERC20(token);
+        vm.prank(alice);
+        erc.transfer(bob, 100_000_000e18); // alice 400M, bob 100M
+        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
+        uint256 epoch = vault.currentEpoch();
+
+        _submit(alice, token, 0, "https://x.com/alice/status/21");
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token); // alice is the only caller: 0.45 for her snapshot
+        _submit(bob, token, 0, "https://x.com/bob/status/21");
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token); // 0.45 between alice and bob
+        vm.startPrank(alice);
+        erc.transfer(address(0xdead), erc.balanceOf(alice)); // alice sells everything
+        vm.stopPrank();
+
+        vm.warp((epoch + 1) * DAY + 1);
+        vm.prank(bob);
+        assertEq(vault.claim(token, _epochs(epoch)), 0.45 ether + 0.3 ether, "bob: all of the second fee, and his link");
+        vm.prank(alice);
+        assertEq(vault.claim(token, _epochs(epoch)), 0.3 ether, "alice: her link only");
+        (uint256 pot,, uint256 claimedPot,,,,,) = vault.roundOf(token, epoch);
+        assertEq(pot - claimedPot, 0.45 ether, "the first fee was owed to nobody");
+
+        vm.warp(vault.claimDeadline(epoch) + 1);
+        uint256 before = team.balance;
+        vault.collect(10);
+        assertEq(team.balance - before, 0.45 ether + 0.075 ether, "it is swept with the launch round's 0.075");
+    }
+
+    /// @dev Audit: the guardian cannot replace the team wallet or change the round rules at once. Both are
+    ///      scheduled in public, wait out the delay, can be dropped, and are put in place by anyone afterwards.
+    function test_22_theTeamWalletAndTheRoundRulesWaitOutTheDelay() public {
+        address next = address(uint160(0xC0DE0018));
+        vm.expectRevert(CallZVault.NotGuardian.selector);
+        vault.scheduleTeamWallet(next);
+        vm.expectRevert(CallZVault.NotGuardian.selector);
+        vault.scheduleRules(1, 3, 100);
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applyTeamWallet();
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applyRules();
+
+        vm.startPrank(guardian);
+        vm.expectRevert(CallZVault.ZeroAddress.selector);
+        vault.scheduleTeamWallet(address(0));
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.cancelTeamWallet();
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.cancelRules();
+        vault.scheduleTeamWallet(next);
+        vault.scheduleRules(1, 2, 500);
+        vm.stopPrank();
+        assertEq(vault.pendingTeamWallet(), next);
+        assertEq(vault.teamWalletEta(), block.timestamp + 2 days);
+        assertEq(vault.rulesEta(), block.timestamp + 2 days);
+        assertEq(vault.teamWallet(), team, "the team wallet in place is unchanged");
+        assertEq(vault.maxLinksPerEpoch(), 3, "and so are the rules");
+
+        // Only the guardian can drop a scheduled change, and a dropped one cannot be applied.
+        vm.expectRevert(CallZVault.NotGuardian.selector);
+        vault.cancelTeamWallet();
+        vm.startPrank(guardian);
+        vault.cancelTeamWallet();
+        vault.cancelRules();
+        vm.stopPrank();
+        vm.warp(block.timestamp + 2 days);
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applyTeamWallet();
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applyRules();
+
+        // Scheduled again, each waits the full delay from the new schedule.
+        vm.startPrank(guardian);
+        vault.scheduleTeamWallet(next);
+        vault.scheduleRules(1, 2, 500);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 2 days - 1);
+        vm.expectRevert(CallZVault.TooEarly.selector);
+        vault.applyTeamWallet();
+        vm.expectRevert(CallZVault.TooEarly.selector);
+        vault.applyRules();
+        vm.warp(block.timestamp + 1);
+        vm.startPrank(carol);
+        vault.applyTeamWallet();
+        vault.applyRules();
+        vm.stopPrank();
+        assertEq(vault.teamWallet(), next);
+        assertEq(vault.pendingTeamWallet(), address(0));
+        assertEq(vault.maxLinksPerEpoch(), 2);
+        assertEq(vault.minHoldPpm(), 500);
+
+        // The new wallet is the one paid from here on.
+        uint256 before = next.balance;
+        vm.prank(bob);
+        vault.deposit{value: 1 ether}(address(0xBEEF));
+        assertEq(next.balance - before, 0.25 ether);
     }
 
     /// @dev Audit: the guardian cannot swap the attester at once. The new one is scheduled in public and the old
