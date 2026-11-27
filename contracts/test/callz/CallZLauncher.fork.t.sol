@@ -472,7 +472,7 @@ abstract contract CallZLauncherFork is ForkBase {
         CallZLauncher launcher = _create("raid-upgrade");
         assertEq(factory.launcherCount(), 1);
         assertEq(factory.launchers(0), address(launcher), "the factory lists its Launchers");
-        assertEq(launcher.version(), "1.0.0");
+        assertEq(launcher.version(), "1.1.0");
 
         vm.prank(alice);
         launcher.mint{value: 3 * PRICE}();
@@ -544,6 +544,39 @@ abstract contract CallZLauncherFork is ForkBase {
         vm.prank(alice);
         launcher.claim();
         assertEq(IERC20(launcher.token()).balanceOf(address(launcher)), 0, "nothing is left in the Launcher");
+    }
+
+    /// @dev Audit: a name or symbol that Flap's anti-scam module flags is refused when the mint is created, before
+    ///      any NFT is sold. The module is the live one on the forked chain.
+    function test_18_aNameOrSymbolFlaggedAsAScamIsRefused() public {
+        _open();
+        uint256 fee = portal.SALT_LOCK_FEE();
+
+        // A flagged symbol under an ordinary name.
+        CallZConfig memory c = _config("raid-scam-symbol");
+        c.symbol = "USDT";
+        vm.prank(creator);
+        vm.expectRevert(CallZLauncher.ScamWord.selector);
+        portal.newLauncher{value: fee}(address(factory), abi.encode(c));
+
+        // A flagged name under an ordinary symbol.
+        c = _config("raid-scam-name");
+        c.name = "USDT";
+        vm.prank(creator);
+        vm.expectRevert(CallZLauncher.ScamWord.selector);
+        portal.newLauncher{value: fee}(address(factory), abi.encode(c));
+
+        // Both.
+        c = _config("raid-scam-both");
+        c.name = "USDT";
+        c.symbol = "USDT";
+        vm.prank(creator);
+        vm.expectRevert(CallZLauncher.ScamWord.selector);
+        portal.newLauncher{value: fee}(address(factory), abi.encode(c));
+
+        // An ordinary name and symbol still create a mint.
+        CallZLauncher launcher = _create("raid-scam-control");
+        assertEq(launcher.tokenSymbol(), "RAIDX", "an ordinary mint is created as before");
     }
 
     function test_12_theHeaviestTransactionsFitTheGasCap() public {

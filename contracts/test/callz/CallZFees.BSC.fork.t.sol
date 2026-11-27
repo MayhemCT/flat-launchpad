@@ -391,24 +391,49 @@ contract CallZFeesBSCForkTest is Test {
         vault.collect(10);
 
         vm.expectRevert(CallZVault.NotGuardian.selector);
-        vault.setSplit(4500, 3000, 2500);
+        vault.scheduleSplit(4500, 3000, 2500);
         vm.startPrank(guardian);
         vm.expectRevert(CallZVault.InvalidSplit.selector);
-        vault.setSplit(4500, 2500, 3000); // platform above 25%
+        vault.scheduleSplit(4500, 2500, 3000); // platform above 25%
         vm.expectRevert(CallZVault.InvalidSplit.selector);
-        vault.setSplit(4500, 3000, 2000); // does not add up
-        vault.setSplit(6000, 4000, 0);
+        vault.scheduleSplit(4500, 3000, 2000); // does not add up
+        vault.scheduleSplit(6000, 4000, 0);
         vm.expectRevert(CallZVault.InvalidRules.selector);
         vault.setRules(0, 3, 100);
         vm.expectRevert(CallZVault.InvalidRules.selector);
         vault.setRules(4, 3, 100);
         vault.setRules(2, 5, 0);
         vm.expectRevert(CallZVault.ZeroAddress.selector);
-        vault.setAttester(address(0));
-        vault.setAttester(bob);
+        vault.scheduleAttester(address(0));
+        vault.scheduleAttester(bob);
         vault.transferGuardian(alice);
         vm.stopPrank();
+
+        // Neither change has taken effect: both are scheduled, in public, and wait out the delay.
+        assertEq(vault.attester(), attester, "the attester is unchanged until the delay has passed");
+        assertEq(vault.pendingAttester(), bob);
+        assertEq(vault.platformBps(), 2500, "the split is unchanged until the delay has passed");
+        assertEq(vault.splitEta(), block.timestamp + vault.CHANGE_DELAY());
+        vm.expectRevert(CallZVault.TooEarly.selector);
+        vault.applyAttester();
+        vm.expectRevert(CallZVault.TooEarly.selector);
+        vault.applySplit();
+        vm.warp(block.timestamp + vault.CHANGE_DELAY() - 1);
+        vm.expectRevert(CallZVault.TooEarly.selector);
+        vault.applySplit();
+        vm.warp(block.timestamp + 1);
+        // Once the wait is over anyone can put the change in place: it needs no second signature.
+        vm.prank(carol);
+        vault.applyAttester();
+        vm.prank(carol);
+        vault.applySplit();
         assertEq(vault.attester(), bob);
+        assertEq(vault.platformBps(), 0);
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applySplit();
+        // The rounds that finished while the changes waited are settled first, so the next line measures only
+        // the new deposit.
+        vault.collect(10);
         vm.prank(alice);
         vault.acceptGuardian();
         assertEq(vault.guardian(), alice);
@@ -790,6 +815,157 @@ contract CallZFeesBSCForkTest is Test {
 
     /// @dev Wallets can carry delegated code (EIP-7702). The attester's plain signature still counts then, and a
     ///      signature from anyone else still does not.
+    /// @dev Audit: one bag passed between two callers' wallets is paid once. Both wallets are in the round's holder
+    ///      share with a snapshot of the same tokens. All the round's callers are read together at the
+    ///      checkpoint, so the bag is in one wallet then, and moving it afterwards changes nothing.
+    function test_17_oneBagPassedBetweenWalletsIsPaidOnce() public {
+        (, address token) = _launch();
+        IERC20 erc = IERC20(token);
+        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
+        uint256 epoch = vault.currentEpoch();
+
+        // Alice calls the token out holding the bag, passes the whole bag to bob, and bob calls it out too.
+        uint256 bag = erc.balanceOf(alice);
+        _submit(alice, token, 0, "https://x.com/alice/status/17");
+        vm.prank(alice);
+        erc.transfer(bob, bag);
+        _submit(bob, token, 0, "https://x.com/bob/status/17");
+        (address[] memory callers, bool checkpointed) = vault.callersOf(token, epoch);
+        assertEq(callers.length, 2, "both wallets are in the holder share");
+        assertFalse(checkpointed);
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token);
+
+        // The round is still running: no checkpoint yet.
+        vm.expectRevert(CallZVault.RoundRunning.selector);
+        vault.checkpoint(token, epoch);
+
+        vm.warp((epoch + 1) * DAY + 1);
+        // Bob holds the bag and claims first. His claim takes the round's checkpoint: alice's wallet is read in
+        // the same transaction and holds nothing.
+        vm.prank(bob);
+        assertEq(vault.claim(token, _epochs(epoch)), 0.225 ether + 0.15 ether, "bob: his half of the holder share and his link");
+        (, checkpointed) = vault.callersOf(token, epoch);
+        assertTrue(checkpointed);
+
+        // Now the bag goes back to alice, so that she holds her whole snapshot again when she claims.
+        vm.prank(bob);
+        erc.transfer(alice, bag);
+        assertEq(erc.balanceOf(alice), bag);
+        (,,,,, uint256 holderPayout,) = vault.progress(token, epoch, alice);
+        assertEq(holderPayout, 0, "the page shows her nothing from the holder share");
+        vm.prank(alice);
+        assertEq(vault.claim(token, _epochs(epoch)), 0.15 ether, "alice: her link only. The bag was counted in bob's wallet");
+
+        // The half of the holder share nobody earned stays in the round, and a second checkpoint changes nothing.
+        vault.checkpoint(token, epoch);
+        (uint256 pot,, uint256 claimedPot,,,,,) = vault.roundOf(token, epoch);
+        assertEq(pot - claimedPot, 0.225 ether);
+    }
+
+    /// @dev Audit: the guardian cannot swap the attester at once. The new one is scheduled in public and the old
+    ///      one keeps signing until the delay has passed. What the guardian can do at once is stop callouts being
+    ///      recorded, which is what a leaked attester key calls for.
+    function test_18_aNewAttesterWaitsOutTheDelayAndAPauseStopsCalloutsAtOnce() public {
+        (, address token) = _launch();
+        uint256 newKey = 0xBEEF5EED;
+        address newAttester = vm.addr(newKey);
+
+        vm.expectRevert(CallZVault.NotGuardian.selector);
+        vault.scheduleAttester(newAttester);
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applyAttester();
+        vm.prank(guardian);
+        vault.scheduleAttester(newAttester);
+        assertEq(vault.attesterEta(), block.timestamp + 2 days);
+
+        // During the wait the scheduled attester's approvals are refused and the current one's are accepted.
+        (Submission memory s, bytes memory signature) = _attest(alice, token, 0, "https://x.com/alice/status/18a", newKey);
+        vm.expectRevert(CallZVault.BadSignature.selector);
+        vault.submitAttested(s, "https://x.com/alice/status/18a", signature);
+        _submit(alice, token, 0, "https://x.com/alice/status/18b");
+
+        // A pause takes effect at once and stops every callout, whoever signed it. Claims are not touched.
+        vm.expectRevert(CallZVault.NotGuardian.selector);
+        vault.setSubmissionsPaused(true);
+        vm.prank(guardian);
+        vault.setSubmissionsPaused(true);
+        (s, signature) = _attest(alice, token, 0, "https://x.com/alice/status/18c", ATTESTER_KEY);
+        vm.expectRevert(CallZVault.SubmissionsPaused.selector);
+        vault.submitAttested(s, "https://x.com/alice/status/18c", signature);
+        vm.prank(guardian);
+        vault.setSubmissionsPaused(false);
+
+        // The guardian can drop a scheduled attester, and scheduling again restarts the wait.
+        vm.prank(guardian);
+        vault.cancelAttester();
+        vm.expectRevert(CallZVault.NothingScheduled.selector);
+        vault.applyAttester();
+        vm.prank(guardian);
+        vault.scheduleAttester(newAttester);
+        vm.warp(block.timestamp + 2 days - 1);
+        vm.expectRevert(CallZVault.TooEarly.selector);
+        vault.applyAttester();
+        vm.warp(block.timestamp + 1);
+        vm.prank(carol);
+        vault.applyAttester();
+        assertEq(vault.attester(), newAttester);
+        assertEq(vault.pendingAttester(), address(0));
+
+        // From here on the new attester's approvals count and the old one's do not.
+        (s, signature) = _attest(alice, token, 0, "https://x.com/alice/status/18d", ATTESTER_KEY);
+        vm.expectRevert(CallZVault.BadSignature.selector);
+        vault.submitAttested(s, "https://x.com/alice/status/18d", signature);
+        (s, signature) = _attest(alice, token, 0, "https://x.com/alice/status/18e", newKey);
+        vault.submitAttested(s, "https://x.com/alice/status/18e", signature);
+        assertTrue(vault.usedLink(keccak256("https://x.com/alice/status/18e")));
+    }
+
+    /// @dev Audit: the checkpoint reads every caller of the round in one transaction, so a round's holder share
+    ///      takes at most 256 holders, and reading 256 wallets fits in one transaction with room to spare. A
+    ///      callout recorded after that is still counted, for the callout pool.
+    function test_19_theCheckpointOfAFullRoundFitsInOneTransaction() public {
+        (, address token) = _launch();
+        IERC20 erc = IERC20(token);
+        vm.warp((vault.currentEpoch() + 1) * DAY + 1 hours);
+        uint256 epoch = vault.currentEpoch();
+        uint256 cap = vault.MAX_ROUND_CALLERS();
+        assertEq(cap, 256);
+
+        // 257 wallets, each holding 1M tokens (0.1% of the supply), each with a verified callout.
+        for (uint256 i; i <= cap; ++i) {
+            address holder = address(uint160(0xCA11E7000) + uint160(i));
+            vm.prank(alice);
+            erc.transfer(holder, 1_000_000e18);
+            _submit(holder, token, 0, string.concat("https://x.com/caller/status/", vm.toString(i)));
+        }
+        (address[] memory callers,) = vault.callersOf(token, epoch);
+        assertEq(callers.length, cap, "the holder share is full at the cap");
+        address late = address(uint160(0xCA11E7000) + uint160(cap));
+        (uint256 links, bool inHolderShare,,,,,) = vault.progress(token, epoch, late);
+        assertEq(links, 1, "the callout after the cap is recorded");
+        assertFalse(inHolderShare, "and it is not in the holder share");
+
+        vm.prank(carol);
+        vault.deposit{value: 1 ether}(token);
+        vm.warp((epoch + 1) * DAY + 1);
+
+        uint256 gasBefore = gasleft();
+        vault.checkpoint(token, epoch);
+        uint256 used = gasBefore - gasleft();
+        assertLt(used, 8_000_000, "the checkpoint of a full round is under 8M gas");
+        (, bool checkpointed) = vault.callersOf(token, epoch);
+        assertTrue(checkpointed);
+
+        // Every one of the 257 links earns the same from the callout pool; the 256 in the holder share earn
+        // from it too.
+        vm.prank(late);
+        uint256 linkOnly = vault.claim(token, _epochs(epoch));
+        assertEq(linkOnly, uint256(0.3 ether) / 257, "the late caller is paid its link");
+        vm.prank(callers[0]);
+        assertGt(vault.claim(token, _epochs(epoch)), linkOnly, "a caller in the holder share is paid more than a link");
+    }
+
     function test_13_anAttesterWalletWithDelegatedCodeStillApproves() public {
         (, address token) = _launch();
         vm.etch(attester, hex"ef01008a67b5020ee254ef48e3b6a04927f39baf7e408a");

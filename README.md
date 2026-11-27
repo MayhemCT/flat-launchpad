@@ -84,6 +84,26 @@ Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAUL
 
 ## Status
 
+- **The contract sources here are ahead of what is deployed.** The addresses above, and everything the site
+  uses, run the code as of commit `cd84ceb`. Three changes made in review on 27 Nov 2026 are in the sources and
+  are not deployed. Deploying them gives the changed contracts new addresses; the site's deployment files have
+  not been regenerated, so the site still points at the deployed ones.
+  - `CallZLauncher`: a mint whose token name or symbol Flap's anti-scam module flags is refused when it is
+    created. With the check the contract passed the 24,576-byte size limit at 99,999 optimizer runs, so
+    `foundry.toml` compiles it, its factory and its tests at 2,000 runs. Build from a clean `out/`.
+  - `CallZVault`: replacing the attester or changing the split is scheduled and takes effect two days later
+    (`scheduleAttester`/`applyAttester`, `scheduleSplit`/`applySplit`), and the guardian can stop callouts
+    being recorded at once (`setSubmissionsPaused`). After a round ends, the balances of all its callers are
+    read together in one transaction (`checkpoint`, taken by the round's first claim), and the holder share is
+    paid on that reading, so tokens passed between callers' wallets count once. A round's holder share takes at
+    most 256 holders per token. Where "Fees and the vault" below says the holder share is paid on what a caller
+    holds at the claim, in these sources it is what they hold at the checkpoint.
+  - `CallZCurve` (never deployed): the mint earned BNB dividends on the tokens of unclaimed NFTs and nothing
+    could withdraw them. An NFT is now paid its part of them, in BNB, when it claims.
+  - Tests on these sources: 81 of 81 pass (`CallZLauncher` 18 on BNB Chain Testnet and 18 on a fork of BNB
+    Chain, vault and fees 19, `CallZPancake` 16, `CallZCurve` 10). The counts in the lines below are for the
+    deployed code.
+
 - `CallZVault`, `CallZRouter` and the launch fee: 16 fork tests pass on a fork of BNB Chain (`test/callz/CallZFees.BSC.fork.t.sol`), against the real PancakeSwap and two live Flap tax tokens, one pooled against BNB and one against USDT: the split to the wei, the snapshot (nothing leaves the wallet), weighting by market cap and by the volume after the call, selling cutting the payout, refusals, the 24-hour window, the team wallet being paid by the next fee, a team wallet that refuses BNB, the fee caps, an attester wallet with delegated code (EIP-7702), and the per-token solvency ledger. `apps/web/tests/fees.pw.ts` drives a buy, a sell, a callout (posted, approved, recorded) and the claim after the round ends through the pages on a local fork.
 
 - `CallZLauncher`: 17 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.

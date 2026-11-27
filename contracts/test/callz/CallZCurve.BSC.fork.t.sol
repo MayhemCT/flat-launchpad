@@ -7,12 +7,37 @@ import {ClonesUpgradeable} from "@openzeppelin-contracts-upgradeable/proxy/Clone
 
 import {CallZCurve, CallZCurveConfig, CallZCurveInfo, IBondingCurvePortal} from "src/callz/CallZCurve.sol";
 import {CallZCurveFactory} from "src/callz/CallZCurveFactory.sol";
+import {IDividend} from "src/flap/IDividend.sol";
+
+/// @dev Trading on Flap's bonding curve, for the tests that need taxed trades.
+interface ICurveSwap {
+    struct ExactInputParams {
+        address inputToken; // address(0) = BNB
+        address outputToken;
+        uint256 inputAmount;
+        uint256 minOutputAmount;
+        bytes permitData;
+    }
+
+    function swapExactInput(ExactInputParams calldata params) external payable returns (uint256 outputAmount);
+}
+
+interface ICurveTaxToken {
+    function dividendContract() external view returns (address);
+    function taxProcessor() external view returns (address);
+}
+
+interface ICurveTaxProcessor {
+    function dispatch() external;
+    function pendingDividendQuoteTokenBalance() external view returns (uint256);
+}
 
 /// @notice CallZCurve against Flap's live bonding curve Portal on a fork of BNB Chain. Nothing is pranked on
 ///         the Portal: this is the same permissionless path a real deployment uses. Needs BSC_RPC_URL.
 contract CallZCurveBSCForkTest is Test {
     address internal constant PORTAL = 0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0;
     address internal constant TAX_TOKEN_V3_IMPL = 0x024f18294970B5c76c0691b87f138A0317156422;
+    address internal constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
 
     uint256 internal constant PRICE = 0.01 ether;
     uint256 internal constant NFTS = 10;
@@ -21,6 +46,7 @@ contract CallZCurveBSCForkTest is Test {
     address internal creator = address(uint160(0xC0DE0001));
     address internal alice = address(uint160(0xC0DE0002));
     address internal bob = address(uint160(0xC0DE0003));
+    address internal trader = address(uint160(0xC0DE0004));
     uint256 internal saltCounter;
 
     function setUp() public {
@@ -34,6 +60,7 @@ contract CallZCurveBSCForkTest is Test {
         vm.deal(creator, 1 ether);
         vm.deal(alice, 20 ether);
         vm.deal(bob, 20 ether);
+        vm.deal(trader, 20 ether);
         factory = new CallZCurveFactory(PORTAL);
     }
 
@@ -77,6 +104,31 @@ contract CallZCurveBSCForkTest is Test {
         for (uint256 i; i < ids.length; ++i) {
             ids[i] = from + i;
         }
+    }
+
+    /// @dev A mint of 10 NFTs that has launched: Alice minted NFTs 1 to 4 and Bob NFTs 5 to 10.
+    function _launched(bytes32 seed) internal returns (CallZCurve mint) {
+        mint = _create(_config(seed));
+        vm.prank(alice);
+        mint.mint{value: 4 * PRICE}();
+        vm.prank(bob);
+        mint.mint{value: 6 * PRICE}();
+        assertTrue(mint.launched(), "the mint launched");
+    }
+
+    /// @dev The trader buys on the curve and sells half back, twice, then the tax is dispatched: the dividend
+    ///      part of the buy and sell tax reaches the token's dividend contract.
+    function _tradeAndDispatch(address token) internal {
+        vm.startPrank(trader);
+        for (uint256 i; i < 2; ++i) {
+            uint256 got = ICurveSwap(PORTAL).swapExactInput{value: 0.5 ether}(
+                ICurveSwap.ExactInputParams(address(0), token, 0.5 ether, 0, "")
+            );
+            IERC20(token).approve(PORTAL, got / 2);
+            ICurveSwap(PORTAL).swapExactInput(ICurveSwap.ExactInputParams(token, address(0), got / 2, 0, ""));
+        }
+        vm.stopPrank();
+        ICurveTaxProcessor(ICurveTaxToken(token).taxProcessor()).dispatch();
     }
 
     function test_01_fullJourneyOnTheBondingCurve() public {
@@ -317,5 +369,133 @@ contract CallZCurveBSCForkTest is Test {
         assertTrue(mint.launched());
         assertLt(launchGas, 16_777_216 * 3 / 4, "largest mint + launch leaves a quarter of the cap spare");
         emit log_named_uint("mint 50 NFTs + curve launch, gas", launchGas);
+    }
+
+    /// @dev Until an NFT claims, its tokens are held by the mint, and the mint is a holder like any other: the
+    ///      token pays it BNB dividends. They belong to the NFTs that have not claimed, and nothing stays behind.
+    function test_08_dividendsOfUnclaimedTokensArePaidToTheirNFTs() public {
+        CallZCurve mint = _launched("curve-dividends");
+        address token = mint.token();
+        IDividend dividend = IDividend(mint.dividend());
+        uint256 bnbShare = mint.bnbPerNFT();
+
+        assertEq(address(dividend), ICurveTaxToken(token).dividendContract(), "the token's dividend contract");
+        assertEq(mint.wbnb(), WBNB, "dividends are held as WBNB");
+        assertEq(dividend.dividendToken(), WBNB, "the token pays its dividends in BNB");
+        assertFalse(dividend.excludedFromDividends(address(mint)), "the mint is not excluded from dividends");
+        (uint256 share,,) = dividend.userInfo(address(mint));
+        assertEq(share, IERC20(token).balanceOf(address(mint)), "the mint's dividend share is the tokens it holds");
+        assertEq(dividend.totalShares(), share, "at launch the unclaimed NFTs are the only holders");
+
+        // Taxed trading on the curve: the mint earns dividends on the tokens of the unclaimed NFTs.
+        _tradeAndDispatch(token);
+        uint256 earned = dividend.withdrawableDividendOf(address(mint));
+        assertGt(earned, 0, "the tokens of unclaimed NFTs earn dividends");
+
+        // Alice claims her 4 NFTs: they are paid 4/10 of the dividends, in BNB, with their tokens.
+        uint256 alicePart = earned * 4 / NFTS;
+        assertEq(mint.claimableBnbOf(alice), 4 * bnbShare + alicePart, "alice's claimable BNB");
+        uint256 before_ = alice.balance;
+        vm.prank(alice);
+        mint.claim();
+        assertEq(alice.balance - before_, 4 * bnbShare + alicePart, "4 of 10 NFTs are paid 4/10 of the dividends");
+        assertEq(IERC20(token).balanceOf(alice), 4 * mint.tokensPerNFT(), "alice's tokens came with them");
+        assertEq(mint.claimedCount(), 4);
+        assertEq(dividend.withdrawableDividendOf(address(mint)), 0, "the claim collected what the mint had earned");
+        assertEq(IERC20(WBNB).balanceOf(address(mint)), earned - alicePart, "the rest waits for the 6 other NFTs");
+        assertEq(mint.claimableBnbOf(alice), 0, "an NFT is paid once");
+
+        // More trading. Anyone can make the dividend contract push the mint's dividends, and it pushes WBNB.
+        _tradeAndDispatch(token);
+        uint256 more = dividend.withdrawableDividendOf(address(mint));
+        assertGt(more, 0, "the 6 unclaimed NFTs keep earning");
+        address[] memory holders = new address[](1);
+        holders[0] = address(mint);
+        vm.prank(trader);
+        dividend.distributeDividend(holders);
+        uint256 held = IERC20(WBNB).balanceOf(address(mint));
+        assertEq(held, earned - alicePart + more, "a stranger's push lands in the mint as WBNB");
+
+        // Bob claims the last 6 NFTs: they take everything that is left.
+        assertEq(mint.claimableBnbOf(bob), 6 * bnbShare + held, "bob's claimable BNB");
+        before_ = bob.balance;
+        vm.prank(bob);
+        mint.claimNFTs(_ids(5, 10));
+        assertEq(bob.balance - before_, 6 * bnbShare + held, "the last NFTs are paid all the dividends left");
+        assertEq(IERC20(WBNB).balanceOf(address(mint)), 0, "no WBNB is left in the mint");
+        assertEq(dividend.withdrawableDividendOf(address(mint)), 0, "no dividends are left for the mint to collect");
+        assertLt(address(mint).balance, NFTS, "only rounding dust of the unspent BNB is left in the mint");
+
+        // With every NFT claimed the mint holds no share, so nothing can accrue to it again.
+        (share,,) = dividend.userInfo(address(mint));
+        assertEq(share, 0, "the mint is no longer a holder");
+        _tradeAndDispatch(token);
+        assertEq(dividend.withdrawableDividendOf(address(mint)), 0, "nothing accrues to the mint after the last claim");
+        assertGt(dividend.withdrawableDividendOf(alice), 0, "alice now earns on the tokens she claimed");
+
+        // BNB still cannot be sent to the mint directly.
+        vm.prank(alice);
+        (bool ok,) = address(mint).call{value: 1 ether}("");
+        assertFalse(ok, "direct payments are rejected after the launch too");
+    }
+
+    /// @dev The launch's own first buy is taxed, and the mint is the only holder when that tax is dispatched: the
+    ///      dividend part of it comes back to the NFTs that paid for the buy.
+    function test_09_theLaunchBuysDividendsComeBackToTheNFTs() public {
+        CallZCurve mint = _launched("curve-launch-tax");
+        address token = mint.token();
+        IDividend dividend = IDividend(mint.dividend());
+        ICurveTaxProcessor processor = ICurveTaxProcessor(ICurveTaxToken(token).taxProcessor());
+
+        uint256 pending = processor.pendingDividendQuoteTokenBalance();
+        assertGt(pending, 0, "the launch buy paid tax, and part of it is for dividends");
+        processor.dispatch();
+        uint256 earned = dividend.withdrawableDividendOf(address(mint));
+        assertApproxEqAbs(earned, pending, 10, "the mint is the only holder, so all of it is the NFTs'");
+
+        uint256 aliceBefore = alice.balance;
+        uint256 bobBefore = bob.balance;
+        vm.prank(alice);
+        mint.claim();
+        vm.prank(bob);
+        mint.claim();
+        uint256 bnbShare = mint.bnbPerNFT();
+        assertEq(alice.balance - aliceBefore, 4 * bnbShare + earned * 4 / NFTS, "alice's 4 NFTs");
+        assertEq(bob.balance - bobBefore, 6 * bnbShare + (earned - earned * 4 / NFTS), "bob's 6 NFTs take the rest");
+        assertEq(IERC20(WBNB).balanceOf(address(mint)), 0, "no WBNB is left in the mint");
+        assertEq(dividend.withdrawableDividendOf(address(mint)), 0, "no dividends are left for the mint to collect");
+        emit log_named_uint("dividends returned to the NFTs (wei)", earned);
+    }
+
+    /// @dev Flap's dividend contract is not ours. If collecting from it ever fails, NFTs still claim their tokens,
+    ///      and what could not be collected is paid with the next claim that can collect it.
+    function test_10_aFailingDividendContractDoesNotBlockClaims() public {
+        CallZCurve mint = _launched("curve-dividend-down");
+        address token = mint.token();
+        IDividend dividend = IDividend(mint.dividend());
+        _tradeAndDispatch(token);
+        uint256 earned = dividend.withdrawableDividendOf(address(mint));
+        assertGt(earned, 0, "the mint has dividends to collect");
+
+        // Fault injection: every call that collects the mint's dividends reverts.
+        vm.mockCallRevert(
+            address(dividend),
+            abi.encodeWithSignature("withdrawDividendsFor(address,bool)", address(mint), false),
+            "dividend contract down"
+        );
+        uint256 before_ = alice.balance;
+        vm.prank(alice);
+        mint.claim();
+        assertEq(IERC20(token).balanceOf(alice), 4 * mint.tokensPerNFT(), "alice still claimed her tokens");
+        assertEq(alice.balance - before_, 4 * mint.bnbPerNFT(), "no dividends could be collected for her");
+        assertEq(dividend.withdrawableDividendOf(address(mint)), earned, "they are still the mint's to collect");
+
+        vm.clearMockedCalls();
+        before_ = bob.balance;
+        vm.prank(bob);
+        mint.claim();
+        assertEq(bob.balance - before_, 6 * mint.bnbPerNFT() + earned, "the next claim collects and pays them");
+        assertEq(IERC20(WBNB).balanceOf(address(mint)), 0, "no WBNB is left in the mint");
+        assertEq(dividend.withdrawableDividendOf(address(mint)), 0, "no dividends are left for the mint to collect");
     }
 }

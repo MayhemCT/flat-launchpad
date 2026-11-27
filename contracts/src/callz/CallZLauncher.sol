@@ -135,6 +135,15 @@ interface IPortalFloor {
         returns (bool enabled, uint256 quotePriceUsd);
 }
 
+/// @dev Flap's anti-scam module: says whether a token name or symbol imitates a well-known asset. The Portal
+///      refuses to launch such a token, so a mint for one is refused when it is created.
+interface IAntiScam {
+    function isScamWord(string calldata name, string calldata symbol)
+        external
+        view
+        returns (bool nameScam, bool symbolScam);
+}
+
 contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     using SafeTransferLib for address;
 
@@ -217,6 +226,8 @@ contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     error InvalidConfig();
     /// @notice The cap is under the Portal's liquidity floor for this pool share, so the mint could never launch.
     error CapBelowLaunchFloor(uint256 cap, uint256 floor);
+    /// @notice Flap's anti-scam module flags the token name, the symbol, or both.
+    error ScamWord();
     error SaleClosed();
     error ZeroQuantity();
     error MintTooLarge();
@@ -252,6 +263,9 @@ contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         if (c.poolShareBps < MIN_POOL_SHARE_BPS || c.poolShareBps > MAX_POOL_SHARE_BPS) revert InvalidConfig();
         if (c.buyTaxBps > MAX_TAX_BPS || c.sellTaxBps > MAX_TAX_BPS) revert InvalidConfig();
         if (c.saleDuration < MIN_SALE_DURATION || c.saleDuration > MAX_SALE_DURATION) revert InvalidConfig();
+        // A name or symbol Flap's anti-scam module flags could never launch: refused here, before any NFT is sold.
+        (bool nameScam, bool symbolScam) = IAntiScam(_antiScam()).isScamWord(c.name, c.symbol);
+        if (nameScam || symbolScam) revert ScamWord();
 
         hub = hub_;
         creator = creator_;
@@ -306,6 +320,15 @@ contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         return (floorUsd * 1 ether + priceUsd - 1) / priceUsd;
     }
 
+    /// @dev Flap's anti-scam module. This implementation has the same address on both chains (CREATE2), so the
+    ///      module is picked by chain id, the way `LaunchVaultAddresses` picks Flap's other contracts.
+    function _antiScam() private view returns (address) {
+        if (block.chainid == 56) return 0xfFb69d59f62454f3B8322Bc1a9FCE6E171a5264f; // BNB Chain
+        if (block.chainid == 97) return 0x5CfbE713d070e87F67D1bc84312B7eB8Fe4F2B5E; // BNB Chain Testnet
+        // The module has no address on any other chain.
+        revert InvalidConfig();
+    }
+
     /// @inheritdoc LauncherBase
     function _getHub() internal view override returns (address) {
         return hub;
@@ -331,7 +354,7 @@ contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
 
     /// @notice Implementation version.
     function version() external pure returns (string memory) {
-        return "1.0.0";
+        return "1.1.0";
     }
 
     /// @notice The Launcher's whole state, for a launch page.

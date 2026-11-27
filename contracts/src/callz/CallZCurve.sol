@@ -7,6 +7,8 @@ import {Base64} from "solady/utils/Base64.sol";
 import {LibString} from "solady/utils/LibString.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
+import {IDividend} from "src/flap/IDividend.sol";
+
 /// @notice The part of Flap's bonding curve Portal that CallZCurve uses.
 /// @dev Layout from https://docs.flap.sh/en/flap/v2/developers/bonding-curve/launch-tokens. Enums are `uint8`.
 interface IBondingCurvePortal {
@@ -46,6 +48,17 @@ interface IBondingCurvePortal {
 
 interface IERC20Balance {
     function balanceOf(address account) external view returns (uint256);
+}
+
+/// @notice The part of Flap's tax token that CallZCurve uses.
+interface IFlapTaxToken {
+    /// @notice The contract that pays the token's tax dividends to its holders.
+    function dividendContract() external view returns (address);
+}
+
+/// @notice Wrapped BNB: the form a Flap dividend contract holds BNB dividends in.
+interface IWBNB {
+    function withdraw(uint256 amount) external;
 }
 
 /// @notice Payload for `CallZCurveFactory.create`.
@@ -99,6 +112,10 @@ struct CallZCurveInfo {
 ///         the token on Flap's bonding curve and spends the whole raise on the curve in that same transaction, as
 ///         the launch's first buy. Every NFT then claims an equal share of the tokens bought, once, and stays
 ///         with its holder as a membership pass.
+///
+///         The token pays part of its trading tax to its holders as BNB dividends, and until an NFT claims, its
+///         tokens are held here and earn them. Those dividends belong to the NFTs that have not claimed yet, in
+///         equal parts: an NFT is paid its part, in BNB, in the same call that claims its tokens.
 ///
 ///         If the cap is not reached by the deadline, an NFT is burned for its price. The refund goes to whoever
 ///         holds the NFT at that moment.
@@ -166,6 +183,13 @@ contract CallZCurve is Initializable, ERC721 {
     uint256 public bnbPerNFT;
     /// @notice Whether an NFT has claimed.
     mapping(uint256 tokenId => bool) public claimed;
+    /// @notice NFTs that have claimed.
+    uint256 public claimedCount;
+    /// @notice The token's dividend contract. This contract is a holder until every NFT has claimed.
+    address public dividend;
+    /// @notice Wrapped BNB, which the dividend contract pays in. Dividends are held here as WBNB and unwrapped
+    ///         when an NFT is paid.
+    address public wbnb;
 
     /// @dev NFTs held by each account, and each NFT's position in its holder's list.
     mapping(address account => uint256[]) internal _owned;
@@ -174,6 +198,7 @@ contract CallZCurve is Initializable, ERC721 {
     event Minted(address indexed to, uint256 firstId, uint256 qty, uint256 paid);
     event Launched(address indexed token, uint256 spent, uint256 tokensBought, uint256 unspent);
     event Claimed(uint256 indexed tokenId, address indexed to, uint256 amount);
+    event DividendsClaimed(address indexed to, uint256 nfts, uint256 amount);
     event Refunded(uint256 indexed tokenId, address indexed to, uint256 amount);
 
     error InvalidConfig();
@@ -378,14 +403,30 @@ contract CallZCurve is Initializable, ERC721 {
 
         launched = true;
         token = token_;
+        _findDividends(token_);
         tokensPerNFT = bought / maxNFTs;
         bnbPerNFT = unspent / maxNFTs;
         emit Launched(token_, spend - unspent, bought, unspent);
     }
 
-    /// @dev Accepts BNB only from the Portal while the launch is running (its change from the first buy).
+    /// @dev Looks up the token's dividend contract and the wrapped BNB it pays in, once, at the launch. Neither
+    ///      lookup may stop the launch: if the token has no dividend contract, or a lookup fails, both stay zero
+    ///      and the mint has no dividends to pass on.
+    function _findDividends(address token_) private {
+        try IFlapTaxToken(token_).dividendContract() returns (address dividend_) {
+            if (dividend_.code.length == 0) return;
+            try IDividend(dividend_).weth() returns (address wbnb_) {
+                if (wbnb_.code.length == 0) return;
+                dividend = dividend_;
+                wbnb = wbnb_;
+            } catch {}
+        } catch {}
+    }
+
+    /// @dev Accepts BNB only from the Portal while the launch is running (its change from the first buy), and
+    ///      from WBNB, which sends it only when `_payClaim` unwraps an NFT's dividends.
     receive() external payable {
-        if (!launching) revert UnexpectedPayment();
+        if (!launching && msg.sender != wbnb) revert UnexpectedPayment();
     }
 
     /// @dev A tax token with the configured buy and sell tax for 30 days. The tax goes to holders as BNB
@@ -424,12 +465,32 @@ contract CallZCurve is Initializable, ERC721 {
     /// @notice Tokens `account` would receive from `claim()` right now.
     function claimableOf(address account) external view returns (uint256) {
         if (!launched) return 0;
+        return _unclaimedOf(account) * tokensPerNFT;
+    }
+
+    /// @notice BNB `account` would receive from `claim()` right now: for each of its unclaimed NFTs, the NFT's
+    ///         part of the dividends its tokens earned here and of any BNB the launch did not spend.
+    function claimableBnbOf(address account) external view returns (uint256) {
+        if (!launched) return 0;
+        uint256 count = _unclaimedOf(account);
+        if (count == 0) return 0;
+        uint256 bnb = bnbPerNFT * count;
+        address wbnb_ = wbnb;
+        if (wbnb_ == address(0)) return bnb;
+        uint256 dividends = IERC20Balance(wbnb_).balanceOf(address(this));
+        // What the dividend contract still owes is an estimate: if it cannot be read it is left out.
+        try IDividend(dividend).withdrawableDividendOf(address(this)) returns (uint256 pending) {
+            dividends += pending;
+        } catch {}
+        return bnb + dividends * count / (maxNFTs - claimedCount);
+    }
+
+    /// @dev NFTs `account` holds that have not claimed.
+    function _unclaimedOf(address account) private view returns (uint256 unclaimed) {
         uint256[] storage list = _owned[account];
-        uint256 unclaimed;
         for (uint256 i; i < list.length; ++i) {
             if (!claimed[list[i]]) ++unclaimed;
         }
-        return unclaimed * tokensPerNFT;
     }
 
     /// @notice Claim the share of every unclaimed NFT the caller holds. Each NFT claims once and stays with its
@@ -468,9 +529,32 @@ contract CallZCurve is Initializable, ERC721 {
         _payClaim(count);
     }
 
+    /// @dev Pays `count` NFTs that were just marked claimed: their tokens, their part of the unspent BNB and
+    ///      their part of the dividends.
+    ///
+    ///      Every NFT that has not claimed has had the same number of tokens here since the launch, so each has
+    ///      earned the same dividends. The dividends held here are therefore split equally between the NFTs
+    ///      that have not claimed, and the last NFT to claim takes what is left: nothing stays behind.
     function _payClaim(uint256 count) private {
+        uint256 unclaimed = maxNFTs - claimedCount;
+        claimedCount += count;
+
+        // Collect what this contract has earned so far, as WBNB. Anyone can make the dividend contract push
+        // WBNB here at any time, so WBNB is the one form dividends are held in. A failing dividend contract
+        // must not block the tokens: what could not be collected stays with the NFTs that claim later.
+        address wbnb_ = wbnb;
+        uint256 dividends;
+        if (wbnb_ != address(0)) {
+            try IDividend(dividend).withdrawDividendsFor(address(this), false) {} catch {}
+            dividends = IERC20Balance(wbnb_).balanceOf(address(this)) * count / unclaimed;
+            if (dividends > 0) {
+                IWBNB(wbnb_).withdraw(dividends);
+                emit DividendsClaimed(msg.sender, count, dividends);
+            }
+        }
+
         token.safeTransfer(msg.sender, tokensPerNFT * count);
-        uint256 bnb = bnbPerNFT * count;
+        uint256 bnb = bnbPerNFT * count + dividends;
         if (bnb > 0) _sendBnb(msg.sender, bnb);
     }
 

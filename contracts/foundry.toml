@@ -6,6 +6,10 @@ evm_version = "cancun"
 solc_version = "0.8.26"
 optimizer = true
 optimizer_runs = 99999
+# CallZLauncher is at the 24,576-byte contract size limit at 99,999 runs. It, and what is compiled with it (its
+# factory and tests), use 2,000 runs. Every other contract keeps the settings above, so its bytecode is unchanged.
+additional_compiler_profiles = [{ name = "launcher", optimizer_runs = 2000 }]
+compilation_restrictions = [{ paths = "src/callz/CallZLauncher.sol", optimizer_runs = 2000 }]
 
 [fmt]
 line_length = 120
