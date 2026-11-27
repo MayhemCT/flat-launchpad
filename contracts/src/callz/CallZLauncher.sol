@@ -101,6 +101,40 @@ struct CallZInfo {
 /// @dev Deployed by `CallZLauncherFactory` as an ERC1967 beacon proxy. Only the Flap Guardian can upgrade the
 ///      implementation. No account can withdraw the raise: it leaves only through the launch or through refunds.
 ///      There is no mint fee and no commission.
+/// @dev What the Portal's floor lens takes and returns. `createFloorUsdWad` is the least USD value (18 decimals)
+///      the quote side of a pool may hold at launch, for the given share of the supply.
+struct GraduationFloorParams {
+    address quoteToken;
+    uint256 quotePriceUsd;
+    uint256 poolQuote;
+    uint256 poolToken;
+    uint256 totalSupply;
+    address vaultFactory;
+}
+
+struct GraduationFloorResultV2 {
+    bool meetsFloor;
+    uint256 floorUsdWad;
+    uint256 quoteUsdWad;
+    uint16 multiplierBps;
+    bool meetsCreateFloor;
+    uint256 createFloorUsdWad;
+}
+
+/// @dev The part of the Pool Launch Portal that says how much liquidity a launch needs.
+interface IPortalFloor {
+    function graduationFloorV2(GraduationFloorParams calldata params)
+        external
+        view
+        returns (GraduationFloorResultV2 memory);
+
+    /// @notice Whether `quoteToken` can back a launch of `kind`, and its USD price with 18 decimals.
+    function launchQuoteConfig(uint8 kind, address quoteToken)
+        external
+        view
+        returns (bool enabled, uint256 quotePriceUsd);
+}
+
 contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     using SafeTransferLib for address;
 
@@ -181,6 +215,8 @@ contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
     event RefundsOpened(address indexed guardian);
 
     error InvalidConfig();
+    /// @notice The cap is under the Portal's liquidity floor for this pool share, so the mint could never launch.
+    error CapBelowLaunchFloor(uint256 cap, uint256 floor);
     error SaleClosed();
     error ZeroQuantity();
     error MintTooLarge();
@@ -224,9 +260,16 @@ contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         cap = c.cap;
         maxNFTs = count;
         saleDeadline = block.timestamp + c.saleDuration;
-        poolToken = (TOTAL_SUPPLY * c.poolShareBps) / 10_000;
-        holderPool = TOTAL_SUPPLY - poolToken;
-        tokensPerNFT = holderPool / count;
+        // Every NFT claims the same whole number of tokens. What that division leaves over goes into the pool
+        // with the pool's share, so nothing is stranded here once the last NFT has claimed.
+        tokensPerNFT = (TOTAL_SUPPLY - (TOTAL_SUPPLY * c.poolShareBps) / 10_000) / count;
+        holderPool = tokensPerNFT * count;
+        poolToken = TOTAL_SUPPLY - holderPool;
+        // The Portal rejects a launch whose pool holds too little for its share of the supply. A cap under that
+        // floor could never launch and would hold its buyers' BNB until the deadline: it is refused here, at
+        // the Portal's price and this factory's multiplier as they are now.
+        uint256 floor = _launchFloor(hub_, msg.sender, poolToken);
+        if (c.cap < floor) revert CapBelowLaunchFloor(c.cap, floor);
         buyTaxBps = c.buyTaxBps;
         sellTaxBps = c.sellTaxBps;
         tokenName = c.name;
@@ -237,6 +280,30 @@ contract CallZLauncher is LauncherBase, Initializable, ERC721, IStrategy {
         // Exactly the fee: anything extra would stay here, since neither a refund nor the launch can spend it.
         if (msg.value != fee) revert InvalidConfig();
         IPortal(hub_).lockSalt{value: fee}(c.salt, uint8(IPortalTypes.LaunchKind.DIRECT_V2_POOL_TAX));
+    }
+
+    /// @dev The least BNB the Portal accepts in the pool of a launch that puts `poolToken_` of the supply there,
+    ///      for a Launcher of `factory_`: the Portal's creation floor in USD, scaled by the factory's floor
+    ///      multiplier, at the Portal's own BNB price, rounded up.
+    function _launchFloor(address hub_, address factory_, uint256 poolToken_) private view returns (uint256) {
+        (bool quoteEnabled, uint256 priceUsd) =
+            IPortalFloor(hub_).launchQuoteConfig(uint8(IPortalTypes.LaunchKind.DIRECT_V2_POOL_TAX), address(0));
+        // Without a price for BNB the Portal launches nothing against it.
+        if (!quoteEnabled || priceUsd == 0) revert InvalidConfig();
+        GraduationFloorResultV2 memory result = IPortalFloor(hub_).graduationFloorV2(
+            GraduationFloorParams({
+                quoteToken: address(0),
+                quotePriceUsd: priceUsd,
+                poolQuote: 1,
+                poolToken: poolToken_,
+                totalSupply: TOTAL_SUPPLY,
+                vaultFactory: address(0)
+            })
+        );
+        // A factory Flap has not configured launches at the full floor.
+        (bool enabled, uint16 multiplierBps) = IPortal(hub_).launcherFactoryMultiplier(factory_);
+        uint256 floorUsd = (result.createFloorUsdWad * (enabled ? multiplierBps : 10_000)) / 10_000;
+        return (floorUsd * 1 ether + priceUsd - 1) / priceUsd;
     }
 
     /// @inheritdoc LauncherBase

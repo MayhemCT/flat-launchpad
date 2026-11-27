@@ -4,7 +4,7 @@
   "artifactId": "callz-launcher",
   "name": "CallZ NFT Mint Launcher",
   "chainId": 97,
-  "factoryAddress": "0x2d085c23bbb95e8f0c34b046573bdc88fad538f0",
+  "factoryAddress": "0x873040d38bd73ef1ce7d8d814278605cf6b697b3",
   "configContract": "launcher-config-preview/v1",
   "surfaces": [
     "launcher-config",

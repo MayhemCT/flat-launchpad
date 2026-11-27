@@ -53,7 +53,7 @@ type DetailProps = {
 
 // The CallZLauncherFactory this UI was written for. It is deployed with CREATE2, so the address is the
 // same on BNB Chain and BNB Chain Testnet.
-const callZFactory = "0x2d085c23bbb95e8f0c34b046573bdc88fad538f0";
+const callZFactory = "0x873040d38bd73ef1ce7d8d814278605cf6b697b3";
 // abi.encode(CallZConfig): one tuple, in the factory's field order.
 const configParameters: readonly AbiParameter[] = [
   { name: "config", type: "tuple", components: [

@@ -43,7 +43,7 @@ All three are the same mint with the same rules. `CallZLauncher` is the design t
 `CallZPancake` adds liquidity by sending both assets to the pair and calling `mint` on it, not through the router: the token address is predictable, so anyone can create the pair first, and the router's `addLiquidityETH` cannot be relied on in every state such a pair can be in. The token is a plain ERC-20: fixed supply, no owner, no tax.
 
 ```
-CallZLauncherFactory     0x2D085c23BBB95e8f0C34b046573BDc88fAd538F0   (CREATE2: same on BNB Chain and Testnet)
+CallZLauncherFactory     0x873040D38Bd73eF1cE7d8D814278605CF6b697b3   (CREATE2: same on BNB Chain and Testnet)
 CallZCurveFactory        0x05F66F0D60ea2B871291d7CA5d0198Ea3B279ece   (CREATE2: BNB Chain)
 CallZPancakeFactory      0x28507071955b19E99C5DDa572fc690b8856f65D0   (deployed on BNB Chain; takes the launch fee)
 CallZRouter              0x1439694F14999D5999b1735bC67e70260CAce10C   (deployed on BNB Chain; takes the trading fee)
@@ -86,7 +86,7 @@ Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAUL
 
 - `CallZVault`, `CallZRouter` and the launch fee: 16 fork tests pass on a fork of BNB Chain (`test/callz/CallZFees.BSC.fork.t.sol`), against the real PancakeSwap and two live Flap tax tokens, one pooled against BNB and one against USDT: the split to the wei, the snapshot (nothing leaves the wallet), weighting by market cap and by the volume after the call, selling cutting the payout, refusals, the 24-hour window, the team wallet being paid by the next fee, a team wallet that refuses BNB, the fee caps, an attester wallet with delegated code (EIP-7702), and the per-token solvency ledger. `apps/web/tests/fees.pw.ts` drives a buy, a sell, a callout (posted, approved, recorded) and the claim after the round ends through the pages on a local fork.
 
-- `CallZLauncher`: 15 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
+- `CallZLauncher`: 17 fork tests pass against the live Pool Launch Portal on BNB Chain Testnet and against a fork of BNB Chain.
 - `CallZCurve`: 7 fork tests pass against Flap's bonding curve Portal on a fork of BNB Chain, with nothing impersonated. The deploy, create, mint and claim commands below were rehearsed end to end on a local fork.
 - Launch UI: passes Flap's `launcher:check-source` and a strict TypeScript check. In `apps/web` it has created a Launcher, minted to the cap, launched and claimed on a local fork of BNB Chain Testnet. It has not been run inside Flap's own host.
 - `CallZPancake`: 16 fork tests pass against PancakeSwap on a fork of BNB Chain, including a pair created and funded by someone else before the launch, re-entry during the launch and payments, and the heaviest launch (7.8M gas, under the 16.7M cap).
@@ -175,7 +175,7 @@ cd contracts
 export BSC_TESTNET_RPC_URL=https://bsc-testnet-rpc.publicnode.com
 forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account callz --broadcast --legacy
 
-export FACTORY=0x2D085c23BBB95e8f0C34b046573BDc88fAd538F0
+export FACTORY=0x873040D38Bd73eF1cE7d8D814278605CF6b697b3
 export TOKEN_NAME="Raid Example" TOKEN_SYMBOL=RAIDX
 export NFT_PRICE=250000000000000000 CAP=2500000000000000000 SALE_DURATION=86400   # 0.25 tBNB x 10 NFTs
 forge script script/CreateLauncher.s.sol --rpc-url $BSC_TESTNET_RPC_URL --account callz --broadcast --legacy

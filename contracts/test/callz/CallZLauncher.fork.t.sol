@@ -502,6 +502,50 @@ abstract contract CallZLauncherFork is ForkBase {
     /// @dev BNB Chain rejects any transaction above 16,777,216 gas (BEP-652, live since the Mendel upgrade). The
     ///      heaviest CallZ transaction is the mint that buys the per-call maximum and also runs the launch.
     ///      Run with `forge test --isolate` so each call is metered as its own transaction.
+    /// @dev Audit: a cap under the Portal's liquidity floor could never launch, so it cannot be created.
+    function test_16_aCapUnderThePortalFloorIsRefused() public {
+        _open();
+        CallZConfig memory c = _config("raid-floor");
+        c.nftPrice = 0.01 ether;
+        c.cap = 0.02 ether;
+        uint256 fee = portal.SALT_LOCK_FEE();
+        vm.prank(creator);
+        (bool ok, bytes memory err) = address(portal).call{value: fee}(
+            abi.encodeWithSignature("newLauncher(address,bytes)", address(factory), abi.encode(c))
+        );
+        assertFalse(ok, "a mint that can never launch is refused");
+        assertEq(bytes4(err), CallZLauncher.CapBelowLaunchFloor.selector, "and says why");
+
+        // At the lowest pool share the floor is at its highest: the largest cap may still be under it.
+        c = _config("raid-floor-low-share");
+        c.poolShareBps = 1000;
+        vm.prank(creator);
+        (ok, err) = address(portal).call{value: fee}(
+            abi.encodeWithSignature("newLauncher(address,bytes)", address(factory), abi.encode(c))
+        );
+        if (!ok) assertEq(bytes4(err), CallZLauncher.CapBelowLaunchFloor.selector, "refused for the floor, nothing else");
+    }
+
+    /// @dev Audit: what the equal split leaves over goes into the pool, and the Launcher ends up empty.
+    function test_17_divisionDustGoesIntoThePool() public {
+        _open();
+        CallZConfig memory c = _config("raid-dust");
+        c.cap = 7 ether; // 7 NFTs: half the supply does not divide by 7
+        CallZLauncher launcher = CallZLauncher(_newLauncher(address(factory), abi.encode(c)));
+
+        assertEq(launcher.holderPool(), launcher.tokensPerNFT() * 7, "the holders' supply is exactly seven shares");
+        assertEq(launcher.poolToken() + launcher.holderPool(), launcher.TOTAL_SUPPLY());
+        assertGt(launcher.poolToken(), launcher.TOTAL_SUPPLY() / 2, "the remainder is in the pool's side");
+        assertLt(launcher.poolToken() - launcher.TOTAL_SUPPLY() / 2, 7, "and it is less than one unit per NFT");
+
+        vm.prank(alice);
+        launcher.mint{value: 7 ether}();
+        assertTrue(launcher.launched());
+        vm.prank(alice);
+        launcher.claim();
+        assertEq(IERC20(launcher.token()).balanceOf(address(launcher)), 0, "nothing is left in the Launcher");
+    }
+
     function test_12_theHeaviestTransactionsFitTheGasCap() public {
         uint256 txGasCap = 16_777_216;
         _open();
