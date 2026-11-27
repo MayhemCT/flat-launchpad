@@ -261,6 +261,10 @@ For production, point the Worker at a private RPC endpoint: add `BSC_RPC_URL` an
 
 **Loading.** The first page loads 79 KB of script (gzip). The launchpad's chain library (110 KB) and the three.js scene (133 KB) load only when they are needed.
 
+## Team
+
+CallZ is built by [Liquid Labs](https://liquidlabs.io), the studio behind Top Blasters, a 128-player browser game on its own engine and netcode, and the brand and go-to-market work behind SPX6900 and MOG.
+
 ## Credits
 
 `contracts/src/flap/`, `contracts/test/ForkBase.sol` and `contracts/test/ForkAddresses.sol` are from Flap's [FlapPoolLaunchVaultExample](https://github.com/flap-sh/FlapPoolLaunchVaultExample). The Solidity sources carry MIT SPDX identifiers.

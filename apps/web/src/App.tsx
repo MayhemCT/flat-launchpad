@@ -253,6 +253,15 @@ function XLink() {
   );
 }
 
+/** Who builds CallZ, under every page. */
+function SiteFoot() {
+  return (
+    <footer className="site-foot" data-testid="site-foot">
+      Built by <a href="https://liquidlabs.io" target="_blank" rel="noreferrer">Liquid Labs ↗</a>, the studio behind Top Blasters and the brand and go-to-market work for SPX6900 and MOG.
+    </footer>
+  );
+}
+
 /** The network a page's wallet button checks for. */
 const walletTarget = (mode: Mode): Site => (mode === "launchpad" ? FLAP_LAUNCH : SITES.bsc);
 
@@ -268,7 +277,7 @@ function DesktopShell({ route, children, ...controls }: ShellProps) {
           <WalletButton target={walletTarget(controls.mode)} />
         </div>
       </header>
-      <main className="content">{children}</main>
+      <main className="content">{children}<SiteFoot /></main>
     </div>
   );
 }
@@ -284,7 +293,7 @@ function MobileShell({ route, children, ...controls }: ShellProps) {
           <WalletButton target={walletTarget(controls.mode)} />
         </div>
       </header>
-      <main className="content">{children}</main>
+      <main className="content">{children}<SiteFoot /></main>
       <nav className="tabbar" aria-label="Main" data-testid="mobile-nav"><NavLinks route={route} compact /></nav>
     </div>
   );
