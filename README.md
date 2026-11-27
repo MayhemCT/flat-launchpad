@@ -43,12 +43,12 @@ All three are the same mint with the same rules. `CallZLauncher` is the design t
 `CallZPancake` adds liquidity by sending both assets to the pair and calling `mint` on it, not through the router: the token address is predictable, so anyone can create the pair first, and the router's `addLiquidityETH` cannot be relied on in every state such a pair can be in. The token is a plain ERC-20: fixed supply, no owner, no tax.
 
 ```
-The code in this repository (what the site points at; each is deployed from the site by one transaction)
-CallZLauncherFactory     0x1C43a0bBf01034c30c9d30F23C00E7F3019E678c   (CREATE2: same on BNB Chain and Testnet)
+The code in this repository: deployed 27 Nov 2026, and what the site points at
+CallZLauncherFactory     0x1C43a0bBf01034c30c9d30F23C00E7F3019E678c   (deployed on BNB Chain and BNB Chain Testnet, same address; on BNB Chain it waits for Flap to enable it)
 CallZCurveFactory        0xCe3e30FC569C7931eB4F366c9F2EE5287D3637Ca   (CREATE2: BNB Chain; not deployed)
-CallZVault               0x78578cB78c57354E4ecaAF8033646aabC49b8902   (BNB Chain; holds and pays every fee)
-CallZRouter              0x09BF2F6c6988C12b82BeBA3936e7b3A602a1dc57   (BNB Chain; takes the trading fee)
-CallZPancakeFactory      0xfFe694AC904B2FC664cd8f0D83AEA156EeBB321f   (BNB Chain; takes the launch fee)
+CallZVault               0x78578cB78c57354E4ecaAF8033646aabC49b8902   (deployed on BNB Chain; holds and pays every fee)
+CallZRouter              0x09BF2F6c6988C12b82BeBA3936e7b3A602a1dc57   (deployed on BNB Chain; takes the trading fee)
+CallZPancakeFactory      0xfFe694AC904B2FC664cd8f0D83AEA156EeBB321f   (deployed on BNB Chain; takes the launch fee)
 
 Earlier deployments (code as of commit cd84ceb, before the review fixes)
 CallZLauncherFactory     0x873040D38Bd73eF1cE7d8D814278605CF6b697b3   (BNB Chain Testnet; its mints are still listed and usable on the site)
@@ -58,7 +58,7 @@ CallZPancakeFactory      0x28507071955b19E99C5DDa572fc690b8856f65D0   (BNB Chain
 CallZPancakeFactory v1   0xf4Ce206dFEDFadc826DC355097648Fd3Df9a4fB3   (BNB Chain; no fee; its mints still list)
 ```
 
-The three CallZ fee contracts listed first are deployed from the site's Launch page, one transaction each, and the site trades and launches through them once they have code on BNB Chain. The earlier three were deployed on 27 Nov 2026 and are no longer used. Once the current ones are deployed their sources must not change: a change would move their addresses. `CallZLauncherFactory` deploys with one transaction from the testnet launch page, and on BNB Chain from the Launch page, to the same address on both. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
+The three CallZ fee contracts listed first were deployed on BNB Chain on 27 Nov 2026 from the site's Launch page, one transaction each, and the site trades and launches through them. The earlier three were deployed the same day, before the review fixes, and are no longer used. The sources of the deployed contracts must not change now: a change would move their addresses. `CallZLauncherFactory` deploys with one transaction from the testnet launch page, and on BNB Chain from the Launch page, to the same address on both. Each address depends only on the contract bytecode, so it is known before deployment and changes if the contracts change. `scripts/flap-deployment.mjs` computes the two Flap factory addresses and `scripts/callz-deployment.mjs` the three CallZ ones.
 
 ## Fees and the vault
 
@@ -95,8 +95,8 @@ Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAUL
 
 - **Pre-audit, 27 Nov 2026: `CallZLauncher` 1.1.0 and `CallZLauncherFactory` passed** (0 critical, 0 high, 3 disclosure
   notes), on forks of BNB Chain and BNB Chain Testnet against the live Portal. The fixed factory is deployed on BNB
-  Chain Testnet at `0x1C43a0bBf01034c30c9d30F23C00E7F3019E678c`; on BNB Chain it is deployed from the Launch page, to
-  the same address, and launches nothing until Flap enables it. The vault, router, PancakeSwap path and curve path
+  Chain Testnet and on BNB Chain at `0x1C43a0bBf01034c30c9d30F23C00E7F3019E678c`; on BNB Chain it launches nothing
+  until Flap enables it. The vault, router, PancakeSwap path and curve path
   are outside that review. The three notes, which the site states where they apply:
   - A low pool share cannot launch: the Portal's floor rises as the share falls, and at its standard floor a share
     under about 11% is over the 10 BNB cap, so its mint is refused at creation. The create page shows the smallest
@@ -105,10 +105,11 @@ Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAUL
     Holders should claim early.
   - Flap's Guardian can call `openRefunds` on any mint that has not launched. It is the recovery path.
 - **Changes made in review on 27 Nov 2026 moved the contracts to new addresses, the vault and what names it twice.** The site points at the
-  new ones, listed first above. Until each is deployed (one transaction each from the site: the Launcher Factory
-  from the testnet launch page, the vault, router and mint factory from the Launch page), the site shows it as
-  not deployed, trades go straight through PancakeSwap's router with no CallZ fee, and callouts cannot be
-  recorded. Whether they are deployed is read from the chain, not from this file. The earlier vault never
+  new ones, listed first above. All of them were deployed on 27 Nov 2026 from the site (the Launcher Factory on
+  BNB Chain Testnet and on BNB Chain; the vault, router and mint factory on BNB Chain), and the code at each
+  address equals what these sources compile to. The site reads whether a contract is deployed from the chain,
+  not from this file: where one is not, trades go straight through PancakeSwap's router with no CallZ fee and
+  callouts cannot be recorded. The earlier vault never
   received a fee and the earlier fee factory created no mint, so nothing is left behind in them.
   - `CallZLauncher`: a mint whose token name or symbol Flap's anti-scam module flags is refused when it is
     created. With the check the contract passed the 24,576-byte size limit at 99,999 optimizer runs, so
