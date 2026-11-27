@@ -240,6 +240,19 @@ function Controls({ mode, locale, onLocale }: Omit<ShellProps, "route" | "childr
   );
 }
 
+const X_ACCOUNT = "https://x.com/callzfun";
+
+/** CallZ's own account on X, in the top bar of every page. */
+function XLink() {
+  return (
+    <a className="social-link" href={X_ACCOUNT} target="_blank" rel="noreferrer" aria-label="CallZ on X" title="CallZ on X" data-testid="x-link">
+      <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+        <path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+      </svg>
+    </a>
+  );
+}
+
 /** The network a page's wallet button checks for. */
 const walletTarget = (mode: Mode): Site => (mode === "launchpad" ? FLAP_LAUNCH : SITES.bsc);
 
@@ -250,6 +263,7 @@ function DesktopShell({ route, children, ...controls }: ShellProps) {
         <a className="brand" href="#/"><img src="/callz-logo.svg" alt="" width="30" height="30" />CallZ</a>
         <nav className="nav" aria-label="Main" data-testid="desktop-nav"><NavLinks route={route} /></nav>
         <div className="topbar-end">
+          <XLink />
           <Controls {...controls} />
           <WalletButton target={walletTarget(controls.mode)} />
         </div>
@@ -265,6 +279,7 @@ function MobileShell({ route, children, ...controls }: ShellProps) {
       <header className="topbar">
         <a className="brand" href="#/"><img src="/callz-logo.svg" alt="" width="28" height="28" />CallZ</a>
         <div className="topbar-end">
+          <XLink />
           <Controls {...controls} />
           <WalletButton target={walletTarget(controls.mode)} />
         </div>

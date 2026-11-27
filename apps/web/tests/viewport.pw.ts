@@ -40,7 +40,7 @@ const PAGES = [
 const PHONE_MAX = 1023;
 const MIN_TOUCH_TARGET = 44;
 // Controls a finger has to hit. Links inside a sentence are text, not controls.
-const CONTROLS = "button, select, input, a.button, a.brand, a.card, a.launch-card, a.scope-row, a.scope-main, a.flap-strip, a.chip-link, .seg a, .nav a, .tabbar a, .links a, .section-head a";
+const CONTROLS = "button, select, input, a.button, a.brand, a.social-link, a.card, a.launch-card, a.scope-row, a.scope-main, a.flap-strip, a.chip-link, .seg a, .nav a, .tabbar a, .links a, .section-head a";
 
 async function open(page: Page, hash: string, ready: string) {
   await page.goto(`/${hash}`);

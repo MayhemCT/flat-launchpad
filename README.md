@@ -4,7 +4,7 @@ Mint the pass. Make the call.
 
 A board for every launch on [Flap](https://docs.flap.sh) Pool Launch with charts, trading and chat, and a launchpad where the presale is an NFT pass mint that funds a token's first liquidity pool. On BNB Chain. Built for BNB Hack Bangkok 2026.
 
-Live: https://callz.fun
+Live: https://callz.fun · X: [@callzfun](https://x.com/callzfun)
 
 - **Memescope.** Every launchpad built on Pool Launch on one live board, in three columns a launch crosses as it fills: New, Final stretch, Launched. Raises are ranked by how much of their target they hold, launchpads are named and colour-coded, and launched tokens show their own pictures.
 - **Token pages.** For every launched token on BNB Chain: the DexScreener chart with the pool's trades under it, price, market cap, liquidity and volume, the token's own taxes, whether its DexScreener profile is paid, and its description and links from its own metadata and from DexScreener.
