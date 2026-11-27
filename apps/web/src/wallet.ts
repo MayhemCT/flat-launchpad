@@ -53,6 +53,29 @@ export function useWallet(): WalletState {
   );
 }
 
+/**
+ * Set when the visitor disconnected here. A wallet goes on telling a site about an account it once approved,
+ * so without this the page would connect again by itself on the next load.
+ */
+const DISCONNECTED_KEY = "callz.wallet-disconnected";
+
+function disconnectedHere(): boolean {
+  try {
+    return window.localStorage.getItem(DISCONNECTED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberDisconnected(value: boolean) {
+  try {
+    if (value) window.localStorage.setItem(DISCONNECTED_KEY, "1");
+    else window.localStorage.removeItem(DISCONNECTED_KEY);
+  } catch {
+    // Without storage the choice lasts until the page is reloaded.
+  }
+}
+
 async function refresh(method: "eth_accounts" | "eth_requestAccounts") {
   const provider = window.ethereum;
   if (!provider) return;
@@ -61,9 +84,42 @@ async function refresh(method: "eth_accounts" | "eth_requestAccounts") {
   set({ account: accounts[0] ?? null, chainId });
 }
 
-/** Asks the wallet to connect. The wallet shows its own prompt; nothing is signed here. */
+/**
+ * Asks the wallet to connect. The wallet shows its own prompt; nothing is signed here. After a disconnect the
+ * wallet is first asked for its permission again, which is where it lets the visitor pick another account.
+ */
 export function connect(): void {
-  void refresh("eth_requestAccounts").catch(() => undefined);
+  const provider = window.ethereum;
+  if (!provider) return;
+  const again = disconnectedHere();
+  rememberDisconnected(false);
+  void (async () => {
+    if (again) {
+      try {
+        await provider.request({ method: "wallet_requestPermissions", params: [{ eth_accounts: {} }] });
+      } catch (cause) {
+        // 4001: the visitor closed the prompt, and stays disconnected. Any other answer is a wallet without
+        // this method: it is asked the plain way below.
+        if ((cause as { code?: number } | null)?.code === 4001) {
+          rememberDisconnected(true);
+          return;
+        }
+      }
+    }
+    await refresh("eth_requestAccounts");
+  })().catch(() => undefined);
+}
+
+/**
+ * Disconnects the wallet from this page: the page forgets the account and stays that way across reloads, and
+ * the wallet is asked to take back the permission it gave this site (wallets that cannot simply keep it; the
+ * page ignores it all the same). The caller signs the session out as well, so nothing of that wallet's is
+ * shown any more.
+ */
+export function disconnect(): void {
+  rememberDisconnected(true);
+  set({ account: null, pendingHash: null });
+  void window.ethereum?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] }).catch(() => undefined);
 }
 
 /** Text as the 0x hex of its UTF-8 bytes, the form personal_sign takes a message in. */
@@ -114,7 +170,11 @@ export async function switchChain(target: Site = FLAP_LAUNCH): Promise<void> {
 
 if (typeof window !== "undefined" && window.ethereum) {
   // Pick up a wallet that is already connected, and follow account and network changes.
-  void refresh("eth_accounts").catch(() => undefined);
-  window.ethereum.on("accountsChanged", ((accounts: string[]) => set({ account: (accounts[0] as `0x${string}` | undefined) ?? null })) as never);
+  if (!disconnectedHere()) void refresh("eth_accounts").catch(() => undefined);
+  else void window.ethereum.request({ method: "eth_chainId" }).then((chainId) => set({ chainId: Number(chainId) }), () => undefined);
+  window.ethereum.on("accountsChanged", ((accounts: string[]) => {
+    // Disconnected here: the wallet's own account changes are not this page's business until it connects again.
+    if (!disconnectedHere()) set({ account: (accounts[0] as `0x${string}` | undefined) ?? null });
+  }) as never);
   window.ethereum.on("chainChanged", ((chainId: string) => set({ chainId: Number(chainId) })) as never);
 }

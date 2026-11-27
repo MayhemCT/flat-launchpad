@@ -301,8 +301,41 @@ function TradePanel({ market, error, loading, onTraded }: { market: Market | nul
   );
 }
 
-/** Opens a token's chart and chat in a small window of their own. Each token gets its own, so several can be open at once. */
-function popOut(token: string) {
+/** The part of the Document Picture-in-Picture API this page uses. Chrome and Edge have it, and Firefox on desktop; Safari does not. */
+interface DocumentPictureInPicture {
+  requestWindow(options: { width: number; height: number }): Promise<Window>;
+}
+
+/**
+ * Opens a token's chart and chat in a small window of their own.
+ *
+ * Where the browser can, it is a picture-in-picture window: it floats above every other window and tab, and
+ * stays there while the visitor moves around this site or goes elsewhere. It is drawn by this page, so it
+ * closes when this tab is closed or reloaded, and a browser shows one such window at a time: popping out
+ * another token takes its place. Where the browser cannot, or refuses, it is an ordinary small window, which
+ * does not stay on top; each token then gets its own.
+ */
+async function popOut(token: string) {
+  const pip = (window as unknown as { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture;
+  if (pip) {
+    try {
+      const floating = await pip.requestWindow({ width: 440, height: 780 });
+      // The floating window starts empty: it gets this page's own stylesheets, then the pop-out is drawn into it.
+      for (const node of document.querySelectorAll('link[rel="stylesheet"], style')) floating.document.head.append(node.cloneNode(true));
+      floating.document.documentElement.lang = document.documentElement.lang;
+      floating.document.title = "CallZ";
+      const mount = floating.document.createElement("div");
+      mount.id = "pop-root";
+      floating.document.body.append(mount);
+      const { createRoot } = await import("react-dom/client");
+      const root = createRoot(mount);
+      root.render(<PopPage address={token} floating={{ close: () => floating.close(), setTitle: (title) => { floating.document.title = title; } }} />);
+      floating.addEventListener("pagehide", () => root.unmount(), { once: true });
+      return;
+    } catch {
+      // Refused (for example, not opened by a click) or failed half way: the ordinary window below.
+    }
+  }
   window.open(`${window.location.origin}/#/pop/${token}`, `callz-pop-${token}`, "popup,width=440,height=780");
 }
 
@@ -310,7 +343,7 @@ function popOut(token: string) {
  * The pop-out window: the chart on top, the chat under it, and a one-click buy. Clicking its title brings the
  * token's full page back in the window it was opened from.
  */
-export function PopPage({ address }: { address: string }) {
+export function PopPage({ address, floating }: { address: string; floating?: { close(): void; setTitle(title: string): void } }) {
   const token = address.toLowerCase() as Address;
   const indexed = useApi<Page<TokenRow>>("bsc", `tokens?address=${token}`);
   const row = indexed.state === "ready" ? indexed.data.items[0] ?? null : null;
@@ -323,11 +356,20 @@ export function PopPage({ address }: { address: string }) {
   const chartId = pair?.pairAddress ?? market?.pair ?? null;
 
   useEffect(() => {
-    document.title = `${symbol} · CallZ`;
-  }, [symbol]);
+    // A floating window is drawn by the main page: it is that window's title that is set, not the page's.
+    if (floating) floating.setTitle(`${symbol} · CallZ`);
+    else document.title = `${symbol} · CallZ`;
+  }, [symbol, floating]);
 
   const expand = () => {
     const page = `#/token/${token}`;
+    if (floating) {
+      // This code runs in the main page: the token's page opens there, and the floating window goes.
+      window.location.hash = page;
+      window.focus();
+      floating.close();
+      return;
+    }
     try {
       // Back to the window this one was opened from, when it is still there.
       if (window.opener && !window.opener.closed) {
@@ -450,7 +492,7 @@ export default function TokenPage({ address, mobile }: { address: string; mobile
         </div>
         <div className="token-actions">
           <button type="button" className="button button-quiet" onClick={copy} title={token}>{copied ? "Copied" : <><code>{short(token)}</code>&nbsp;Copy</>}</button>
-          <button type="button" className="button button-quiet" data-testid="pop-out" title="Open the chart and chat in a small window of their own" onClick={() => popOut(token)}>Pop out ⧉</button>
+          <button type="button" className="button button-quiet" data-testid="pop-out" title="Open the chart and chat in a small window that stays on top while you browse" onClick={() => void popOut(token)}>Pop out ⧉</button>
           {market && row?.graduated && <a className="button button-quiet" href={`#/pool/${token}`}>Add liquidity</a>}
           <a className="button button-flap" href={flapTokenUrl(SITE, token)} target="_blank" rel="noreferrer">Flap ↗</a>
           <a className="button button-quiet" href={pairPageUrl(pair, chartId ?? token)} target="_blank" rel="noreferrer">DexScreener ↗</a>

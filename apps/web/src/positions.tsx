@@ -10,7 +10,8 @@ import { claimMany, loadWalletRewards, type WalletRewards } from "./rewards";
 import { TokenImage } from "./scope";
 import { SITES } from "./site";
 import { TradeError, callzTokens, heldTokens, loadMarket, quoteSell, rememberedTokens, sell, type Market, type TradeStep } from "./trade";
-import { switchChain } from "./wallet";
+import { signOut } from "./session";
+import { disconnect, switchChain } from "./wallet";
 
 const SITE = SITES.bsc;
 /** Slippage for a sell from this menu, on top of the token's own tax. In basis points. */
@@ -413,6 +414,22 @@ export default function Positions({ account, chainId, onNavigate }: { account: A
       )}
       <p className="positions-foot dim">Tokens from the board, tokens launched on CallZ, and ones bought here, that this wallet holds on BNB Chain. "Sell all" goes through PancakeSwap with 5% slippage; your wallet asks you to confirm.</p>
       <CooksRow account={account} onNavigate={onNavigate} />
+      <div className="positions-disconnect">
+        <button
+          type="button"
+          className="button button-quiet"
+          data-testid="wallet-disconnect"
+          onClick={() => {
+            // The session goes with the wallet: nothing of this wallet's is shown or can be asked for after this.
+            signOut();
+            disconnect();
+            onNavigate();
+          }}
+        >
+          Disconnect wallet
+        </button>
+        <span className="dim">Signs this wallet out here. Connect again to use this one or another.</span>
+      </div>
     </div>
   );
 }
