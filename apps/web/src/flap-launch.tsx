@@ -280,11 +280,33 @@ function FloorGuidePanel() {
           </div>
         ))}
       </dl>
+      <p data-testid="floor-min-share">
+        The floor rises as the pool's share falls. With the largest cap a mint can have, {formatEther(MAX_CAP)} {NETWORK.unit},
+        the pool share must be at least <strong>{minimumPoolShare(guide)}%</strong>: a mint with a lower share is refused when it
+        is created.
+      </p>
       <p className="dim">
         This factory's floor multiplier is {guide.multiplierBps / 100}%. Flap sets it per factory and can lower it.
       </p>
     </section>
   );
+}
+
+/** The most a mint can raise: `CallZLauncher.MAX_CAP`. */
+const MAX_CAP = 10n * 10n ** 18n;
+
+/**
+ * The smallest pool share, in percent with two decimals and rounded up, that the largest cap can launch with.
+ * The floor is a fixed USD amount divided by the pool's share, so the least raise times the share is the same on
+ * every row of the guide.
+ */
+function minimumPoolShare(guide: FloorGuide): string {
+  const row = guide.rows[0];
+  if (!row) return "10";
+  // Basis points of basis points, rounded up, so the figure shown is never one that would be refused.
+  const hundredths = (row.minRaiseWei * BigInt(row.poolShareBps) + MAX_CAP - 1n) / MAX_CAP;
+  const shown = hundredths < 1000n ? 1000n : hundredths;
+  return `${shown / 100n}.${(shown % 100n).toString().padStart(2, "0")}`;
 }
 
 function CreatePage({ locale }: { locale: Locale }) {

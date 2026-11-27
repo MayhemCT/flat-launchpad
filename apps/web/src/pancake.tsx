@@ -23,6 +23,7 @@ import {
 import { bsc } from "viem/chains";
 import deployment from "./callz-deployment.json";
 import firstDeployment from "./pancake-deployment.json";
+import flapFactoryDeployment from "./factory-deployment.json";
 import { ago, amount, compact, short } from "./format";
 import { SITES } from "./site";
 import { connect, switchChain, useWallet } from "./wallet";
@@ -37,6 +38,12 @@ const CONTRACTS = [
   { label: "the trade router", ...deployment.router },
   { label: "the mint factory", ...deployment.factory },
 ] as const;
+/**
+ * CallZ's Launcher Factory for Flap Pool Launch. It is deployed through the deterministic CREATE2 deployer, so
+ * it has the same code at the same address on BNB Chain as on BNB Chain Testnet. Flap enables a factory on BNB
+ * Chain once it is there.
+ */
+const FLAP_FACTORY = flapFactoryDeployment.address as Address;
 /** The limits CallZPancake enforces, so the form says no before the chain does. */
 const MAX_CAP = parseEther("10");
 const MAX_NFTS = 10_000n;
@@ -200,15 +207,17 @@ async function factoryMints(factory: Address): Promise<Address[]> {
   return Promise.all(newest.map((index) => client.readContract({ address: factory, abi: factoryAbi, functionName: "mints", args: [index] })));
 }
 
-async function readSummaries(): Promise<{ deployed: boolean; missing: Array<(typeof CONTRACTS)[number]>; launchFeeBps: number; mints: MintSummary[] }> {
+async function readSummaries(): Promise<{ deployed: boolean; missing: Array<(typeof CONTRACTS)[number]>; flapFactoryDeployed: boolean; launchFeeBps: number; mints: MintSummary[] }> {
   const missing = await missingContracts();
   const deployed = missing.length === 0;
   // Mints of the current factory first, then the ones launched before fees.
-  const [current, first, launchFeeBps] = await Promise.all([
+  const [current, first, launchFeeBps, flapFactoryCode] = await Promise.all([
     deployed ? factoryMints(FACTORY) : [],
     factoryMints(FIRST_FACTORY),
     deployed ? client.readContract({ address: FACTORY, abi: factoryAbi, functionName: "launchFeeBps" }) : deployment.launchFeeBps,
+    client.getCode({ address: FLAP_FACTORY }),
   ]);
+  const flapFactoryDeployed = !!flapFactoryCode && flapFactoryCode !== "0x";
   const mints = await Promise.all(
     [...current, ...first].map(async (address) => {
       const at = { address, abi: mintAbi } as const;
@@ -228,7 +237,7 @@ async function readSummaries(): Promise<{ deployed: boolean; missing: Array<(typ
       return { address, name, symbol, minted, maxNFTs, raised, cap, launched, saleDeadline };
     }),
   );
-  return { deployed, missing, launchFeeBps, mints };
+  return { deployed, missing, flapFactoryDeployed, launchFeeBps, mints };
 }
 
 function statusOf(mint: { launched: boolean; saleDeadline: bigint }): { label: string; tone: "good" | "gold" | "muted" } {
@@ -240,8 +249,20 @@ function LaunchHome() {
   const wallet = useWallet();
   const list = useChain(readSummaries, 20_000);
   const { tx, send } = useTransaction();
+  const { tx: flapTx, send: sendFlap } = useTransaction();
   const gate = WalletGate();
   const feeText = `${(list.state === "ready" ? list.data.launchFeeBps : deployment.launchFeeBps) / 100}%`;
+
+  const deployFlapFactory = async () => {
+    if (!wallet.account) return;
+    // The same transaction the testnet launch page sends: the salt and the creation code, to the CREATE2 deployer.
+    await sendFlap(
+      "Deploying the Flap Pool Launch factory",
+      { to: flapFactoryDeployment.deployer as Address, data: `${flapFactoryDeployment.salt}${flapFactoryDeployment.initCode.slice(2)}` as Hex },
+      wallet.account,
+    );
+    list.reload();
+  };
 
   const deploy = async () => {
     if (!wallet.account) return;
@@ -283,6 +304,19 @@ function LaunchHome() {
           </p>
           <div className="actions">{gate ?? <button type="button" className="button" disabled={tx.kind === "working"} onClick={() => void deploy()}>Deploy {list.data.missing.length} contract{list.data.missing.length === 1 ? "" : "s"}</button>}</div>
           <TxNote tx={tx} />
+        </section>
+      )}
+      {list.state === "ready" && !list.data.flapFactoryDeployed && (
+        <section className="note" data-testid="flap-factory-not-deployed">
+          <h2>The Flap Pool Launch factory is not on BNB Chain yet</h2>
+          <p>
+            CallZ's Launcher Factory for Flap Pool Launch has the same code at the same address, <code>{FLAP_FACTORY}</code>, on BNB
+            Chain as on BNB Chain Testnet. It is one transaction from any wallet, paid in BNB network fees only, and whoever sends it
+            gets no rights over it. Deploying it launches nothing: Pool Launch on BNB Chain accepts a factory only once Flap has
+            enabled it.
+          </p>
+          <div className="actions">{gate ?? <button type="button" className="button" disabled={flapTx.kind === "working"} onClick={() => void deployFlapFactory()}>Deploy the Flap factory</button>}</div>
+          <TxNote tx={flapTx} />
         </section>
       )}
       {list.state === "ready" && (list.data.deployed || list.data.mints.length > 0) && (

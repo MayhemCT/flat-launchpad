@@ -91,6 +91,17 @@ Not built from the vault passdown: the Flap tax-slot variant (`DIVIDEND` + `VAUL
 
 ## Status
 
+- **Pre-audit, 27 Nov 2026: `CallZLauncher` 1.1.0 and `CallZLauncherFactory` passed** (0 critical, 0 high, 3 disclosure
+  notes), on forks of BNB Chain and BNB Chain Testnet against the live Portal. The fixed factory is deployed on BNB
+  Chain Testnet at `0x1C43a0bBf01034c30c9d30F23C00E7F3019E678c`; on BNB Chain it is deployed from the Launch page, to
+  the same address, and launches nothing until Flap enables it. The vault, router, PancakeSwap path and curve path
+  are outside that review. The three notes, which the site states where they apply:
+  - A low pool share cannot launch: the Portal's floor rises as the share falls, and at its standard floor a share
+    under about 11% is over the 10 BNB cap, so its mint is refused at creation. The create page shows the smallest
+    share that can launch, read from the Portal.
+  - NFTs that have not claimed earn no dividends on this path, because the Portal excludes the Launcher from them.
+    Holders should claim early.
+  - Flap's Guardian can call `openRefunds` on any mint that has not launched. It is the recovery path.
 - **Three changes made in review on 27 Nov 2026 moved the contracts to new addresses.** The site points at the
   new ones, listed first above. Until each is deployed (one transaction each from the site: the Launcher Factory
   from the testnet launch page, the vault, router and mint factory from the Launch page), the site shows it as

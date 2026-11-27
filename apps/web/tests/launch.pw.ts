@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import flapFactory from "../src/factory-deployment.json" with { type: "json" };
 
 /**
  * The whole mainnet launch, driven through the page: deploy the factory, create a pass mint, mint to the cap,
@@ -13,6 +14,8 @@ import { expect, test } from "@playwright/test";
 const RPC = process.env.TRADE_RPC_URL;
 // anvil's first development account.
 const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+// CallZ's Launcher Factory for Flap Pool Launch: the same address on BNB Chain as on BNB Chain Testnet.
+const FLAP_FACTORY = flapFactory.address;
 
 test.skip(!RPC, "set TRADE_RPC_URL to a local fork of BNB Chain");
 test.setTimeout(300_000);
@@ -53,6 +56,23 @@ test("deploy the factory, create a mint, mint to the cap, launch, claim and trad
     await deploy.click();
     await expect(create).toBeVisible({ timeout: 240_000 });
   }
+
+  // The Flap Pool Launch factory is deployed from the same page, at the address it has on BNB Chain Testnet.
+  await page.goto("/#/launch");
+  const flapNote = page.getByTestId("flap-factory-not-deployed");
+  await expect(create).toBeVisible({ timeout: 30_000 });
+  if (await flapNote.isVisible()) {
+    await flapNote.getByRole("button", { name: "Deploy the Flap factory" }).click();
+    await expect(flapNote).toHaveCount(0, { timeout: 120_000 });
+  }
+  const flapFactoryCode = await (
+    await fetch(RPC!, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [FLAP_FACTORY, "latest"] }),
+    })
+  ).json();
+  expect((flapFactoryCode.result as string).length, "the Flap factory has code on the fork").toBeGreaterThan(2);
 
   // Create: 0.5 BNB a pass, cap 1 BNB, so two passes; half the supply into the pool.
   await page.goto("/#/launch/create");
