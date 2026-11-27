@@ -940,3 +940,28 @@ describe('a clan leader removing a member', () => {
     expect((await call('/api/clans/WOLF/kick', third, { wallet: friend.address })).body.clan).toMatchObject({ founder: third.address.toLowerCase(), members: 1 })
   })
 })
+
+describe('sending an application again', () => {
+  it('is allowed once, and never after the dev declined', async () => {
+    const { call, dev } = setup()
+    await call('/api/rooms', dev, { room: ROOM, about: '', wantPost: false, postBrief: '', wantRole: true, roleBrief: '' })
+    const applicant = newAccount()
+    const send = (role: string) => call(`/api/rooms/${ROOM}/application`, applicant, { role })
+
+    expect((await send('Designer')).body.application).toMatchObject({ role: 'Designer', resubmitsLeft: 1 })
+    expect((await send('Lead designer')).body.application).toMatchObject({ role: 'Lead designer', resubmitsLeft: 0 })
+    const third = await send('Head of design')
+    expect(third.status).toBe(409)
+    expect(third.body.error).toContain('once')
+    // What the dev reads is the second version, and it stays that.
+    expect((await call(`/api/rooms/${ROOM}/applications`, dev)).body.applications[0]).toMatchObject({ role: 'Lead designer', resubmitsLeft: 0 })
+    // A bad request does not use up the one change.
+    const other = newAccount()
+    await call(`/api/rooms/${ROOM}/application`, other, { role: 'Coder' })
+    expect((await call(`/api/rooms/${ROOM}/application`, other, { role: '' })).status).toBe(400)
+    expect((await call(`/api/rooms/${ROOM}/application`, other)).body.application.resubmitsLeft).toBe(1)
+    // Declined: no change at all, even with one left.
+    await call(`/api/rooms/${ROOM}/applications/${other.address}`, dev, { action: 'decline' })
+    expect((await call(`/api/rooms/${ROOM}/application`, other, { role: 'Coder again' })).status).toBe(409)
+  })
+})

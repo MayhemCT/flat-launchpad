@@ -234,6 +234,8 @@ interface ApiStanding {
 
 interface Application {
   wallet: string;
+  /** How many more times the applicant can send the application again. Absent from an older answer. */
+  resubmitsLeft?: number;
   name: string | null;
   clan: string | null;
   postUrl: string | null;
@@ -2206,11 +2208,18 @@ function ApplicationPanel(context: RoomContext & { account: Address }) {
       )}
       {!wantPost && !wantRole && !application && <p className="trade-note">{gated ? "Holding the token is all this room asks for. Ask to join, and the dev decides." : "This room asks for nothing but the dev's yes. Ask to join, and the dev decides."}</p>}
       <div className="actions">
-        <button type="submit" className="button" data-testid="room-apply-submit" disabled={sending}>
+        <button type="submit" className="button" data-testid="room-apply-submit" disabled={sending || (application !== null && application !== undefined && application.resubmitsLeft === 0)}>
           {sending ? "Checking and sending…" : application ? "Send again" : wantPost || wantRole ? "Apply" : "Ask to join"}
         </button>
       </div>
       <SaidNote said={said} testId={said?.kind === "error" ? "room-apply-error" : "room-apply-sent"} />
+      {application && (
+        <p className="trade-note" data-testid="room-apply-resubmits" data-left={String(application.resubmitsLeft ?? "")}>
+          {application.resubmitsLeft === 0
+            ? "You have changed this application once, which is the limit. The dev reviews it as it stands."
+            : "You can change and send this application once more. After that the dev reviews it as it stands."}
+        </p>
+      )}
       <p className="trade-foot dim">Applying costs nothing and sends no transaction. You pay for a pass only after the dev has let this wallet in.</p>
     </form>
   );

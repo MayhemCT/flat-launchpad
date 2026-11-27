@@ -18,7 +18,8 @@
  *   POST /api/rooms/images                  the bytes of a room picture → { hash, url }. The url goes into the
  *                                           room's contract when it is created.
  *   GET  /api/rooms/<room>/application      the caller's application, their post code and where they stand.
- *   POST /api/rooms/<room>/application      { postUrl?, role?, portfolio? } apply, or change a pending application.
+ *   POST /api/rooms/<room>/application      { postUrl?, role?, portfolio? } apply, or change a pending application:
+ *                                           once only after the first time.
  *
  * The room's dev (the wallet that created the contract):
  *   POST /api/rooms                         { room, about, wantPost, postBrief, postPhrase, wantRole, roleBrief } list the
@@ -84,6 +85,8 @@ export const MAX_ROLE_LENGTH = 60
 export const MAX_PORTFOLIO_LENGTH = 600
 export const MAX_MESSAGE_LENGTH = 1000
 export const MAX_NOTE_LENGTH = 140
+/** How many times a wallet can send its application to a room again after the first time. */
+export const MAX_RESUBMITS = 1
 export const MAX_TAG_LENGTH = 24
 /** The most points one member can have from one room. */
 export const MAX_POINTS = 100
@@ -710,6 +713,8 @@ const toApplication = (row: Row, standing: Standing | null | undefined) => ({
   status: row.status,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+  // How many more times the applicant can send this application again.
+  resubmitsLeft: Math.max(0, MAX_RESUBMITS - Number(row.resubmits ?? 0)),
   standing: standing ?? null,
 })
 
@@ -796,6 +801,14 @@ async function apply(request: Request, env: RoomsEnv, fetcher: typeof fetch, add
   if (typeof portfolio === 'string') return failure(400, portfolio)
   if (room.want_role === 1 && role.text === '') return failure(400, 'Say what role you would take in this project.')
 
+  // An application can be sent again once. This is asked before X and the chain are, and held to again by the
+  // statement that stores it.
+  const before = await env.DB.prepare('SELECT status, resubmits FROM room_applications WHERE room = ? AND wallet = ?').bind(address, wallet).first<Row>()
+  if (before?.status === 'declined') return failure(409, 'The dev declined this application. It can only be reopened by the dev.')
+  if (before && Number(before.resubmits ?? 0) >= MAX_RESUBMITS) {
+    return failure(409, 'You have already changed this application once, which is the limit. The dev reviews it as it stands.')
+  }
+
   const read = await readRequirements(env, fetcher, room, wallet, postUrl)
   if (read.postState === 'missing') return failure(400, 'X says there is no such post. It may be deleted, or from an account that is not public.')
   if (read.postState === 'nocode') {
@@ -816,13 +829,13 @@ async function apply(request: Request, env: RoomsEnv, fetcher: typeof fetch, add
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?10, ?10)
 ON CONFLICT (room, wallet) DO UPDATE SET post_url = excluded.post_url, post_handle = excluded.post_handle, post_state = excluded.post_state,
   role = excluded.role, portfolio = excluded.portfolio, held = excluded.held, hold_state = excluded.hold_state, checked_at = excluded.checked_at,
-  updated_at = excluded.updated_at
-WHERE room_applications.status = 'pending'
+  updated_at = excluded.updated_at, resubmits = room_applications.resubmits + 1
+WHERE room_applications.status = 'pending' AND room_applications.resubmits < ?11
 RETURNING wallet`,
     )
-      .bind(address, wallet, postUrl, read.postHandle, read.postState, room.want_role === 1 ? role.text : null, room.want_role === 1 && portfolio.text !== '' ? portfolio.text : null, read.held, read.holdState, now)
+      .bind(address, wallet, postUrl, read.postHandle, read.postState, room.want_role === 1 ? role.text : null, room.want_role === 1 && portfolio.text !== '' ? portfolio.text : null, read.held, read.holdState, now, MAX_RESUBMITS)
       .first<Row>()
-    if (!stored) return failure(409, 'The dev declined this application. It can only be reopened by the dev.')
+    if (!stored) return failure(409, 'This application can no longer be changed: the dev declined it, or it was already changed once.')
   } catch (error) {
     if (String(error).includes('room_applications.room, room_applications.post_url')) return failure(409, 'That post was already handed in by another wallet.')
     throw error
